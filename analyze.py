@@ -3,6 +3,11 @@ import pathlib, numpy as np
 import librosa
 from typing import Iterable
 from .utils import load_meta, save_meta, file_sig, console
+try:
+    from .features import samples_score, bass_contour
+except Exception:
+    samples_score = None  # type: ignore
+    bass_contour = None  # type: ignore
 
 # Krumhansl & Kessler key profiles (major/minor)
 _MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], dtype=float)
@@ -53,7 +58,13 @@ def _estimate_key(y: np.ndarray, sr: int) -> tuple[str, str]:
     return camelot, full
 
 
-def analyze_bpm_key(paths: Iterable[str], duration_s: int = 90, only_new: bool = True, force: bool = False) -> None:
+def analyze_bpm_key(
+    paths: Iterable[str],
+    duration_s: int = 90,
+    only_new: bool = True,
+    force: bool = False,
+    add_cues: bool = True,
+) -> None:
     meta = load_meta()
     to_do = []
     for p in paths:
@@ -91,11 +102,23 @@ def analyze_bpm_key(paths: Iterable[str], duration_s: int = 90, only_new: bool =
             else:
                 info.setdefault('title', stem)
             # auto-cues proposal (best-effort)
+            if add_cues:
+                try:
+                    from .cues import propose_cues
+                    info['cues'] = propose_cues(y, sr, bpm=info['bpm'])
+                except Exception:
+                    pass
+            # lightweight features cache (optional)
             try:
-                from .cues import propose_cues
-                info['cues'] = propose_cues(y, sr, bpm=info['bpm'])
-            except Exception:
-                pass
+                feats = info.setdefault('features', {})
+                if samples_score is not None and 'samples' not in feats:
+                    feats['samples'] = float(samples_score(y, sr))
+                if bass_contour is not None and 'bass_contour' not in feats:
+                    contour, rel = bass_contour(y, sr)
+                    ds = librosa.util.fix_length(contour, 256).astype(float).tolist()
+                    feats['bass_contour'] = { 'contour': ds, 'reliability': float(rel) }
+            except Exception as e:
+                console.print(f"[yellow]Feature extract skip for {p}: {e}")
         except Exception as e:
             console.print(f"[red]BPM/Key failed for {p}: {e}")
         finally:

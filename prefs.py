@@ -26,3 +26,17 @@ def mode_for_path(path: str) -> str:
             pass
     return prefs.get("default_mode", "baseline")
 
+
+def save_prefs(data: dict) -> None:
+    CFG.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def set_folder_mode(path: str, mode: str) -> None:
+    prefs = load_prefs()
+    items = prefs.get("folders", [])
+    items = [r for r in items if pathlib.Path(r.get("path", "")) != pathlib.Path(path)]
+    items.insert(0, {"path": str(path), "mode": mode})
+    prefs["folders"] = items
+    if "default_mode" not in prefs:
+        prefs["default_mode"] = "baseline"
+    save_prefs(prefs)

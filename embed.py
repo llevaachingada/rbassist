@@ -6,6 +6,7 @@ from transformers import AutoModel, Wav2Vec2FeatureExtractor
 import torch
 from rich.progress import track
 from .utils import console, EMB, load_meta, save_meta
+from .prefs import mode_for_path
 
 DEFAULT_MODEL = "m-a-p/MERT-v1-330M"
 SAMPLE_RATE = 24000  # per model card
@@ -38,7 +39,20 @@ def build_embeddings(paths: List[str], model_name: str = DEFAULT_MODEL, duration
     EMB.mkdir(parents=True, exist_ok=True)
     for p in track(paths, description="Embedding"):
         try:
-            vec = emb.embed(p, duration_s=duration_s)
+            src_path = p
+            mode = mode_for_path(p)
+            used = "baseline"
+            if mode == "stems":
+                try:
+                    from .stems import split_stems
+                    parts = split_stems(p)
+                    # Prefer vocals if present; otherwise fall back to baseline
+                    if parts.get("vocals"):
+                        src_path = parts["vocals"]
+                        used = "stems:vocals"
+                except Exception as se:
+                    console.print(f"[yellow]Stems skipped for {p}: {se}")
+            vec = emb.embed(src_path, duration_s=duration_s)
             out = EMB / (pathlib.Path(p).stem + ".npy")
             np.save(out, vec)
             # store meta
@@ -46,6 +60,7 @@ def build_embeddings(paths: List[str], model_name: str = DEFAULT_MODEL, duration
             info.setdefault("artist", pathlib.Path(p).stem.split(" - ")[0] if " - " in pathlib.Path(p).stem else "")
             info.setdefault("title", pathlib.Path(p).stem.split(" - ")[-1])
             info["embedding"] = str(out)
+            info["embedding_source"] = used
         except Exception as e:
             console.print(f"[red]Embedding failed for {p}: {e}")
     save_meta(meta)

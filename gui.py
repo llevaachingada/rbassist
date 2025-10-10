@@ -17,13 +17,14 @@ def _worker(fn, args, q: queue.Queue):
         q.put(("err", str(e)))
 
 
-def main() -> None:
-    root = tk.Tk()
-    root.title("rbassist")
+def build_frame(parent: tk.Misc) -> None:
+    """Build rbassist controls inside an existing Tk container.
+    Schedules background polling on the same parent via after().
+    """
     q: queue.Queue = queue.Queue()
 
     # Controls frame
-    frm = tk.Frame(root)
+    frm = tk.Frame(parent)
     frm.pack(padx=10, pady=10, fill=tk.X)
 
     tk.Label(frm, text="Audio folder:").grid(row=0, column=0, sticky="w")
@@ -34,10 +35,14 @@ def main() -> None:
         d = filedialog.askdirectory()
         if d:
             folder_var.set(d)
+
     tk.Button(frm, text="Browse", command=pick_folder).grid(row=0, column=2, padx=5)
 
     seed_var = tk.StringVar()
     xml_var = tk.StringVar(value="rbassist.xml")
+
+    log_txt = tk.Text(parent, height=18, width=100, state="disabled")
+    log_txt.pack(padx=10, pady=(0, 10), fill=tk.BOTH, expand=True)
 
     def log(msg: str):
         log_txt.configure(state="normal")
@@ -54,7 +59,8 @@ def main() -> None:
         except Exception as e:
             log(f"Embed deps missing: install .[ml] (and torch). Error: {e}")
             return
-        files = walk_audio([folder_var.get()]) if folder_var.get() else []
+        folder = folder_var.get()
+        files = walk_audio([folder]) if folder else []
         if not files:
             log("No audio files found.")
             return
@@ -98,10 +104,6 @@ def main() -> None:
     tk.Entry(frm, textvariable=xml_var, width=40).grid(row=3, column=1, sticky="w")
     tk.Button(frm, text="Export Rekordbox XML", command=do_export_xml).grid(row=3, column=2, padx=5)
 
-    log_txt = tk.Text(root, height=18, width=100, state="disabled")
-    log_txt.pack(padx=10, pady=(0, 10), fill=tk.BOTH, expand=True)
-    tk.Button(root, text="Exit", command=root.destroy).pack(pady=(0, 10))
-
     def poll():
         try:
             while True:
@@ -113,11 +115,19 @@ def main() -> None:
         except queue.Empty:
             pass
         finally:
-            root.after(200, poll)
+            parent.after(200, poll)
 
-    root.after(150, poll)
+    parent.after(150, poll)
+
+
+def main() -> None:
+    root = tk.Tk()
+    root.title("rbassist")
+    build_frame(root)
+    tk.Button(root, text="Exit", command=root.destroy).pack(pady=(0, 10))
     root.mainloop()
 
 
 if __name__ == "__main__":
     main()
+

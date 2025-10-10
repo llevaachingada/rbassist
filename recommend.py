@@ -1,9 +1,13 @@
 ﻿from __future__ import annotations
 import json, pathlib, numpy as np
-from typing import List
+from typing import List, Dict, Optional
 import hnswlib
 from rich.table import Table
 from .utils import EMB, IDX, META, console, camelot_relation, tempo_match, load_meta
+try:
+    from .features import bass_similarity
+except Exception:
+    bass_similarity = None  # type: ignore
 
 DIM = 1024
 
@@ -60,7 +64,14 @@ def _tempo_note(seed_bpm: float | None, cand_bpm: float | None, pct: float, allo
     return ""
 
 
-def recommend(seed: str, top: int = 25, tempo_pct: float = 6.0, allow_doubletime: bool = True, camelot_neighbors: bool = True):
+def recommend(
+    seed: str,
+    top: int = 25,
+    tempo_pct: float = 6.0,
+    allow_doubletime: bool = True,
+    camelot_neighbors: bool = True,
+    weights: Optional[Dict[str, float]] = None,
+):
     idxfile = IDX / "hnsw.idx"
     paths_map = json.load(open(IDX / "paths.json", "r", encoding="utf-8"))
     meta_all = load_meta()["tracks"]
@@ -80,7 +91,7 @@ def recommend(seed: str, top: int = 25, tempo_pct: float = 6.0, allow_doubletime
     index = hnswlib.Index(space="cosine", dim=seed_vec.shape[0])
     index.load_index(str(idxfile))
     index.set_ef(64)
-    labels, dists = index.knn_query(seed_vec, k=top+1)
+    labels, dists = index.knn_query(seed_vec, k=top + 50)  # fetch a wider pool for re-rank
     labels, dists = labels[0].tolist(), dists[0].tolist()
 
     title = f"Recommendations for {seed_path}"
@@ -97,7 +108,17 @@ def recommend(seed: str, top: int = 25, tempo_pct: float = 6.0, allow_doubletime
     table.add_column("KeyRule")
     table.add_column("Dist", justify="right")
 
-    rank = 1
+    # optional weighted re-rank
+    weights = weights or {}
+    w_ann = float(weights.get("ann", 0.0))
+    w_samples = float(weights.get("samples", 0.0))
+    w_bass = float(weights.get("bass", 0.0))
+
+    # load seed features for bass
+    seed_c = np.array(seed_info.get("features", {}).get("bass_contour", {}).get("contour", []), dtype=float)
+
+    # collect candidates first
+    cands = []
     for label, dist in zip(labels, dists):
         path = paths_map[label]
         if path == seed_path:
@@ -105,25 +126,42 @@ def recommend(seed: str, top: int = 25, tempo_pct: float = 6.0, allow_doubletime
         info = meta_all.get(path, {})
         cand_bpm = info.get("bpm")
         cand_key = info.get("key")
-
         ok_key, rule_name = camelot_relation(seed_key, cand_key) if camelot_neighbors else (True, "-")
         if camelot_neighbors and not ok_key:
             continue
         if not tempo_match(seed_bpm, cand_bpm, pct=tempo_pct, allow_doubletime=allow_doubletime):
             continue
+        score = 0.0
+        # base ANN score: invert distance
+        score += w_ann * float(1.0 - float(dist))
+        # samples score from candidate features
+        samp = float(info.get("features", {}).get("samples", 0.0))
+        score += w_samples * samp
+        # bass similarity
+        if w_bass and bass_similarity is not None:
+            c_cont = np.array(info.get("features", {}).get("bass_contour", {}).get("contour", []), dtype=float)
+            if seed_c.size and c_cont.size:
+                score += w_bass * float(bass_similarity(seed_c, c_cont))
+        cands.append((path, info, cand_bpm, cand_key, rule_name, dist, score))
 
+    # sort: if any weight provided, sort by score desc; else by ANN distance asc
+    if any([w_ann, w_samples, w_bass]):
+        cands.sort(key=lambda x: x[6], reverse=True)
+    else:
+        cands.sort(key=lambda x: x[5])
+
+    rank = 1
+    for path, info, cand_bpm, cand_key, rule_name, dist, _score in cands[:top]:
         table.add_row(
             str(rank),
             path,
-            info.get("artist",""),
-            info.get("title",""),
+            info.get("artist", ""),
+            info.get("title", ""),
             f"{cand_bpm:.1f}" if isinstance(cand_bpm, (int, float)) else "-",
             cand_key or "-",
             rule_name,
             f"{dist:.3f}",
         )
         rank += 1
-        if rank > top:
-            break
 
     console.print(table)

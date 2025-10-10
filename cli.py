@@ -170,14 +170,24 @@ def cmd_recommend(
     top: int = typer.Option(25, help="Top N results"),
     tempo_pct: float = typer.Option(6.0, help="Tempo tolerance percent"),
     allow_doubletime: bool = typer.Option(True, help="Match 2x/0.5x tempos"),
-    camelot_neighbors: bool = typer.Option(True, help="Filter by Camelot compatibility")
+    camelot_neighbors: bool = typer.Option(True, help="Filter by Camelot compatibility"),
+    w_ann: float = typer.Option(0.0, help="Weight: ANN base score"),
+    w_samples: float = typer.Option(0.0, help="Weight: samples score (0..1)"),
+    w_bass: float = typer.Option(0.0, help="Weight: bass contour similarity (0..1)")
 ):
     try:
         from .recommend import recommend as do_rec
     except Exception as e:
         console.print(f"[red]Recommend deps missing (hnswlib). Error: {e}")
         raise typer.Exit(1)
-    do_rec(seed, top=top, tempo_pct=tempo_pct, allow_doubletime=allow_doubletime, camelot_neighbors=camelot_neighbors)
+    do_rec(
+        seed,
+        top=top,
+        tempo_pct=tempo_pct,
+        allow_doubletime=allow_doubletime,
+        camelot_neighbors=camelot_neighbors,
+        weights={"ann": w_ann, "samples": w_samples, "bass": w_bass},
+    )
 
 
 @app.command("bandcamp-import")
@@ -278,3 +288,20 @@ def cmd_mirror_csv(csv_path: str, out_xml: str = "rb_from_csv.xml", name: str = 
     sub = {"tracks": {p: meta["tracks"][p] for p in paths if p in meta["tracks"]}}
     write_rekordbox_xml(sub, out_xml, name)
     console.print(f"[green]Wrote {len(sub['tracks'])} tracks -> {out_xml}")
+
+
+@app.command("features")
+def cmd_features(root: str, limit: int = 0, duration_s: int = 90):
+    """Backfill lightweight features (samples, bassline) into metadata for a folder."""
+    try:
+        from .features import samples_score, bass_contour  # noqa: F401
+    except Exception as e:
+        console.print(f"[red]Feature deps missing (librosa/numpy). Error: {e}")
+        raise typer.Exit(1)
+    files = walk_audio([root])
+    if limit and limit > 0:
+        files = files[:limit]
+    from .analyze import analyze_bpm_key as _noop  # reuse loader path; features now computed during analyze
+    # Run through analyze_bpm_key with only_new=True to compute features for new files
+    _noop(files, duration_s=duration_s, only_new=False, force=False)
+    console.print(f"[green]Feature backfill attempted for {len(files)} files")
