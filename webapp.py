@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import pathlib
@@ -67,7 +67,7 @@ def _knn(vec: np.ndarray, k: int = 50):
     return labels[0].tolist(), dists[0].tolist()
 
 
-st.title("rbassist — Streamlit UI (open-source)")
+st.title("rbassist â€” Streamlit UI (open-source)")
 with st.sidebar:
     st.markdown("### Workspace")
     root = st.text_input("Audio folder", value=str(pathlib.Path.home()))
@@ -77,6 +77,7 @@ with st.sidebar:
     st.divider()
     xml_path = st.text_input("Rekordbox XML output", value="rbassist.xml")
     st.divider()
+    do_cues = st.checkbox("Auto Hot/Memory Cues on Analyze", value=True)
     do_rg = st.checkbox("Write ReplayGain tags after Analyze", value=False)
     if "last_mode" not in st.session_state:
         st.session_state.last_mode = "baseline"
@@ -101,13 +102,12 @@ with st.sidebar:
                         set_folder_mode(str(p), mode)
                         st.session_state.last_mode = mode
                         if mode == "stems":
-                            import shutil
                             if shutil.which("demucs") is None:
-                                st.warning("Demucs not found—stems will be skipped until installed.")
+                                st.warning("Demucs not found — stems will be skipped until installed.")
+                                st.markdown("[Install Demucs guide](https://github.com/facebookresearch/demucs) · or run: `pip install demucs`")
                         st.success("Saved. New scans will honor this mode.")
                         st.session_state.show_add_modal = False
                         st.experimental_rerun()
-
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -116,7 +116,7 @@ with col1:
         files = list_audio(root)
         if limit and limit > 0:
             files = files[: int(limit)]
-        with st.status("Embedding…", expanded=True) as status:
+        with st.status("Embeddingâ€¦", expanded=True) as status:
             st.write(f"Found {len(files)} files")
             build_embeddings(files, duration_s=int(duration))
             status.update(label="Embeddings complete", state="complete")
@@ -126,8 +126,8 @@ with col2:
         files = list_audio(root)
         if limit and limit > 0:
             files = files[: int(limit)]
-        with st.status("Analyzing BPM/Key…", expanded=True) as status:
-            analyze_bpm_key(files, duration_s=60, only_new=True)
+        with st.status("Analyzing BPM/Keyâ€¦", expanded=True) as status:
+            analyze_bpm_key(files, duration_s=60, only_new=True, add_cues=do_cues)
             status.update(label="BPM/Key complete", state="complete")
         if do_rg:
             try:
@@ -143,14 +143,14 @@ with col2:
 with col3:
     if st.button("Build Index"):
         from rbassist.recommend import build_index
-        with st.status("Building index…", expanded=True) as status:
+        with st.status("Building indexâ€¦", expanded=True) as status:
             build_index()
             status.update(label="Index complete", state="complete")
 
 with col4:
     if st.button("Export Rekordbox XML"):
         meta = load_meta()
-        with st.status("Writing XML…", expanded=True) as status:
+        with st.status("Writing XMLâ€¦", expanded=True) as status:
             write_rekordbox_xml(meta, out_path=xml_path, playlist_name="rbassist export")
             status.update(label=f"Wrote {xml_path}", state="complete")
 
@@ -282,7 +282,7 @@ with st.form("edit_folders"):
         st.success("Saved folder modes.")
 
 st.divider()
-st.subheader("Mirror Online CSV → Rekordbox XML")
+st.subheader("Mirror Online CSV â†’ Rekordbox XML")
 csv_file = st.file_uploader("CSV with columns: artist, title", type=["csv"], key="csv_mirror")
 name_csv = st.text_input("Playlist name (CSV Mirror)", value="Online Mirror")
 out_csv_xml = st.text_input("Output XML (CSV Mirror)", value="rb_from_csv.xml")
@@ -298,27 +298,30 @@ if st.button("Mirror CSV to XML", disabled=csv_file is None):
             paths = import_csv_playlist(csv_path)
             sub = {"tracks": {p: meta["tracks"][p] for p in paths if p in meta["tracks"]}}
             write_rekordbox_xml(sub, out_csv_xml, name_csv)
-        st.success(f"Matched {len(sub['tracks'])} local tracks → {out_csv_xml}")
+        st.success(f"Matched {len(sub['tracks'])} local tracks â†’ {out_csv_xml}")
         try:
             with open(out_csv_xml, "rb") as f:
                 st.download_button("Download XML (CSV Mirror)", data=f, file_name=out_csv_xml, mime="application/xml")
         except Exception:
             pass
 
-st.divider()
 st.subheader("Bandcamp CSV Import → Meta Tags")
 bc_csv = st.file_uploader("Bandcamp CSV", type=["csv"], key="bc_csv_tools")
-mapping_yml = st.file_uploader("Mapping YAML", type=["yml","yaml"], key="bc_map_tools")
-if st.button("Import Bandcamp CSV", disabled=(bc_csv is None or mapping_yml is None)):
+mapping_yml = st.file_uploader("Mapping YAML (optional)", type=["yml","yaml"], key="bc_map_tools")
+if st.button("Import Bandcamp CSV", disabled=(bc_csv is None)):
     import subprocess, sys
-    if bc_csv is None or mapping_yml is None:
-        st.warning("Upload both CSV and mapping YAML.")
+    if bc_csv is None:
+        st.warning("Upload a Bandcamp CSV first.")
     else:
         with tempfile.TemporaryDirectory() as td:
             csv_path = os.path.join(td, "bandcamp.csv")
             map_path = os.path.join(td, "mapping.yml")
             open(csv_path, "wb").write(bc_csv.getvalue())
-            open(map_path, "wb").write(mapping_yml.getvalue())
+            if mapping_yml is not None:
+                open(map_path, "wb").write(mapping_yml.getvalue())
+            else:
+                default_map = "columns:\n  artist: artist\n  title: title\n  tags: tags\n  genre: genre\n  subgenre: subgenre\n"
+                open(map_path, "w", encoding="utf-8").write(default_map)
             try:
                 cp = subprocess.run([sys.executable, "-m", "rbassist.cli", "bandcamp-import", csv_path, map_path], capture_output=True, text=True, check=True)
                 st.success("Bandcamp import complete.")
@@ -326,3 +329,4 @@ if st.button("Import Bandcamp CSV", disabled=(bc_csv is None or mapping_yml is N
             except subprocess.CalledProcessError as e:
                 st.error("Bandcamp import failed.")
                 st.code(e.stderr or str(e), language="bash")
+
