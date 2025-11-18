@@ -2,6 +2,7 @@ from __future__ import annotations
 import pathlib, numpy as np
 import librosa
 from typing import Callable, Iterable, Optional
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 from .utils import load_meta, save_meta, file_sig, console
 try:
     from .features import samples_score, bass_contour
