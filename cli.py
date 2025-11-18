@@ -1,7 +1,9 @@
 from __future__ import annotations
 import pathlib, numpy as np
 import librosa
-from typing import Iterable, List
+import csv
+from datetime import datetime
+from typing import Iterable, List, Optional, Dict
 import typer
 from .utils import load_meta, save_meta, file_sig, console, walk_audio
 
@@ -140,7 +142,9 @@ if __name__ == "__main__":
 def cmd_embed(
     paths: List[str] = typer.Argument(..., help="Files or folders to embed"),
     duration_s: int = typer.Option(120, help="Seconds per track (0=full)"),
-    model: str = typer.Option("m-a-p/MERT-v1-330M", help="HF model name for MERT")
+    model: str = typer.Option("m-a-p/MERT-v1-330M", help="HF model name for MERT"),
+    device: str = typer.Option(None, help="Compute device: 'cuda' or 'cpu' (auto if omitted)"),
+    num_workers: int = typer.Option(0, help="Parallel audio loaders (0=serial; 4-8 typical)"),
 ):
     try:
         from .embed import build_embeddings, DEFAULT_MODEL
@@ -151,7 +155,13 @@ def cmd_embed(
     if not files:
         console.print("[yellow]No audio files found.")
         raise typer.Exit(1)
-    build_embeddings(files, model_name=model or DEFAULT_MODEL, duration_s=duration_s)
+    build_embeddings(
+        files,
+        model_name=model or DEFAULT_MODEL,
+        duration_s=duration_s,
+        device=(device or None),
+        num_workers=num_workers,
+    )
 
 
 @app.command("index")
@@ -197,6 +207,173 @@ def cmd_bandcamp_import(csv_path: str, config_path: str):
     updated = import_bandcamp(csv_path, config_path, meta)
     save_meta(updated)
     console.print("[green]Bandcamp CSV imported into meta tags.")
+
+
+@app.command("import-mytags")
+def cmd_import_mytags(
+    xml_paths: List[str] = typer.Argument(..., help="One or more Rekordbox XML exports with My Tags"),
+    only_existing: bool = typer.Option(True, help="Skip tracks not present in rbassist meta"),
+):
+    from .tagstore import import_rekordbox_tags
+
+    if not xml_paths:
+        console.print("[red]Provide at least one Rekordbox XML path.")
+        raise typer.Exit(1)
+
+    total_imported = 0
+    failures = 0
+    for xml_path in xml_paths:
+        try:
+            count = import_rekordbox_tags(xml_path, only_existing=only_existing)
+        except FileNotFoundError:
+            console.print(f"[red]XML not found: {xml_path}")
+            failures += 1
+            continue
+        except Exception as e:
+            console.print(f"[red]Failed to import My Tags from {xml_path}: {e}")
+            failures += 1
+            continue
+        total_imported += count
+        if count:
+            console.print(f"[green]{xml_path}: imported My Tags for {count} track(s).")
+        else:
+            console.print(f"[yellow]{xml_path}: no matching My Tags found.")
+
+    if total_imported:
+        console.print(f"[green]Total tracks updated: {total_imported}")
+    if failures and not total_imported:
+        raise typer.Exit(1)
+
+
+@app.command("tags-auto")
+def cmd_tags_auto(
+    targets: Optional[List[str]] = typer.Argument(None, help="Optional files/folders to score (omit = all untagged tracks)"),
+    min_samples: int = typer.Option(3, help="Minimum tagged tracks required per label"),
+    margin: float = typer.Option(0.0, help="Lower confidence threshold by this amount"),
+    top: int = typer.Option(3, help="Max tags to report per track (0 = all)"),
+    apply: bool = typer.Option(False, "--apply", help="Persist suggested tags into config/meta"),
+    include_tagged: bool = typer.Option(False, help="Also evaluate tracks that already have My Tags"),
+    prune_margin: float = typer.Option(0.0, help="Suggest removal if existing tag score < threshold - value"),
+    csv_out: Optional[str] = typer.Option(None, "--csv", help="Write suggestions to CSV (preview mode)"),
+    save_suggestions: bool = typer.Option(False, help="Store suggestion results in meta for later review"),
+):
+    from .tag_model import learn_tag_profiles, suggest_tags_for_tracks, evaluate_existing_tags
+    from .tagstore import bulk_set_track_tags
+
+    meta = load_meta()
+    profiles = learn_tag_profiles(min_samples=min_samples, meta=meta)
+    if not profiles:
+        console.print("[red]No tagged tracks available to learn from. Import or assign My Tags first.")
+        raise typer.Exit(1)
+
+    if targets:
+        files = walk_audio(targets)
+        if not files:
+            console.print("[yellow]No audio files found in the provided targets.")
+            raise typer.Exit(1)
+        missing = [p for p in files if p not in meta["tracks"] or not meta["tracks"][p].get("embedding")]
+        if missing:
+            console.print(f"[yellow]{len(missing)} file(s) lack embeddings or meta. Run 'rbassist embed' first.")
+        track_paths = [p for p in files if p in meta["tracks"]]
+    else:
+        track_paths = [
+            p for p, info in meta["tracks"].items()
+            if (include_tagged or not info.get("mytags")) and info.get("embedding")
+        ]
+
+    if not track_paths:
+        console.print("[yellow]No tracks to evaluate.")
+        raise typer.Exit(1)
+
+    suggestions = suggest_tags_for_tracks(track_paths, profiles, margin=margin, top_k=top, meta=meta)
+    if not suggestions:
+        console.print("[yellow]No tag suggestions met the confidence threshold.")
+    existing_scores = evaluate_existing_tags(track_paths, profiles, meta=meta)
+
+    low_confidence: Dict[str, List[Tuple[str, float, float]]] = {}
+    if prune_margin > 0.0:
+        for path, rows in existing_scores.items():
+            drops = [(tag, score, thr) for tag, score, thr in rows if score < (thr - prune_margin)]
+            if drops:
+                low_confidence[path] = drops
+
+    if suggestions:
+        console.print("[bold cyan]Suggested My Tags[/bold cyan]")
+        for path, tags in suggestions.items():
+            console.print(f"[cyan]{path}")
+            for tag, score, threshold in tags:
+                delta = score - threshold
+                console.print(f"  -> [green]{tag}[/green] score={score:.3f} (threshold {threshold:.3f}, Δ{delta:.3f})")
+    if prune_margin > 0.0:
+        if low_confidence:
+            console.print("[bold magenta]Low-confidence existing tags (candidates for removal)[/bold magenta]")
+            for path, rows in low_confidence.items():
+                console.print(f"[magenta]{path}")
+                for tag, score, threshold in rows:
+                    deficit = threshold - score
+                    console.print(f"  -> [red]{tag}[/red] score={score:.3f} (threshold {threshold:.3f}, deficit {deficit:.3f})")
+        else:
+            console.print("[green]No existing tags fell below the prune margin.")
+
+    if csv_out:
+        rows: List[List[object]] = []
+        for path, tags in suggestions.items():
+            for tag, score, thr in tags:
+                rows.append(["suggest", path, tag, score, thr, score - thr])
+        for path, tags in low_confidence.items():
+            for tag, score, thr in tags:
+                rows.append(["prune", path, tag, score, thr, score - thr])
+        with open(csv_out, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["type", "path", "tag", "score", "threshold", "delta"])
+            writer.writerows(rows)
+        console.print(f"[green]Wrote suggestion preview -> {csv_out}")
+
+    if save_suggestions and (suggestions or low_confidence):
+        meta_for_save = load_meta()
+        now = datetime.utcnow().isoformat()
+        for path, tags in suggestions.items():
+            info = meta_for_save["tracks"].setdefault(path, {})
+            info["tag_suggestions"] = {
+                "generated": now,
+                "params": {
+                    "min_samples": min_samples,
+                    "margin": margin,
+                    "top": top,
+                    "prune_margin": prune_margin,
+                    "include_tagged": include_tagged,
+                },
+                "candidates": [
+                    {"tag": tag, "score": float(score), "threshold": float(thr)}
+                    for tag, score, thr in tags
+                ],
+                "low_confidence": [
+                    {"tag": tag, "score": float(score), "threshold": float(thr)}
+                    for tag, score, thr in low_confidence.get(path, [])
+                ],
+            }
+        save_meta(meta_for_save)
+        console.print("[green]Suggestion snapshot stored in meta (tag_suggestions).")
+
+    if apply:
+        updates: Dict[str, List[str]] = {}
+        tracks_meta = meta.get("tracks", {})
+        affected_paths = set(suggestions.keys()) | set(low_confidence.keys())
+        for path in affected_paths:
+            info = tracks_meta.get(path, {})
+            current = set(info.get("mytags", []))
+            add_tags = {tag for tag, _score, _thr in suggestions.get(path, [])}
+            updated = current | add_tags
+            if prune_margin > 0.0:
+                drop_tags = {tag for tag, _score, _thr in low_confidence.get(path, [])}
+                updated -= drop_tags
+            if updated != current:
+                updates[path] = sorted(updated)
+        if updates:
+            applied = bulk_set_track_tags(updates, only_existing=False)
+            console.print(f"[green]Applied tag updates to {applied} track(s).")
+        else:
+            console.print("[yellow]No tag changes required.")
 
 
 @app.command("export-xml")
@@ -266,6 +443,26 @@ def cmd_dup():
         console.print(f"[yellow]KEEP[/yellow] {keep}  ->  [red]REMOVE[/red] {lose}")
         for w in cdj_warnings(keep):
             console.print(f"  [magenta]{w}")
+
+
+@app.command("dup-stage")
+def cmd_dup_stage(
+    dest: pathlib.Path = typer.Option(pathlib.Path("data/dup_stage"), help="Folder to stage duplicates into."),
+    move: bool = typer.Option(False, help="Move files instead of copying."),
+    dry_run: bool = typer.Option(False, help="List actions without touching files."),
+):
+    from .duplicates import stage_duplicates
+
+    meta = load_meta()
+    staged = stage_duplicates(meta, str(dest), move=move, dry_run=dry_run)
+    if dry_run:
+        console.print(f"[cyan]Would stage {len(staged)} files -> {dest}")
+    else:
+        console.print(f"[green]Staged {len(staged)} files -> {dest}")
+    for src, tgt in staged[:20]:
+        console.print(f"  {src} -> {tgt}")
+    if len(staged) > 20:
+        console.print(f"...and {len(staged) - 20} more")
 
 
 @app.command("normalize")
