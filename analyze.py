@@ -1,7 +1,7 @@
 from __future__ import annotations
 import pathlib, numpy as np
 import librosa
-from typing import Iterable
+from typing import Callable, Iterable, Optional
 from .utils import load_meta, save_meta, file_sig, console
 try:
     from .features import samples_score, bass_contour
@@ -28,7 +28,7 @@ _PC_TO_NAME_SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
 def _estimate_tempo(y: np.ndarray, sr: int) -> float:
     # robust onset envelope + median tempo
     oe = librosa.onset.onset_strength(y=y, sr=sr)
-    t = librosa.beat.tempo(onset_envelope=oe, sr=sr, aggregate='median')
+    t = librosa.beat.tempo(onset_envelope=oe, sr=sr, aggregate=np.median)
     return float(t.item()) if np.ndim(t) else float(t)
 
 
@@ -64,6 +64,7 @@ def analyze_bpm_key(
     only_new: bool = True,
     force: bool = False,
     add_cues: bool = True,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> None:
     meta = load_meta()
     to_do = []
@@ -83,8 +84,28 @@ def analyze_bpm_key(
     if not to_do:
         console.print('[green]No BPM/Key work to do.')
         return
-    for p in to_do:
+    total = len(to_do)
+    progress: Progress | None = None
+    task_id: TaskID | None = None
+    if progress_callback is None:
+        progress = Progress(
+            "{task.description}",
+            BarColumn(bar_width=None),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeRemainingColumn(),
+        )
+        progress.start()
+        task_id = progress.add_task("Analyzing", total=total)
+
+    def _tick(idx: int, path: str):
+        if progress_callback is not None:
+            progress_callback(idx, total, path)
+        elif progress is not None and task_id is not None:
+            progress.advance(task_id)
+
+    for idx, p in enumerate(to_do, start=1):
         try:
+            _tick(idx, p)
             y, sr = librosa.load(p, sr=None, mono=True, duration=duration_s if duration_s>0 else None)
             bpm = _estimate_tempo(y, sr)
             camelot, full = _estimate_key(y, sr)
@@ -125,3 +146,5 @@ def analyze_bpm_key(
             save_meta(meta)
     save_meta(meta)
     console.print(f"[green]Analyzed {len(to_do)} files (BPM + Key).")
+    if progress is not None:
+        progress.stop()
