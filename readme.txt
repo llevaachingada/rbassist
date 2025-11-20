@@ -9,6 +9,8 @@ This is a simplified, no-stress starter you can push to GitHub and extend. It:
 
 > Rekordbox XML export + My Tags DB writes are not in this minimal starter. We'll add them next.
 
+Need a deeper overview? See [ABOUT.md](ABOUT.md) for the architecture snapshot, workflow, and contribution guide.
+
 ## Install (Windows 11, RTX 4060)
 
 1. **Create venv**
