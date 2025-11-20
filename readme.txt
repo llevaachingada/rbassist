@@ -9,7 +9,42 @@ This is a simplified, no-stress starter you can push to GitHub and extend. It:
 
 > Rekordbox XML export + My Tags DB writes are not in this minimal starter. We'll add them next.
 
-Need a deeper overview? See [ABOUT.md](ABOUT.md) for the architecture snapshot, workflow, and contribution guide.
+## About rbassist
+
+rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fast recommendations, and streamlined Rekordbox workflows without depending on cloud services. The repo bundles a Typer CLI, Streamlit GUI, and data pipelines that run locally on your GPU.
+
+### Highlights
+
+- Builds embeddings with `m-a-p/MERT-v1-330M` and caches them as `.npy` vectors.
+- Indexes embeddings via HNSWLIB for fast similarity lookups (`rbassist recommend`, GUI recommendations panel).
+- Imports Bandcamp CSV tags and Rekordbox My Tags, storing them in `config/tags.yml` + `data/meta.json`.
+- Analyzes BPM, Camelot key, cues, RMS/sample heuristics, and bass contours.
+- Offers Typer commands for embed/analyze/index/tags-auto/export-xml plus GUI equivalents (Streamlit).
+
+### Architecture Snapshot
+
+| Layer | Tech | Notes |
+| --- | --- | --- |
+| Embedding | PyTorch + Transformers | MERT-v1-330M, CUDA optional. |
+| Index/Search | HNSWLIB | Cosine ANN queries for recommendations. |
+| CLI | Typer | Commands under `rbassist` entry point. |
+| GUI | Streamlit | `rbassist/webapp.py`. |
+| Metadata | JSON/YAML | `data/meta.json`, `config/tags.yml`, `data/index`. |
+
+### Typical Workflow
+
+1. `rbassist embed "D:\Music\YourCrate" --duration-s 60 --device cuda --num-workers 4`
+2. `rbassist analyze "D:\Music\YourCrate" --duration-s 60`
+3. `rbassist index`
+4. `rbassist recommend "Artist - Track" --top 25` or launch the GUI via `streamlit run rbassist/webapp.py`.
+5. `rbassist tags-auto --margin 0.05 --apply` (or edit via GUI Auto Tag Suggestions).
+6. `rbassist export-xml --out rbassist.xml` for Rekordbox import.
+
+### Getting Involved
+
+- **Issues/ideas**: file them on GitHub with hardware + command logs.
+- **Pull requests**: follow existing Typer/Streamlit patterns, document new flags, add tests when touching analyze/embed/tagstore logic.
+- **Support**: share DJ workflow needs in discussions; the more context, the better the tuning advice.
 
 ## Install (Windows 11, RTX 4060)
 
