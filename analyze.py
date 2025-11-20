@@ -137,7 +137,7 @@ def analyze_bpm_key(
                     feats['samples'] = float(samples_score(y, sr))
                 if bass_contour is not None and 'bass_contour' not in feats:
                     contour, rel = bass_contour(y, sr)
-                    ds = librosa.util.fix_length(contour, 256).astype(float).tolist()
+                    ds = librosa.util.fix_length(contour, size=256).astype(float).tolist()
                     feats['bass_contour'] = { 'contour': ds, 'reliability': float(rel) }
             except Exception as e:
                 console.print(f"[yellow]Feature extract skip for {p}: {e}")
