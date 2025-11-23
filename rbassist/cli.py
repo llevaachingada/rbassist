@@ -5,9 +5,8 @@ import csv
 from datetime import datetime
 from typing import Iterable, List, Optional, Dict
 import typer
-from .utils import load_meta, save_meta, file_sig, console, walk_audio
+from .utils import load_meta, save_meta, file_sig, console, walk_audio, pick_device
 from .sampling_profile import load_sampling_params
-from .utils.device import pick_device
 
 # Krumhansl & Kessler key profiles (major/minor)
 _MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], dtype=float)
