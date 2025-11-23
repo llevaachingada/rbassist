@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Iterable, List, Optional, Dict
 import typer
 from .utils import load_meta, save_meta, file_sig, console, walk_audio
+from .sampling_profile import load_sampling_params
+from .utils.device import pick_device
 
 # Krumhansl & Kessler key profiles (major/minor)
 _MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], dtype=float)
@@ -165,6 +167,46 @@ def cmd_embed(
         device=(device or None),
         num_workers=num_workers,
     )
+
+
+@app.command("reanalyze")
+def cmd_reanalyze(
+    input: pathlib.Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True, readable=True, help="Root music folder"),
+    profile: str = typer.Option("club_hifi_150s", help="Sampling profile name from config/sampling.yml"),
+    device: str = typer.Option("auto", help="Compute device: auto|cuda|rocm|mps|cpu"),
+    workers: int = typer.Option(4, help="Parallel audio loaders (0=serial)"),
+    rebuild_index: bool = typer.Option(True, help="Rebuild HNSW index after embeddings"),
+    analyze_bpm: bool = typer.Option(True, help="Run BPM/Key analysis after embeddings"),
+    overwrite: bool = typer.Option(False, help="Overwrite existing embeddings/BPM/Key info"),
+):
+    from .embed import build_embeddings
+
+    params = load_sampling_params(profile)
+    dev = pick_device(None if device == "auto" else device)
+    files = walk_audio([str(input)])
+    if not files:
+        console.print("[yellow]No audio files found under input path.")
+        raise typer.Exit(1)
+    build_embeddings(
+        files,
+        duration_s=0,
+        device=dev,
+        num_workers=workers,
+        sampling=params,
+        overwrite=overwrite,
+    )
+    if analyze_bpm:
+        try:
+            from .analyze import analyze_bpm_key as run_analyze
+        except Exception:
+            run_analyze = analyze_bpm_key
+        run_analyze(files, duration_s=90, only_new=not overwrite, force=overwrite)
+    if rebuild_index:
+        try:
+            from .recommend import build_index
+            build_index()
+        except Exception as e:
+            console.print(f"[yellow]Index rebuild skipped: {e}")
 
 
 @app.command("index")

@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug analyze",
+      "type": "python",
+      "request": "launch",
+      "module": "rbassist.cli",
+      "args": [
+        "reanalyze", "--input", "${workspaceFolder}/Music",
+        "--profile", "club_hifi_150s",
+        "--device", "auto", "--workers", "6", "--rebuild-index"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Reanalyze Library",
+      "type": "shell",
+      "command": "python -m rbassist.cli reanalyze --profile club_hifi_150s --device auto --workers 6 --rebuild-index --input ${workspaceFolder}/Music",
+      "problemMatcher": []
+    }
+  ]
+}

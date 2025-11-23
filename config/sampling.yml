@@ -1,0 +1,12 @@
+sampling_profile: club_hifi_150s
+profiles:
+  club_hifi_150s:
+    start_skip_s: 10
+    main_len_s: 90
+    tail_region: 0.70
+    n_tail: 2
+    tail_len_s: 30
+    min_gap_s: 10
+    force_tail_in_last_60s: true
+    energy_onset_align: true
+    rng_seed: path_hash
