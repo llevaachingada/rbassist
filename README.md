@@ -19,7 +19,7 @@ rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fas
 
 | Layer | Tech | Notes |
 | --- | --- | --- |
-| Embedding | PyTorch + Transformers | MERT-v1-330M, CUDA optional. |
+| Embedding | PyTorch + Transformers | MERT-v1-330M, CUDA/ROCm optional. |
 | Index/Search | HNSWLIB | Cosine ANN queries for recommendations. |
 | CLI | Typer | Commands under `rbassist` entry point. |
 | GUI | Streamlit | `rbassist/webapp.py`. |
@@ -69,7 +69,8 @@ Speed tips (GPU + parallel I/O):
 ```powershell
 rbassist embed "D:\Music\YourCrate" --device cuda --num-workers 6 --duration-s 120
 ```
-- `--device cuda` uses your NVIDIA GPU (after installing CUDA Torch below).
+- `--device cuda` uses your NVIDIA GPU or an AMD ROCm build of PyTorch (after installing the matching Torch build below). Use
+  `--device mps` for Apple Silicon.
 - `--num-workers` parallelizes audio decoding (4-8 typical). Model inference stays serialized for stability.
 - `--duration-s` caps per-track analysis while testing.
 2) Build the HNSW index
@@ -105,7 +106,7 @@ Data lives under `data/` (embeddings, index, meta.json). This repo is safe to sy
 
 ## One-time setup for speed/features
 
-Install CUDA build of PyTorch (GPU):
+Install CUDA build of PyTorch (NVIDIA GPU):
 ```powershell
 pip install --upgrade --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 ```
@@ -145,3 +146,13 @@ Get-ChildItem "D:\Music\YourCrate" -Recurse -Filter *.mp3 | ForEach-Object {
 5. When the preview looks good, append `--apply` to write the suggestions back to config + meta.
    - Extras: `--csv suggestions.csv` exports a review file; `--save-suggestions` stores the preview inside `data/meta.json`; `--prune-margin 0.1 --apply` removes existing tags that fall below the learned confidence.
 
+Install ROCm build of PyTorch (AMD GPU on Linux):
+```bash
+pip install --upgrade --index-url https://download.pytorch.org/whl/rocm6.0 torch torchvision torchaudio
+```
+The ROCm wheels are published for Linux; on Windows and macOS, RB Assist will fall back to CPU unless CUDA (NVIDIA) or MPS
+support is available.
+
+ROCm does not require a separate fork of RB Assist—the same code and CLI work with either CUDA or ROCm builds of PyTorch. Use
+`--device cuda` or `--device rocm` to request the AMD GPU; the tool will fall back to CPU with a warning if ROCm is not
+available.

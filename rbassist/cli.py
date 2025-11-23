@@ -143,7 +143,10 @@ def cmd_embed(
     paths: List[str] = typer.Argument(..., help="Files or folders to embed"),
     duration_s: int = typer.Option(120, help="Seconds per track (0=full)"),
     model: str = typer.Option("m-a-p/MERT-v1-330M", help="HF model name for MERT"),
-    device: str = typer.Option(None, help="Compute device: 'cuda' or 'cpu' (auto if omitted)"),
+    device: str = typer.Option(
+        None,
+        help="Compute device: 'cuda' (NVIDIA/ROCm), 'rocm', 'mps', or 'cpu' (auto if omitted)",
+    ),
     num_workers: int = typer.Option(0, help="Parallel audio loaders (0=serial; 4-8 typical)"),
 ):
     try:
