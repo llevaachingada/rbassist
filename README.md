@@ -19,7 +19,7 @@ rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fas
 
 | Layer | Tech | Notes |
 | --- | --- | --- |
-| Embedding | PyTorch + Transformers | MERT-v1-330M, CUDA optional. |
+| Embedding | PyTorch + Transformers | MERT-v1-330M, CUDA/ROCm optional. |
 | Index/Search | HNSWLIB | Cosine ANN queries for recommendations. |
 | CLI | Typer | Commands under `rbassist` entry point. |
 | GUI | Streamlit | `rbassist/webapp.py`. |
@@ -69,7 +69,8 @@ Speed tips (GPU + parallel I/O):
 ```powershell
 rbassist embed "D:\Music\YourCrate" --device cuda --num-workers 6 --duration-s 120
 ```
-- `--device cuda` uses your NVIDIA GPU (after installing CUDA Torch below).
+- `--device cuda` uses your NVIDIA GPU or an AMD ROCm build of PyTorch (after installing the matching Torch build below). Use
+  `--device mps` for Apple Silicon.
 - `--num-workers` parallelizes audio decoding (4-8 typical). Model inference stays serialized for stability.
 - `--duration-s` caps per-track analysis while testing.
 2) Build the HNSW index
@@ -103,12 +104,67 @@ rbassist-gui  # launches the Streamlit app (same as `rbassist web`)
 
 Data lives under `data/` (embeddings, index, meta.json). This repo is safe to sync to GitHub; keep your audio outside the repo.
 
+### Keep your workspace tidy (Windows/Mac/Linux)
+
+If your `rbassist` folder has accumulated ZIPs, scripts, shortcuts, or loose `rbassist.xml` exports (as in the screenshot you shared), you can normalize it without touching your music files:
+
+```powershell
+# Dry run in the folder that looks messy (no files are moved yet)
+python scripts/organize_workspace.py C:\Users\you\Music\rbassist
+
+# Apply the moves into subfolders like exports/, archives/, scripts/, notes/
+python scripts/organize_workspace.py C:\Users\you\Music\rbassist --apply
+```
+
+Notes:
+- The helper is conservative: it only scans the top level of the folder you pass (no recursion) so tracks inside artist/album directories are untouched.
+- It routes common RB Assist artifacts into subfolders (`exports/` for `rbassist.xml`, `archives/` for `*.zip`, `scripts/` for `*.ps1`/`*.bat`, `notes/` for `*.txt`/`*.md`, `shortcuts/` for `.lnk`, `temp/` for `TEMP_*`).
+- Keep your git clone under a clean path (e.g., `C:\src\rbassist`) and point the CLI/GUI at your music folder (e.g., `C:\Users\you\Music`) to avoid mixing source code with library artifacts.
+
+## Checking which commits are ahead/behind
+
+If you want to sanity-check whether your local clone, Visual Studio, and any forks are in sync:
+
+1. Configure the remotes you want to compare (example):
+   ```bash
+   git remote add origin git@github.com:you/rbassist.git
+   git remote add upstream git@github.com:original-author/rbassist.git
+   ```
+2. Use the helper to see how far your current branch is ahead/behind its remote twin (defaults to `origin`), or to compare a specific branch name:
+   ```bash
+   scripts/git-sync-status.sh           # compare against origin/<current-branch>
+   scripts/git-sync-status.sh upstream  # compare against upstream/<current-branch>
+   scripts/git-sync-status.sh origin main  # compare local main to origin/main even if checked out elsewhere
+   ```
+   The script fetches the remote, reports ahead/behind counts, and prints the latest commits on both sides so you can line up with ChatGPT/Codex/VS.
+   - If you are in a detached HEAD state, pass the branch name explicitly (e.g., `scripts/git-sync-status.sh origin main`).
+   - The helper expects a local branch to compare; if it warns that the branch is missing, create/switch to one or track the remote with `git switch -c <branch> --track <remote>/<branch>`.
+3. To compare two specific commits/branches directly:
+   ```bash
+   git log --oneline --decorate --graph --boundary <lhs>.. <rhs>
+   git diff <lhs>...<rhs>   # three-dot shows changes that would be merged
+   ```
+4. Run `git status -sb` to confirm the tracking branch and check for any untracked files that might explain differences across environments.
+5. Share the `git rev-parse HEAD` hashes from each environment to confirm you are on the same commit.
+
+
 ## One-time setup for speed/features
 
-Install CUDA build of PyTorch (GPU):
+Install CUDA build of PyTorch (NVIDIA GPU):
 ```powershell
 pip install --upgrade --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 ```
+
+Install ROCm build of PyTorch (AMD GPU on Linux):
+```bash
+pip install --upgrade --index-url https://download.pytorch.org/whl/rocm6.0 torch torchvision torchaudio
+```
+The ROCm wheels are published for Linux; on Windows and macOS, RB Assist will fall back to CPU unless CUDA (NVIDIA) or MPS
+support is available.
+
+ROCm does not require a separate fork of RB Assist—the same code and CLI work with either CUDA or ROCm builds of PyTorch. Use
+`--device cuda` or `--device rocm` to request the AMD GPU; the tool will fall back to CPU with a warning if ROCm is not
+available.
 
 Install nnAudio (optional; enables fast CQT paths used by chroma features):
 ```powershell

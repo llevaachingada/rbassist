@@ -13,12 +13,40 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 DEFAULT_MODEL = "m-a-p/MERT-v1-330M"
 SAMPLE_RATE = 24000  # per model card
 
+
+def _resolve_device(requested: str | None) -> str:
+    if requested is None:
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+
+    normalized = requested.lower()
+    if normalized == "cuda":
+        if torch.cuda.is_available():
+            return "cuda"
+        console.print("[yellow]CUDA requested but not available; falling back to CPU.")
+        return "cpu"
+    if normalized in {"rocm", "hip"}:
+        if torch.cuda.is_available() and getattr(torch.version, "hip", None):
+            return "cuda"
+        console.print("[yellow]ROCm requested but not available; falling back to CPU.")
+        return "cpu"
+    if normalized == "mps":
+        if torch.backends.mps.is_available():
+            return "mps"
+        console.print("[yellow]MPS requested but not available; falling back to CPU.")
+        return "cpu"
+    if normalized == "cpu":
+        return "cpu"
+
+    raise ValueError(f"Unsupported device '{requested}'. Use 'cuda', 'rocm', 'mps', or 'cpu'.")
+
+
 class MertEmbedder:
     def __init__(self, model_name: str = DEFAULT_MODEL, device: str | None = None):
-        req = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        if req == "cuda" and not torch.cuda.is_available():
-            console.print("[yellow]CUDA requested but not available; falling back to CPU.")
-            req = "cpu"
+        req = _resolve_device(device)
         self.device = req
         self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(self.device)
         self.processor = Wav2Vec2FeatureExtractor.from_pretrained(model_name, trust_remote_code=True)
