@@ -159,7 +159,9 @@ RECOMMEND_PRESETS: Dict[str, Dict[str, float]] = {
 st.title("rbassist - Streamlit UI (open-source)")
 with st.sidebar:
     st.markdown("### Workspace")
-    root = st.text_input("Audio folder", value=str(pathlib.Path.home()))
+    if "audio_root" not in st.session_state:
+        st.session_state["audio_root"] = str(pathlib.Path.home())
+    root = st.text_input("Audio folder", key="audio_root", value=st.session_state["audio_root"])
     duration = st.number_input("Embed slice (sec)", 10, 180, 60)
     only_new = st.checkbox("Only new/changed", value=True)
     limit = st.number_input("Max files this run (0 = all)", 0, 10000, 0)
