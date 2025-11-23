@@ -10,7 +10,7 @@ except Exception as e:
 
 def run():
     link = ProDJLink(); link.start()
-    console.print("[green]Listening for Pro DJ Link devices… (Ctrl+C to stop)")
+    console.print("[green]Listening for Pro DJ Link devices... (Ctrl+C to stop)")
     try:
         while True:
             for pid, player in link.players.items():

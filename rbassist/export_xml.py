@@ -15,6 +15,21 @@ def write_rekordbox_xml(meta: dict, out_path: str, playlist_name: Optional[str] 
     tracks = meta.get("tracks", {})
     coll = SubElement(root, "COLLECTION", Entries=str(len(tracks)))
 
+    # Build global MyTag registry once so we can emit consistent IDs
+    all_tags = sorted(
+        {
+            tag
+            for info in tracks.values()
+            for tag in (info.get("mytags") or [])
+            if isinstance(tag, str) and tag.strip()
+        }
+    )
+    tag_ids = {tag: str(idx) for idx, tag in enumerate(all_tags, start=1)}
+    if tag_ids:
+        tag_root = SubElement(root, "MY_TAGS")
+        for tag, tag_id in tag_ids.items():
+            SubElement(tag_root, "TAG", ID=tag_id, Name=tag)
+
     for i, (path, info) in enumerate(tracks.items(), start=1):
         t = SubElement(coll, "TRACK", TrackID=str(i))
         t.set("Name", info.get("title",""))
@@ -47,6 +62,12 @@ def write_rekordbox_xml(meta: dict, out_path: str, playlist_name: Optional[str] 
                 End=f"{float(c.get('end',0.0)):.3f}",
                 Num=str(int(c.get("num",-1)))
             )
+
+        mytags = [m for m in info.get("mytags", []) if m in tag_ids]
+        if mytags:
+            mytag_node = SubElement(t, "MY_TAG")
+            for tag in mytags:
+                SubElement(mytag_node, "TAG", ID=tag_ids[tag], Name=tag)
 
     # Optional playlist keyed by Location
     pls = SubElement(root, "PLAYLISTS")

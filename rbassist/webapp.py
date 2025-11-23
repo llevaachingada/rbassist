@@ -196,7 +196,7 @@ with st.sidebar:
                                 st.markdown("[Install Demucs guide](https://github.com/facebookresearch/demucs) - or run: `pip install demucs`")
                         st.success("Saved. New scans will honor this mode.")
                         st.session_state.show_add_modal = False
-                        st.experimental_rerun()
+                        st.rerun()
 
     if not have_demucs():
         st.info("Demucs not detected - stems mode will skip splitting until installed.")
@@ -302,7 +302,7 @@ with st.expander("Weight presets & sliders", expanded=True):
     if st.button("Apply preset", key="apply_weight_preset"):
         st.session_state["weights"] = RECOMMEND_PRESETS[choice].copy()
         st.session_state["weight_preset"] = choice
-        st.experimental_rerun()
+        st.rerun()
     current = st.session_state["weights"]
     ann_val = st.slider("ANN weight", 0.0, 1.0, current.get("ann", 0.0), 0.05)
     samples_val = st.slider("Samples weight", 0.0, 1.0, current.get("samples", 0.0), 0.05)
@@ -463,7 +463,7 @@ with st.expander("Playlist browser & matching", expanded=False):
                 st.caption("Click below to push this track into the matching panel.")
                 if st.button("Use selected track as seed", key="playlist_use_seed"):
                     st.session_state["recommend_seed_override"] = selected_playlist_track
-                    st.experimental_rerun()
+                    st.rerun()
         else:
             st.info("No tracks matched the current filters.")
     with col_pl_b:
@@ -502,7 +502,7 @@ with st.expander("Playlist browser & matching", expanded=False):
                         if chosen != "(Select)":
                             if st.button("Use preset track as seed", key="playlist_preset_use"):
                                 st.session_state["recommend_seed_override"] = chosen
-                                st.experimental_rerun()
+                                st.rerun()
         else:
             st.info("No playlist presets saved yet.")
 
@@ -541,13 +541,13 @@ with col_load:
             st.session_state["pl_until"] = preset.get("until", "")
             st.session_state["pl_output"] = preset.get("output", f"{preset['name']}.xml")
             st.session_state["pl_preset_name"] = preset["name"]
-            st.experimental_rerun()
+            st.rerun()
 with col_delete:
     if st.button("Delete preset", disabled=selected_preset == "(None)"):
         delete_preset(selected_preset)
         st.success(f"Deleted preset {selected_preset}")
         st.session_state["pl_selected_preset"] = "(None)"
-        st.experimental_rerun()
+        st.rerun()
 with col_batch:
     if st.button("Export all presets", disabled=not presets):
         for preset in presets:
@@ -605,7 +605,7 @@ if st.button("Save preset"):
     )
     st.success(f"Saved preset {preset_name_input or st.session_state['pl_name']}")
     st.session_state["pl_selected_preset"] = preset_name_input or st.session_state["pl_name"]
-    st.experimental_rerun()
+    st.rerun()
 
 st.markdown("---")
 st.subheader("Tools")
@@ -657,11 +657,11 @@ with st.expander("Demucs cache & helpers", expanded=False):
         if col_sel.button("Clear selected caches", disabled=not selected_caches):
             removed = clear_cache(selected_caches)
             st.success(f"Cleared {removed} cache directories.")
-            st.experimental_rerun()
+            st.rerun()
         if col_all.button("Clear all caches", disabled=not caches):
             removed = clear_cache(None)
             st.success(f"Cleared {removed} cache directories.")
-            st.experimental_rerun()
+            st.rerun()
     else:
         st.info("No cached stems yet.")
     if not have_demucs():
@@ -824,7 +824,7 @@ if auto_state.get("suggestions"):
 
     if col_auto_clear.button("Clear", key="auto_clear_btn"):
         st.session_state["auto_tags"] = {}
-        st.experimental_rerun()
+        st.rerun()
 
 st.divider()
 st.subheader("Track MyTags")
@@ -843,11 +843,11 @@ if track_choices:
             set_available_tags([new_tag_value.strip()])
         set_track_tags(selected_track, combined)
         st.success("Updated tags.")
-        st.experimental_rerun()
+        st.rerun()
     if col_tag_clear.button("Clear tags", disabled=not current_tags):
         set_track_tags(selected_track, [])
         st.success("Cleared tags.")
-        st.experimental_rerun()
+        st.rerun()
 else:
     st.info("No tracks in metadata yet. Run Embed/Analyze to populate tracks.")
 
@@ -859,7 +859,7 @@ with st.expander("Available tag library", expanded=False):
         if add_tag.strip():
             set_available_tags([add_tag.strip()])
             st.success(f"Added tag '{add_tag.strip()}'.")
-            st.experimental_rerun()
+            st.rerun()
 
 st.divider()
 st.subheader("Library Browser")
@@ -928,12 +928,12 @@ if bulk_options:
         for path in bulk_selected:
             set_folder_mode(path, "baseline")
         st.success(f"Updated {len(bulk_selected)} folder(s) to baseline.")
-        st.experimental_rerun()
+        st.rerun()
     if col_bulk_b.button("Set to stems", disabled=not bulk_selected):
         for path in bulk_selected:
             set_folder_mode(path, "stems")
         st.success(f"Updated {len(bulk_selected)} folder(s) to stems.")
-        st.experimental_rerun()
+        st.rerun()
 
 st.divider()
 st.subheader("Mirror Online CSV -> Rekordbox XML")

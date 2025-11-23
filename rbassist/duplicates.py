@@ -1,7 +1,8 @@
 from __future__ import annotations
 import pathlib
 from collections import defaultdict
-from typing import Tuple
+from typing import List, Tuple
+import shutil
 
 try:
     from mutagen import File as MFile  # type: ignore
@@ -64,3 +65,26 @@ def cdj_warnings(path: str) -> list[str]:
         warns.append(f"Sample rate {sr}Hz may be unsupported")
     return warns
 
+
+def stage_duplicates(meta: dict, dest_root: str, move: bool = False, dry_run: bool = False) -> List[Tuple[str, str]]:
+    """Copy or move duplicate files into a staging directory for review."""
+    dest = pathlib.Path(dest_root).expanduser()
+    dest.mkdir(parents=True, exist_ok=True)
+    staged: List[Tuple[str, str]] = []
+    for keep, lose in find_duplicates(meta):
+        src = pathlib.Path(lose)
+        if not src.exists():
+            continue
+        target = dest / src.name
+        counter = 1
+        while target.exists():
+            target = dest / f"{src.stem}_{counter}{src.suffix}"
+            counter += 1
+        staged.append((str(src), str(target)))
+        if dry_run:
+            continue
+        if move:
+            shutil.move(str(src), target)
+        else:
+            shutil.copy2(str(src), target)
+    return staged

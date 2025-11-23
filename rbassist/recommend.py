@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import json, pathlib, numpy as np
 from typing import List, Dict, Optional
 import hnswlib
@@ -33,12 +33,12 @@ class HnswIndex:
 def build_index() -> None:
     meta = load_meta()
     vectors, labels, paths = [], [], []
-    for i, (path, info) in enumerate(meta.get("tracks", {}).items()):
+    for path, info in meta.get("tracks", {}).items():
         epath = info.get("embedding")
         if not epath or not pathlib.Path(epath).exists():
             continue
         vectors.append(np.load(epath))
-        labels.append(i)
+        labels.append(len(paths))
         paths.append(path)
     if not vectors:
         console.print("[yellow]No embeddings found. Run: rbassist embed-build ...")
@@ -48,7 +48,7 @@ def build_index() -> None:
     (IDX / "hnsw.idx").parent.mkdir(parents=True, exist_ok=True)
     idx.save(str(IDX / "hnsw.idx"))
     json.dump(paths, open(IDX / "paths.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    console.print(f"[green]Indexed {len(paths)} tracks → {IDX / 'hnsw.idx'}")
+    console.print(f"[green]Indexed {len(paths)} tracks -> {IDX / 'hnsw.idx'}")
 
 
 def _tempo_note(seed_bpm: float | None, cand_bpm: float | None, pct: float, allow_doubletime: bool) -> str:
@@ -56,11 +56,11 @@ def _tempo_note(seed_bpm: float | None, cand_bpm: float | None, pct: float, allo
         return ""
     ratio = cand_bpm / seed_bpm if seed_bpm else 1.0
     if abs(ratio - 1.0) <= (pct / 100.0):
-        return "≈"
+        return "~"
     if allow_doubletime and 1.94 <= ratio <= 2.06:
-        return "2×"
+        return "2x"
     if allow_doubletime and 0.47 <= ratio <= 0.53:
-        return "½×"
+        return "1/2x"
     return ""
 
 

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import os, json, math, pathlib
 from typing import Iterable
 from rich.console import Console
@@ -61,15 +61,15 @@ def _mod12(n: int) -> int:
 
 
 def camelot_relation(seed: str | None, cand: str | None) -> tuple[bool, str]:
-    """Return (ok, rule_name) according to DJ rules.
+    """Return (ok, rule_name) according to DJ Camelot mixing rules.
     Rules implemented:
-      • Same Key
-      • Camelot ±1 (same letter)
-      • Relative Major/Minor (same number, switch letter)
-      • Raising energy  +7 (same letter, UP only)
-      • Energy Boost ++ +2 (same letter, UP only)
-      • Mood Shifter: minor→Major (+3 & change letter) | Major→minor (−3 & change letter)
-    If a key is missing/unparsable, return (True, "-") to avoid over-filtering.
+      - Same Key
+      - Camelot +/-1 (same letter)
+      - Relative Major/Minor (same number, switch letter)
+      - Raising energy +7 (same letter, up only)
+      - Energy Boost ++ +2 (same letter, up only)
+      - Mood Shifter: minor->Major (+3 & change letter) | Major->minor (-3 & change letter)
+    If a key is missing or unparseable, return (True, "-") to avoid over-filtering.
     """
     s = _parse_camelot(seed)
     c = _parse_camelot(cand)
@@ -82,9 +82,9 @@ def camelot_relation(seed: str | None, cand: str | None) -> tuple[bool, str]:
     if sn == cn and sl == cl:
         return True, "Same Key"
 
-    # Camelot neighbors ±1 (same letter)
+    # Camelot neighbors +/-1 (same letter)
     if sl == cl and (cn == _mod12(sn + 1) or cn == _mod12(sn - 1)):
-        return True, "Camelot ±1"
+        return True, "Camelot +/-1"
 
     # Relative major/minor (same number, switch letter)
     if sn == cn and sl != cl:
@@ -98,13 +98,13 @@ def camelot_relation(seed: str | None, cand: str | None) -> tuple[bool, str]:
     if sl == cl and cn == _mod12(sn + 2):
         return True, "Energy Boost ++ (+2)"
 
-    # Mood Shifter: minor→Major (+3 & change letter)
+    # Mood Shifter: minor->Major (+3 & change letter)
     if sl == "A" and cl == "B" and cn == _mod12(sn + 3):
-        return True, "Mood Shifter (min→Maj +3)"
+        return True, "Mood Shifter (min->Maj +3)"
 
-    # Mood Shifter: Major→minor (−3 & change letter)
+    # Mood Shifter: Major->minor (-3 & change letter)
     if sl == "B" and cl == "A" and cn == _mod12(sn - 3):
-        return True, "Mood Shifter (Maj→min -3)"
+        return True, "Mood Shifter (Maj->min -3)"
 
     return False, "-"
 

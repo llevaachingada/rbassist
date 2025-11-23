@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rbassist"
+version = "0.1.0"
+description = "Rekordbox Assist: beatgrid+key helpers, audio similarity, smart crates"
+authors = [{ name = "You" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "typer[all]~=0.12",
+  "rich~=13.7",
+  "numpy~=1.26",
+  "librosa~=0.10",
+  "soundfile~=0.12",
+  "tqdm~=4.66",
+  "pandas~=2.2",
+  "pyyaml~=6.0.1"
+]
+
+[project.optional-dependencies]
+stems = ["demucs"]
+ml = ["transformers>=4.40", "accelerate>=0.28", "datasets>=2.18"]
+audio = ["mutagen>=1.47", "pyloudnorm>=0.1.1", "pydub>=0.25.1"]
+ann = ["hnswlib>=0.8"]
+web = ["streamlit>=1.30", "streamlit-modal>=0.1.1,<0.1.3"]
+
+[project.scripts]
+rbassist = "rbassist.cli:app"
+rbassist-gui = "rbassist.gui:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["rbassist*"]
+exclude = ["tests*", "data*", "config*"]
