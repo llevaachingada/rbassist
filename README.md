@@ -1,8 +1,8 @@
-REK0RDB0X Tools that DJS need compiled by DJ Dumpsterfire AKA HUNTER S
+REK0RDB0X TOOLS that DJS need ~ compiled by DJ Dumpsterfire aka HUNTER S
 
-Can we build local repositories better and stronger than AlphaTheta's Failing software platform?
+Can we build local repositories better and stronger than AlphaTheta's failing software platform?
 
-Pioneer hardware is The golden standard for a reason, But the software has been failing us DJS working in the field
+Pioneer hardware is the golden standard for a reason, but the software backend has been failing us DJS working in the field
 Is there a world where open source players and hardware can be fed by locally customized software? 
 
 rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fast recommendations, and streamlined Rekordbox workflows without depending on cloud services. The repo bundles a Typer CLI, Streamlit GUI, and data pipelines that run locally on your GPU.
