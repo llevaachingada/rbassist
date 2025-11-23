@@ -1,5 +1,7 @@
 REK0RDB0X Tools that DJS need compiled by DJ Dumpsterfire AKA HUNTER S
+
 Can we build local repositories better and stronger than AlphaTheta's Failing software platform?
+
 Pioneer hardware is The golden standard for a reason, But the software has been failing us DJS working in the field
 Is there a world where open source players and hardware can be fed by locally customized software? 
 
