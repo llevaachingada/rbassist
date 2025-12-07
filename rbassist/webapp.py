@@ -1,7 +1,15 @@
+
+
+
+
+
+\
 from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
+import sys
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
@@ -122,15 +130,25 @@ def _clear_track_dataframe_cache() -> None:
 
 
 def _pick_folder_dialog() -> str | None:
+    """Launch a short-lived helper process to pick a folder via Tk."""
+    script = r"""
+import tkinter as tk
+from tkinter import filedialog
+root = tk.Tk()
+root.withdraw()
+root.wm_attributes("-topmost", 1)
+folder = filedialog.askdirectory()
+root.destroy()
+print(folder)
+"""
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes("-topmost", 1)
-        folder = filedialog.askdirectory()
-        root.destroy()
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        folder = (result.stdout or "").strip()
         return folder or None
     except Exception as e:
         # If Tk isn't available (e.g., headless), fall back to manual entry.
@@ -140,17 +158,27 @@ def _pick_folder_dialog() -> str | None:
 
 def folder_input(label: str, key: str, default: str) -> str:
     """Text input with a Browse button that opens a local folder picker."""
-    if key not in st.session_state:
+    widget_key = f"{key}_input"
+    pending_key = f"{key}_pending"
+
+    # Apply any pending selection from a previous Browse click before rendering widgets.
+    if pending_key in st.session_state:
+        val = st.session_state.pop(pending_key)
+        st.session_state[key] = val
+        st.session_state[widget_key] = val
+    elif key not in st.session_state:
         st.session_state[key] = default
+
     cols = st.columns([4, 1])
     with cols[0]:
-        path_val = st.text_input(label, value=st.session_state[key], key=key)
+        path_val = st.text_input(label, value=st.session_state[key], key=widget_key)
         st.session_state[key] = path_val
     with cols[1]:
         if st.button("Browse", key=f"{key}_browse"):
             chosen = _pick_folder_dialog()
             if chosen:
-                st.session_state[key] = chosen
+                # Store in a temporary key so the update happens on the next run before widget creation.
+                st.session_state[pending_key] = chosen
                 st.rerun()
     return st.session_state[key]
 
@@ -194,7 +222,8 @@ st.title("rbassist - Streamlit UI (open-source)")
 with st.sidebar:
     st.markdown("### Workspace")
     root = folder_input("Audio folder", key="audio_root", default=str(pathlib.Path.home()))
-    duration = st.number_input("Embed slice (sec)", 10, 180, 60)
+    # Default aligns with club_hifi_150s sampling profile (90s main + 2x30s tails)
+    duration = st.number_input("Embed slice (sec)", 10, 180, 150)
     only_new = st.checkbox("Only new/changed", value=True)
     limit = st.number_input("Max files this run (0 = all)", 0, 10000, 0)
     st.divider()

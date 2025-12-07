@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os, json, math, pathlib
 from typing import Iterable
+from datetime import datetime
 from rich.console import Console
 import torch
 
@@ -31,9 +32,19 @@ def walk_audio(paths: Iterable[str]) -> list[str]:
 
 
 def load_meta() -> dict:
-    if META.exists():
+    """Load meta.json; if corrupt/empty, back it up and reset to defaults."""
+    if not META.exists():
+        return {"tracks": {}}  # path -> info
+    try:
         return json.loads(META.read_text("utf-8"))
-    return {"tracks": {}}  # path -> info
+    except Exception:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        backup = META.with_name(f"meta.json.corrupt_{ts}")
+        try:
+            backup.write_text(META.read_text("utf-8"), encoding="utf-8")
+        except Exception:
+            pass
+        return {"tracks": {}}
 
 
 def save_meta(meta: dict) -> None:

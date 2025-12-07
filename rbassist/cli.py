@@ -132,13 +132,6 @@ def main() -> None:
     app()
 
 
-if __name__ == "__main__":
-    main()
-
-# ------------------------------
-# Additional Commands
-# ------------------------------
-
 @app.command("embed")
 def cmd_embed(
     paths: List[str] = typer.Argument(..., help="Files or folders to embed"),
@@ -171,7 +164,7 @@ def cmd_embed(
 @app.command("reanalyze")
 def cmd_reanalyze(
     input: pathlib.Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True, readable=True, help="Root music folder"),
-    profile: str = typer.Option("club_hifi_150s", help="Sampling profile name from config/sampling.yml"),
+    profile: Optional[str] = typer.Option(None, help="Sampling profile name from config/sampling.yml (defaults to sampling_profile value)"),
     device: str = typer.Option("auto", help="Compute device: auto|cuda|rocm|mps|cpu"),
     workers: int = typer.Option(4, help="Parallel audio loaders (0=serial)"),
     rebuild_index: bool = typer.Option(True, help="Rebuild HNSW index after embeddings"),
@@ -180,7 +173,7 @@ def cmd_reanalyze(
 ):
     from .embed import build_embeddings
 
-    params = load_sampling_params(profile)
+    params = load_sampling_params(profile or "")
     dev = pick_device(None if device == "auto" else device)
     files = walk_audio([str(input)])
     if not files:
@@ -546,3 +539,7 @@ def cmd_features(root: str, limit: int = 0, duration_s: int = 90):
     # Run through analyze_bpm_key with only_new=True to compute features for new files
     _noop(files, duration_s=duration_s, only_new=False, force=False)
     console.print(f"[green]Feature backfill attempted for {len(files)} files")
+
+
+if __name__ == "__main__":
+    main()
