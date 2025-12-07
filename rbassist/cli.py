@@ -1,105 +1,13 @@
 from __future__ import annotations
-import pathlib, numpy as np
+import pathlib
 import librosa
 import csv
 from datetime import datetime
-from typing import Iterable, List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 import typer
-from .utils import load_meta, save_meta, file_sig, console, walk_audio, pick_device
+from .analyze import analyze_bpm_key
+from .utils import load_meta, save_meta, console, walk_audio, pick_device
 from .sampling_profile import load_sampling_params
-
-# Krumhansl & Kessler key profiles (major/minor)
-_MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], dtype=float)
-_MIN = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17], dtype=float)
-
-# Mapping from pitch class name (sharp) to Camelot
-_CAML_MAJ = {
-    'C':'8B','C#':'3B','D':'10B','D#':'5B','E':'12B','F':'7B',
-    'F#':'2B','G':'9B','G#':'4B','A':'11B','A#':'6B','B':'1B'
-}
-_CAML_MIN = {
-    'C':'5A','C#':'12A','D':'7A','D#':'2A','E':'9A','F':'4A',
-    'F#':'11A','G':'6A','G#':'1A','A':'8A','A#':'3A','B':'10A'
-}
-_PC_TO_NAME_SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
-
-
-def _estimate_tempo(y: np.ndarray, sr: int) -> float:
-    # robust onset envelope + median tempo
-    oe = librosa.onset.onset_strength(y=y, sr=sr)
-    t = librosa.beat.tempo(onset_envelope=oe, sr=sr, aggregate='median')
-    return float(t.item()) if np.ndim(t) else float(t)
-
-
-def _estimate_key(y: np.ndarray, sr: int) -> tuple[str, str]:
-    # average chroma; compare to rotated key profiles
-    C = librosa.feature.chroma_cqt(y=y, sr=sr)
-    chroma = C.mean(axis=1)
-    if np.linalg.norm(chroma) > 0:
-        chroma = chroma / np.linalg.norm(chroma)
-    best_score = -1e9
-    best = (0, 'maj')
-    for pc in range(12):
-        maj_s = float(chroma @ np.roll(_MAJ, pc))
-        min_s = float(chroma @ np.roll(_MIN, pc))
-        if maj_s > best_score:
-            best_score, best = maj_s, (pc, 'maj')
-        if min_s > best_score:
-            best_score, best = min_s, (pc, 'min')
-    pc, mode = best
-    name = _PC_TO_NAME_SHARP[pc]
-    if mode == 'maj':
-        camelot = _CAML_MAJ[name]
-        full = f"{name} major"
-    else:
-        camelot = _CAML_MIN[name]
-        full = f"{name} minor"
-    return camelot, full
-
-
-def analyze_bpm_key(paths: Iterable[str], duration_s: int = 90, only_new: bool = True, force: bool = False) -> None:
-    meta = load_meta()
-    to_do = []
-    for p in paths:
-        info = meta['tracks'].setdefault(p, {})
-        sig = file_sig(p)
-        have = ('bpm' in info and 'key' in info)
-        if force:
-            to_do.append(p)
-        elif only_new:
-            if have and info.get('sig_bpmkey') == sig:
-                continue
-            to_do.append(p)
-        else:
-            if not have:
-                to_do.append(p)
-    if not to_do:
-        console.print('[green]No BPM/Key work to do.')
-        return
-    for p in to_do:
-        try:
-            y, sr = librosa.load(p, sr=None, mono=True, duration=duration_s if duration_s>0 else None)
-            bpm = _estimate_tempo(y, sr)
-            camelot, full = _estimate_key(y, sr)
-            info = meta['tracks'].setdefault(p, {})
-            info['bpm'] = round(float(bpm), 2)
-            info['key'] = camelot
-            info['key_name'] = full
-            info['sig_bpmkey'] = file_sig(p)
-            # best-effort title/artist from filename if missing
-            stem = pathlib.Path(p).stem
-            if ' - ' in stem:
-                a, t = stem.split(' - ', 1)
-                info.setdefault('artist', a)
-                info.setdefault('title', t)
-            else:
-                info.setdefault('title', stem)
-        except Exception as e:
-            console.print(f"[red]BPM/Key failed for {p}: {e}")
-        finally:
-            save_meta(meta)
-    save_meta(meta)
-    console.print(f"[green]Analyzed {len(to_do)} files (BPM + Key).")
 
 
 # ------------------------------
@@ -114,18 +22,20 @@ def cmd_analyze(
     paths: List[str] = typer.Argument(..., help="One or more files or folders to analyze"),
     duration_s: int = typer.Option(90, help="Max seconds per track to analyze (0 = full)"),
     only_new: bool = typer.Option(True, help="Skip files already analyzed with same signature"),
-    force: bool = typer.Option(False, help="Force re-analyze even if cached")
+    force: bool = typer.Option(False, help="Force re-analyze even if cached"),
+    workers: int = typer.Option(0, help="Process workers for BPM/Key (0 = serial)"),
 ):
     files = walk_audio(paths)
     if not files:
         console.print("[yellow]No audio files found in given paths.")
         raise typer.Exit(code=1)
-    try:
-        from .analyze import analyze_bpm_key as run_analyze
-    except Exception:
-        # Fallback to local implementation if needed
-        run_analyze = analyze_bpm_key
-    run_analyze(files, duration_s=duration_s, only_new=only_new, force=force)
+    analyze_bpm_key(
+        files,
+        duration_s=duration_s,
+        only_new=only_new,
+        force=force,
+        workers=(workers if workers > 0 else None),
+    )
 
 
 def main() -> None:
@@ -142,6 +52,9 @@ def cmd_embed(
         help="Compute device: 'cuda' (NVIDIA/ROCm), 'rocm', 'mps', or 'cpu' (auto if omitted)",
     ),
     num_workers: int = typer.Option(0, help="Parallel audio loaders (0=serial; 4-8 typical)"),
+    batch_size: Optional[int] = typer.Option(
+        None, help="Model batch size (auto: ~4 on GPU, 1 on CPU)"
+    ),
 ):
     try:
         from .embed import build_embeddings, DEFAULT_MODEL
@@ -158,6 +71,7 @@ def cmd_embed(
         duration_s=duration_s,
         device=(device or None),
         num_workers=num_workers,
+        batch_size=batch_size,
     )
 
 
@@ -170,6 +84,7 @@ def cmd_reanalyze(
     rebuild_index: bool = typer.Option(True, help="Rebuild HNSW index after embeddings"),
     analyze_bpm: bool = typer.Option(True, help="Run BPM/Key analysis after embeddings"),
     overwrite: bool = typer.Option(False, help="Overwrite existing embeddings/BPM/Key info"),
+    analyze_workers: int = typer.Option(0, help="Process workers for BPM/Key (0 = serial)"),
 ):
     from .embed import build_embeddings
 
@@ -188,11 +103,13 @@ def cmd_reanalyze(
         overwrite=overwrite,
     )
     if analyze_bpm:
-        try:
-            from .analyze import analyze_bpm_key as run_analyze
-        except Exception:
-            run_analyze = analyze_bpm_key
-        run_analyze(files, duration_s=90, only_new=not overwrite, force=overwrite)
+        analyze_bpm_key(
+            files,
+            duration_s=90,
+            only_new=not overwrite,
+            force=overwrite,
+            workers=(analyze_workers if analyze_workers > 0 else None),
+        )
     if rebuild_index:
         try:
             from .recommend import build_index
@@ -202,13 +119,15 @@ def cmd_reanalyze(
 
 
 @app.command("index")
-def cmd_index():
+def cmd_index(
+    incremental: bool = typer.Option(False, "--incremental", help="Incremental index build (add new embeddings)")
+):
     try:
         from .recommend import build_index
     except Exception as e:
         console.print(f"[red]Index deps missing (hnswlib). Error: {e}")
         raise typer.Exit(1)
-    build_index()
+    build_index(incremental=incremental)
 
 
 @app.command("recommend")
@@ -235,6 +154,19 @@ def cmd_recommend(
         camelot_neighbors=camelot_neighbors,
         weights={"ann": w_ann, "samples": w_samples, "bass": w_bass},
     )
+
+
+@app.command("recommend-sequence")
+def cmd_recommend_sequence(
+    seeds: List[str] = typer.Argument(..., help="One or more seed paths or substrings"),
+    top: int = typer.Option(25, help="Top N results to return"),
+):
+    try:
+        from .recommend import recommend_sequence as do_rec_seq
+    except Exception as e:
+        console.print(f"[red]Recommend deps missing (hnswlib). Error: {e}")
+        raise typer.Exit(1)
+    do_rec_seq(seeds, top=top)
 
 
 @app.command("bandcamp-import")
@@ -471,10 +403,10 @@ def cmd_intelligent_playlist(out: str = "rb_intelligent.xml",
 
 
 @app.command("dup-check")
-def cmd_dup():
+def cmd_dup(exact: bool = typer.Option(False, "--exact", help="Use content hash for exact duplicates")):
     from .duplicates import find_duplicates, cdj_warnings
     meta = load_meta()
-    pairs = find_duplicates(meta)
+    pairs = find_duplicates(meta, exact=exact)
     console.print(f"[cyan]Duplicates: {len(pairs)}")
     for keep, lose in pairs:
         console.print(f"[yellow]KEEP[/yellow] {keep}  ->  [red]REMOVE[/red] {lose}")
@@ -487,11 +419,12 @@ def cmd_dup_stage(
     dest: pathlib.Path = typer.Option(pathlib.Path("data/dup_stage"), help="Folder to stage duplicates into."),
     move: bool = typer.Option(False, help="Move files instead of copying."),
     dry_run: bool = typer.Option(False, help="List actions without touching files."),
+    exact: bool = typer.Option(False, "--exact", help="Use content hash for exact duplicates"),
 ):
     from .duplicates import stage_duplicates
 
     meta = load_meta()
-    staged = stage_duplicates(meta, str(dest), move=move, dry_run=dry_run)
+    staged = stage_duplicates(meta, str(dest), move=move, dry_run=dry_run, exact=exact)
     if dry_run:
         console.print(f"[cyan]Would stage {len(staged)} files -> {dest}")
     else:

@@ -13,13 +13,14 @@ from .sampling_profile import SamplingParams, pick_windows
 
 DEFAULT_MODEL = "m-a-p/MERT-v1-330M"
 SAMPLE_RATE = 24000  # per model card
+os.environ.setdefault("HF_HOME", str(pathlib.Path.home() / ".cache" / "huggingface"))
 
 
 def _resolve_device(requested: str | None) -> str:
     if requested is None:
         if torch.cuda.is_available():
             return "cuda"
-        if torch.backends.mps.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
         return "cpu"
 
@@ -35,7 +36,7 @@ def _resolve_device(requested: str | None) -> str:
         console.print("[yellow]ROCm requested but not available; falling back to CPU.")
         return "cpu"
     if normalized == "mps":
-        if torch.backends.mps.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
         console.print("[yellow]MPS requested but not available; falling back to CPU.")
         return "cpu"
@@ -62,6 +63,22 @@ class MertEmbedder:
         feats = out.hidden_states[-1].squeeze(0)  # [T, 1024]
         vec = feats.mean(dim=0).cpu().numpy().astype(np.float32)
         return vec
+
+    def encode_batch(self, items: list[tuple[np.ndarray, int]]) -> list[np.ndarray]:
+        """Batch version of encode_array; items are (audio, sr)."""
+        if not items:
+            return []
+        arrays: list[np.ndarray] = []
+        for y, sr in items:
+            if sr != SAMPLE_RATE:
+                y = librosa.resample(y, orig_sr=sr, target_sr=SAMPLE_RATE)
+            arrays.append(y)
+        inputs = self.processor(arrays, sampling_rate=SAMPLE_RATE, return_tensors="pt", padding=True)
+        with torch.no_grad():
+            out = self.model(**{k: v.to(self.device) for k, v in inputs.items()}, output_hidden_states=True)
+        feats = out.hidden_states[-1]  # [B, T, 1024]
+        vecs = feats.mean(dim=1).cpu().numpy().astype(np.float32)
+        return [vecs[i] for i in range(len(items))]
 
     def embed(self, audio_path: str, duration_s: int = 120) -> np.ndarray:
         y, sr = librosa.load(audio_path, sr=None, mono=True)
@@ -98,6 +115,7 @@ def build_embeddings(
     num_workers: int = 0,
     sampling: Optional[SamplingParams] = None,
     overwrite: bool = True,
+    batch_size: Optional[int] = None,
 ) -> None:
     meta = load_meta()
     emb = MertEmbedder(model_name=model_name, device=device)
@@ -140,67 +158,121 @@ def build_embeddings(
 
     progress: Progress | None = None
     task_id: int | None = None
-    if progress_callback is None:
-        progress = Progress(transient=True)
-        progress.start()
-        task_id = progress.add_task("Embedding", total=total)
+    try:
+        effective_batch = 1
+        if sampling is not None:
+            # Sampling path performs its own per-segment embedding; keep serial.
+            effective_batch = 1
+        else:
+            effective_batch = 4 if emb.device != "cpu" else 1
+        batch_size = effective_batch if batch_size is None else max(1, int(batch_size))
 
-    def _tick():
-        if progress is not None and task_id is not None:
-            progress.advance(task_id)
+        if progress_callback is None:
+            progress = Progress(transient=True)
+            progress.start()
+            task_id = progress.add_task("Embedding", total=total)
 
-    # Parallelize I/O + decode; keep model inference serialized to avoid GPU thrash
-    workers = max(0, int(num_workers))
-    done = 0
-    if workers > 0:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            future_map = {ex.submit(_load, src): (orig, src, used) for (orig, src, used) in jobs}
-            for fut in as_completed(future_map):
-                orig, src, used = future_map[fut]
+        def _tick():
+            if progress is not None and task_id is not None:
+                progress.advance(task_id)
+
+        def _save_embedding(orig: str, vec: np.ndarray, used: str) -> None:
+            out = EMB / (pathlib.Path(orig).stem + ".npy")
+            vec_fp16 = vec.astype(np.float16)
+            np.save(out, vec_fp16)
+            info = meta["tracks"].setdefault(orig, {})
+            info.setdefault("artist", pathlib.Path(orig).stem.split(" - ")[0] if " - " in pathlib.Path(orig).stem else "")
+            info.setdefault("title", pathlib.Path(orig).stem.split(" - ")[-1])
+            info["embedding"] = str(out)
+            info["embedding_source"] = used
+
+        # Parallelize I/O + decode; keep model inference batched to reduce GPU overhead
+        workers = max(0, int(num_workers))
+        done = 0
+        batch: list[tuple[str, str, np.ndarray, int, str]] = []
+
+        def _flush_batch() -> None:
+            nonlocal done
+            if not batch:
+                return
+            try:
+                if sampling is not None:
+                    # Should not enter batching when sampling is active, but guard anyway.
+                    for orig, src_path, _y, _sr, used in batch:
+                        vec = embed_with_sampling(src_path, emb, sampling)
+                        _save_embedding(orig, vec, used)
+                        done += 1
+                        if progress_callback is not None:
+                            progress_callback(done, total, orig)
+                        else:
+                            _tick()
+                    batch.clear()
+                    return
+                vecs = emb.encode_batch([(y, sr) for (_orig, _src, y, sr, _used) in batch])
+            except Exception as e:
+                console.print(f"[red]Embedding batch failed for {[b[0] for b in batch]}: {e}")
+                vecs = [None] * len(batch)
+
+            for (orig, _src, _y, _sr, used), vec in zip(batch, vecs):
                 try:
-                    y, sr = fut.result()
-                    if sampling is not None:
-                        vec = embed_with_sampling(src, emb, sampling)
-                    else:
-                        vec = emb.encode_array(y, sr)
-                    out = EMB / (pathlib.Path(orig).stem + ".npy")
-                    np.save(out, vec)
-                    info = meta["tracks"].setdefault(orig, {})
-                    info.setdefault("artist", pathlib.Path(orig).stem.split(" - ")[0] if " - " in pathlib.Path(orig).stem else "")
-                    info.setdefault("title", pathlib.Path(orig).stem.split(" - ")[-1])
-                    info["embedding"] = str(out)
-                    info["embedding_source"] = used
-                except Exception as e:
-                    console.print(f"[red]Embedding failed for {orig}: {e}")
+                    if vec is None:
+                        continue
+                    _save_embedding(orig, vec, used)
+                except Exception as se:
+                    console.print(f"[red]Embedding failed for {orig}: {se}")
                 finally:
                     done += 1
                     if progress_callback is not None:
                         progress_callback(done, total, orig)
                     else:
                         _tick()
-    else:
-        # Simple serial path
-        for idx, (orig, src, used) in enumerate(jobs, start=1):
-            try:
-                if progress_callback is not None:
-                    progress_callback(idx, total, orig)
-                if sampling is not None:
-                    vec = embed_with_sampling(src, emb, sampling)
-                else:
-                    vec = emb.embed(src, duration_s=duration_s)
-                out = EMB / (pathlib.Path(orig).stem + ".npy")
-                np.save(out, vec)
-                info = meta["tracks"].setdefault(orig, {})
-                info.setdefault("artist", pathlib.Path(orig).stem.split(" - ")[0] if " - " in pathlib.Path(orig).stem else "")
-                info.setdefault("title", pathlib.Path(orig).stem.split(" - ")[-1])
-                info["embedding"] = str(out)
-                info["embedding_source"] = used
-            except Exception as e:
-                console.print(f"[red]Embedding failed for {orig}: {e}")
-            finally:
-                if progress_callback is None:
-                    _tick()
+            batch.clear()
 
-    save_meta(meta)
-    if progress is not None:
-        progress.stop()
+        if workers > 0:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                future_map = {ex.submit(_load, src): (orig, src, used) for (orig, src, used) in jobs}
+                for fut in as_completed(future_map):
+                    orig, _src, used = future_map[fut]
+                    try:
+                        y, sr = fut.result()
+                        batch.append((orig, _src, y, sr, used))
+                        if len(batch) >= batch_size:
+                            _flush_batch()
+                    except Exception as e:
+                        console.print(f"[red]Embedding failed for {orig}: {e}")
+                        done += 1
+                        if progress_callback is not None:
+                            progress_callback(done, total, orig)
+                        else:
+                            _tick()
+                _flush_batch()
+        else:
+            # Simple serial path with optional batching
+            for orig, src, used in jobs:
+                try:
+                    if sampling is not None:
+                        vec = embed_with_sampling(src, emb, sampling)
+                        _save_embedding(orig, vec, used)
+                        done += 1
+                        if progress_callback is not None:
+                            progress_callback(done, total, orig)
+                        else:
+                            _tick()
+                        continue
+                    y, sr = _load(src)
+                    batch.append((orig, src, y, sr, used))
+                    if len(batch) >= batch_size:
+                        _flush_batch()
+                except Exception as e:
+                    console.print(f"[red]Embedding failed for {orig}: {e}")
+                    done += 1
+                    if progress_callback is not None:
+                        progress_callback(done, total, orig)
+                    else:
+                        _tick()
+            _flush_batch()
+
+        save_meta(meta)
+    finally:
+        if progress is not None:
+            progress.stop()

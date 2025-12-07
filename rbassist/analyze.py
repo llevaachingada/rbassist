@@ -2,8 +2,9 @@ from __future__ import annotations
 import pathlib, numpy as np
 import librosa
 from typing import Callable, Iterable, Optional
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
-from .utils import load_meta, save_meta, file_sig, console
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, TaskID
+from .utils import current_file_sig, console, MetaManager
 try:
     from .features import samples_score, bass_contour
 except Exception:
@@ -59,6 +60,44 @@ def _estimate_key(y: np.ndarray, sr: int) -> tuple[str, str]:
     return camelot, full
 
 
+def _analyze_single(
+    path: str,
+    duration_s: int = 90,
+    add_cues: bool = True,
+) -> tuple[str, dict | None, str | None, str | None]:
+    warn: str | None = None
+    try:
+        y, sr = librosa.load(path, sr=None, mono=True, duration=duration_s if duration_s > 0 else None)
+        bpm = _estimate_tempo(y, sr)
+        camelot, full = _estimate_key(y, sr)
+        result: dict = {
+            "bpm": round(float(bpm), 2),
+            "key": camelot,
+            "key_name": full,
+        }
+        if add_cues:
+            try:
+                from .cues import propose_cues
+                result["cues"] = propose_cues(y, sr, bpm=result["bpm"])
+            except Exception:
+                pass
+        try:
+            feats: dict[str, object] = {}
+            if samples_score is not None:
+                feats["samples"] = float(samples_score(y, sr))
+            if bass_contour is not None:
+                contour, rel = bass_contour(y, sr)
+                ds = librosa.util.fix_length(contour, size=256).astype(float).tolist()
+                feats["bass_contour"] = {"contour": ds, "reliability": float(rel)}
+            if feats:
+                result["features"] = feats
+        except Exception as e:
+            warn = f"Feature extract skip for {path}: {e}"
+        return path, result, None, warn
+    except Exception as e:
+        return path, None, str(e), warn
+
+
 def analyze_bpm_key(
     paths: Iterable[str],
     duration_s: int = 90,
@@ -66,86 +105,102 @@ def analyze_bpm_key(
     force: bool = False,
     add_cues: bool = True,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    workers: int | None = None,
 ) -> None:
-    meta = load_meta()
-    to_do = []
-    for p in paths:
-        info = meta['tracks'].setdefault(p, {})
-        sig = file_sig(p)
-        have = ('bpm' in info and 'key' in info)
-        if force:
-            to_do.append(p)
-        elif only_new:
-            if have and info.get('sig_bpmkey') == sig:
-                continue
-            to_do.append(p)
-        else:
-            if not have:
+    with MetaManager() as meta_mgr:
+        meta = meta_mgr.meta
+        sig_cache: dict[str, str] = {}
+        to_do: list[str] = []
+        for p in paths:
+            info = meta["tracks"].setdefault(p, {})
+            sig = current_file_sig(p)
+            sig_cache[p] = sig
+            have = ("bpm" in info and "key" in info)
+            if force:
                 to_do.append(p)
-    if not to_do:
-        console.print('[green]No BPM/Key work to do.')
-        return
-    total = len(to_do)
-    progress: Progress | None = None
-    task_id: TaskID | None = None
-    if progress_callback is None:
-        progress = Progress(
-            "{task.description}",
-            BarColumn(bar_width=None),
-            TextColumn("{task.completed}/{task.total}"),
-            TimeRemainingColumn(),
-        )
-        progress.start()
-        task_id = progress.add_task("Analyzing", total=total)
-
-    def _tick(idx: int, path: str):
-        if progress_callback is not None:
-            progress_callback(idx, total, path)
-        elif progress is not None and task_id is not None:
-            progress.advance(task_id)
-
-    for idx, p in enumerate(to_do, start=1):
-        try:
-            _tick(idx, p)
-            y, sr = librosa.load(p, sr=None, mono=True, duration=duration_s if duration_s>0 else None)
-            bpm = _estimate_tempo(y, sr)
-            camelot, full = _estimate_key(y, sr)
-            info = meta['tracks'].setdefault(p, {})
-            info['bpm'] = round(float(bpm), 2)
-            info['key'] = camelot
-            info['key_name'] = full
-            info['sig_bpmkey'] = file_sig(p)
-            # best-effort title/artist from filename if missing
-            stem = pathlib.Path(p).stem
-            if ' - ' in stem:
-                a, t = stem.split(' - ', 1)
-                info.setdefault('artist', a)
-                info.setdefault('title', t)
+            elif only_new:
+                if have and info.get("sig_bpmkey") == sig:
+                    continue
+                to_do.append(p)
             else:
-                info.setdefault('title', stem)
-            # auto-cues proposal (best-effort)
-            if add_cues:
-                try:
-                    from .cues import propose_cues
-                    info['cues'] = propose_cues(y, sr, bpm=info['bpm'])
-                except Exception:
-                    pass
-            # lightweight features cache (optional)
-            try:
-                feats = info.setdefault('features', {})
-                if samples_score is not None and 'samples' not in feats:
-                    feats['samples'] = float(samples_score(y, sr))
-                if bass_contour is not None and 'bass_contour' not in feats:
-                    contour, rel = bass_contour(y, sr)
-                    ds = librosa.util.fix_length(contour, size=256).astype(float).tolist()
-                    feats['bass_contour'] = { 'contour': ds, 'reliability': float(rel) }
-            except Exception as e:
-                console.print(f"[yellow]Feature extract skip for {p}: {e}")
-        except Exception as e:
-            console.print(f"[red]BPM/Key failed for {p}: {e}")
+                if not have:
+                    to_do.append(p)
+        if not to_do:
+            console.print("[green]No BPM/Key work to do.")
+            return
+        total = len(to_do)
+        progress: Progress | None = None
+        task_id: TaskID | None = None
+        try:
+            if progress_callback is None:
+                progress = Progress(
+                    "{task.description}",
+                    BarColumn(bar_width=None),
+                    TextColumn("{task.completed}/{task.total}"),
+                    TimeRemainingColumn(),
+                )
+                progress.start()
+                task_id = progress.add_task("Analyzing", total=total)
+
+            done = 0
+
+            def _tick(path: str) -> None:
+                nonlocal done
+                done += 1
+                if progress_callback is not None:
+                    progress_callback(done, total, path)
+                elif progress is not None and task_id is not None:
+                    progress.advance(task_id)
+
+            def _apply_result(path: str, result: dict | None, warn: str | None, err: str | None) -> None:
+                if warn:
+                    console.print(f"[yellow]{warn}")
+                if err or result is None:
+                    console.print(f"[red]BPM/Key failed for {path}: {err}")
+                    _tick(path)
+                    return
+                info = meta["tracks"].setdefault(path, {})
+                info["bpm"] = result["bpm"]
+                info["key"] = result["key"]
+                info["key_name"] = result["key_name"]
+                sig = sig_cache.get(path)
+                if sig:
+                    info["sig_bpmkey"] = sig
+                stem = pathlib.Path(path).stem
+                if " - " in stem:
+                    a, t = stem.split(" - ", 1)
+                    info.setdefault("artist", a)
+                    info.setdefault("title", t)
+                else:
+                    info.setdefault("title", stem)
+                if add_cues and "cues" in result:
+                    info["cues"] = result["cues"]
+                if "features" in result:
+                    feats = info.setdefault("features", {})
+                    for k, v in result["features"].items():
+                        if k not in feats:
+                            feats[k] = v
+                meta_mgr.mark_dirty()
+                _tick(path)
+
+            use_workers = workers if workers and workers > 1 else None
+            if use_workers:
+                with ProcessPoolExecutor(max_workers=use_workers) as ex:
+                    future_map = {ex.submit(_analyze_single, p, duration_s, add_cues): p for p in to_do}
+                    for fut in as_completed(future_map):
+                        path = future_map[fut]
+                        try:
+                            _path, result, err, warn = fut.result()
+                        except Exception as e:
+                            _apply_result(path, None, None, str(e))
+                            continue
+                        _apply_result(path, result, warn, err)
+            else:
+                for p in to_do:
+                    _path, result, err, warn = _analyze_single(p, duration_s, add_cues)
+                    _apply_result(p, result, warn, err)
+
+            console.print(f"[green]Analyzed {len(to_do)} files (BPM + Key).")
         finally:
-            save_meta(meta)
-    save_meta(meta)
-    console.print(f"[green]Analyzed {len(to_do)} files (BPM + Key).")
-    if progress is not None:
-        progress.stop()
+            if progress is not None:
+                progress.stop()

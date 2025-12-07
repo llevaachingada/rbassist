@@ -73,6 +73,7 @@ rbassist embed "D:\Music\YourCrate" --device cuda --num-workers 6 --duration-s 1
   `--device mps` for Apple Silicon.
 - `--num-workers` parallelizes audio decoding (4-8 typical). Model inference stays serialized for stability.
 - `--duration-s` caps per-track analysis while testing.
+- Model cache: Hugging Face assets download to `%USERPROFILE%\.cache\huggingface` by default (set via `HF_HOME`). The MERT model is ~1.3 GB; make sure you have space on the download drive.
 2) Build the HNSW index
 ```powershell
 rbassist index

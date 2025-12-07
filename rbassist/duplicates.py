@@ -3,6 +3,7 @@ import pathlib
 from collections import defaultdict
 from typing import List, Tuple
 import shutil
+from .utils import file_sig
 
 try:
     from mutagen import File as MFile  # type: ignore
@@ -41,14 +42,25 @@ def _is_lossless(path: str) -> int:
     return 1 if pathlib.Path(path).suffix.lower() in {".flac", ".wav", ".aiff", ".aif"} else 0
 
 
-def find_duplicates(meta: dict) -> list[tuple[str, str]]:
+def find_duplicates(meta: dict, exact: bool = False) -> list[tuple[str, str]]:
     tracks = meta.get("tracks", {})
-    buckets: dict[Tuple[str, str, int], list[str]] = defaultdict(list)
-    for p, info in tracks.items():
-        buckets[_media_key(info)].append(p)
+    if exact:
+        exact_buckets: dict[str, list[str]] = defaultdict(list)
+        for p in tracks:
+            try:
+                sig = file_sig(p)
+            except Exception:
+                continue
+            exact_buckets[sig].append(p)
+        bucket_groups = exact_buckets.values()
+    else:
+        fuzzy_buckets: dict[Tuple[str, str, int], list[str]] = defaultdict(list)
+        for p, info in tracks.items():
+            fuzzy_buckets[_media_key(info)].append(p)
+        bucket_groups = fuzzy_buckets.values()
 
     to_remove: list[tuple[str, str]] = []
-    for _, paths in buckets.items():
+    for paths in bucket_groups:
         if len(paths) < 2:
             continue
         ranked = sorted(paths, key=lambda x: (_is_lossless(x), _bitrate_of(x)), reverse=True)
@@ -66,12 +78,12 @@ def cdj_warnings(path: str) -> list[str]:
     return warns
 
 
-def stage_duplicates(meta: dict, dest_root: str, move: bool = False, dry_run: bool = False) -> List[Tuple[str, str]]:
+def stage_duplicates(meta: dict, dest_root: str, move: bool = False, dry_run: bool = False, exact: bool = False) -> List[Tuple[str, str]]:
     """Copy or move duplicate files into a staging directory for review."""
     dest = pathlib.Path(dest_root).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
     staged: List[Tuple[str, str]] = []
-    for keep, lose in find_duplicates(meta):
+    for keep, lose in find_duplicates(meta, exact=exact):
         src = pathlib.Path(lose)
         if not src.exists():
             continue

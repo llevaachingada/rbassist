@@ -51,6 +51,33 @@ def save_meta(meta: dict) -> None:
     META.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
+class MetaManager:
+    """Lightweight helper to batch meta writes."""
+
+    def __init__(self, meta: dict | None = None):
+        self.meta = meta if meta is not None else load_meta()
+        self.dirty = False
+
+    def mark_dirty(self) -> None:
+        self.dirty = True
+
+    def flush(self) -> None:
+        if self.dirty:
+            save_meta(self.meta)
+            self.dirty = False
+
+    def __enter__(self) -> "MetaManager":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.flush()
+
+
+def flush_meta(manager: MetaManager) -> None:
+    """Explicit flush hook for MetaManager."""
+    manager.flush()
+
+
 def pick_device(user_choice: str | None = None) -> str:
     """Choose best available device, honoring an explicit user choice when valid."""
     if user_choice:
@@ -161,7 +188,8 @@ from pathlib import Path
 def file_sig(path: str, chunk_size: int = 8192) -> str:
     """
     Return a short signature (SHA1 hash) of the file contents.
-    Used to identify duplicates or cached files.
+    Use when you need a stable, content-true fingerprint (e.g., duplicate detection, cache keys)
+    even if file timestamps are unreliable. Accurate but slower on large libraries.
     """
     h = hashlib.sha1()
    
@@ -169,3 +197,23 @@ def file_sig(path: str, chunk_size: int = 8192) -> str:
         while chunk := f.read(chunk_size):
             h.update(chunk)
     return h.hexdigest()
+
+
+def file_sig_fast(path: str) -> str:
+    """
+    Fast, non-cryptographic file signature based on mtime and size.
+    Use when you only need a quick change detector and can tolerate false positives after
+    timestamp-only updates (e.g., cheap skip-logic in batch operations).
+    """
+    st = os.stat(path)
+    return f"{st.st_mtime_ns}_{st.st_size}"
+
+
+def current_file_sig(path: str) -> str:
+    """
+    Central hook for file signature strategy.
+    Defaults to the accurate SHA1-based `file_sig` to avoid missing changes when files move
+    or timestamps drift. If future performance needs favor speed over precision, swap to
+    `file_sig_fast` here without changing call sites.
+    """
+    return file_sig(path)

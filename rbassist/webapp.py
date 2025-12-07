@@ -1,9 +1,5 @@
 
 
-
-
-
-\
 from __future__ import annotations
 
 import json
@@ -50,7 +46,7 @@ from rbassist.utils import walk_audio, load_meta, save_meta, tempo_match, camelo
 from rbassist.embed import build_embeddings
 from rbassist.analyze import analyze_bpm_key
 from rbassist.export_xml import write_rekordbox_xml
-from rbassist.recommend import IDX
+from rbassist.recommend import IDX, load_embedding_safe
 from rbassist.prefs import set_folder_mode, load_prefs, save_prefs
 from rbassist.playlists import make_intelligent_playlist, filter_tracks
 from rbassist.tagstore import (
@@ -89,11 +85,17 @@ def _load_paths() -> list[str]:
 
 
 def _knn(vec: np.ndarray, k: int = 50):
-    index = hnswlib.Index(space="cosine", dim=vec.shape[0])
-    index.load_index(str(IDX / "hnsw.idx"))
-    index.set_ef(64)
+    index = load_hnsw_index(vec.shape[0])
     labels, dists = index.knn_query(vec, k=k)
     return labels[0].tolist(), dists[0].tolist()
+
+
+@st.cache_resource
+def load_hnsw_index(dim: int):
+    index = hnswlib.Index(space="cosine", dim=dim)
+    index.load_index(str(IDX / "hnsw.idx"))
+    index.set_ef(64)
+    return index
 
 
 @st.cache_data(show_spinner=False)
@@ -416,7 +418,7 @@ if st.button("Recommend"):
                 seed_path = matches[0]
         if seed_path:
             seed_info = meta_tracks.get(seed_path, {})
-            vec = np.load(seed_info["embedding"]) if seed_info.get("embedding") else None
+            vec = load_embedding_safe(seed_info.get("embedding")) if seed_info.get("embedding") else None
             if vec is None:
                 st.error("Seed has no embedding. Run Embed first.")
             else:

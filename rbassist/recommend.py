@@ -30,25 +30,103 @@ class HnswIndex:
         self._built = True
 
 
-def build_index() -> None:
+def load_embedding_safe(path: str, expected_dim: int | None = None) -> np.ndarray | None:
+    """Load embedding with shape validation; returns None on failure."""
+    try:
+        arr = np.load(path)
+    except Exception as e:
+        console.print(f"[yellow]Skip embedding {path}: {e}")
+        return None
+    vec = np.asarray(arr).reshape(-1)
+    if expected_dim is not None and vec.shape[0] != expected_dim:
+        console.print(f"[yellow]Skip embedding {path}: expected dim {expected_dim}, got {vec.shape[0]}")
+        return None
+    return vec.astype(np.float32, copy=False)
+
+
+def build_index(incremental: bool = False) -> None:
     meta = load_meta()
-    vectors, labels, paths = [], [], []
+    idxfile = IDX / "hnsw.idx"
+    mapfile = IDX / "paths.json"
+    paths_map: list[str] = []
+    index: hnswlib.Index | None = None
+    expected_dim: int | None = None
+
+    if incremental and idxfile.exists() and mapfile.exists():
+        try:
+            paths_map = json.load(open(mapfile, "r", encoding="utf-8"))
+            index = hnswlib.Index(space="cosine", dim=DIM)
+            index.load_index(str(idxfile))
+            index.set_ef(64)
+            ids = index.get_ids_list()
+            if ids:
+                sample = index.get_items(ids[:1])
+                if sample is not None and sample.size:
+                    expected_dim = int(sample.shape[1])
+            if expected_dim is None:
+                expected_dim = DIM
+        except Exception as e:
+            console.print(f"[yellow]Incremental load failed; rebuilding full: {e}")
+            paths_map = []
+            index = None
+            incremental = False
+
+    if not incremental:
+        vectors, labels, paths = [], [], []
+        for path, info in meta.get("tracks", {}).items():
+            epath = info.get("embedding")
+            if not epath or not pathlib.Path(epath).exists():
+                continue
+            vec = load_embedding_safe(epath, expected_dim)
+            if vec is None:
+                continue
+            if expected_dim is None:
+                expected_dim = vec.shape[0]
+            labels.append(len(paths))
+            paths.append(path)
+            vectors.append(vec)
+        if not vectors:
+            console.print("[yellow]No embeddings found. Run: rbassist embed ...")
+            return
+        dim = expected_dim or DIM
+        idx = HnswIndex(dim=dim)
+        idx.build(vectors, labels)
+        (IDX / "hnsw.idx").parent.mkdir(parents=True, exist_ok=True)
+        idx.save(str(idxfile))
+        json.dump(paths, open(mapfile, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        console.print(f"[green]Indexed {len(paths)} tracks -> {idxfile}")
+        return
+
+    # Incremental: add new embeddings to existing index
+    label_lookup = {p: i for i, p in enumerate(paths_map)}
+    new_vectors: list[np.ndarray] = []
+    new_labels: list[int] = []
+    new_paths: list[str] = []
+    start_label = len(paths_map)
+
     for path, info in meta.get("tracks", {}).items():
         epath = info.get("embedding")
         if not epath or not pathlib.Path(epath).exists():
             continue
-        vectors.append(np.load(epath))
-        labels.append(len(paths))
-        paths.append(path)
-    if not vectors:
-        console.print("[yellow]No embeddings found. Run: rbassist embed-build ...")
+        if path in label_lookup:
+            continue
+        vec = load_embedding_safe(epath, expected_dim or DIM)
+        if vec is None:
+            continue
+        new_vectors.append(vec)
+        new_labels.append(start_label + len(new_vectors) - 1)
+        new_paths.append(path)
+
+    if not new_vectors:
+        console.print(f"[green]Index up to date; {len(paths_map)} track(s).")
         return
-    idx = HnswIndex(dim=len(vectors[0]))
-    idx.build(vectors, labels)
+
+    index.add_items(np.vstack(new_vectors), np.array(new_labels))
+    paths_map.extend(new_paths)
     (IDX / "hnsw.idx").parent.mkdir(parents=True, exist_ok=True)
-    idx.save(str(IDX / "hnsw.idx"))
-    json.dump(paths, open(IDX / "paths.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    console.print(f"[green]Indexed {len(paths)} tracks -> {IDX / 'hnsw.idx'}")
+    index.save_index(str(idxfile))
+    json.dump(paths_map, open(mapfile, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    console.print(f"[green]Added {len(new_vectors)} new embedding(s); total {len(paths_map)} track(s).")
 
 
 def _tempo_note(seed_bpm: float | None, cand_bpm: float | None, pct: float, allow_doubletime: bool) -> str:
@@ -76,13 +154,15 @@ def recommend(
     paths_map = json.load(open(IDX / "paths.json", "r", encoding="utf-8"))
     meta_all = load_meta()["tracks"]
 
-    matches = [p for p in paths_map if seed.lower() in p.lower() or seed.lower() in (meta_all.get(p,{}).get("artist","") + " - " + meta_all.get(p,{}).get("title","" )).lower()]
-    if not matches:
+    seed_path = _resolve_seed(seed, paths_map, meta_all)
+    if not seed_path:
         console.print(f"[red]Seed not found: {seed}")
         return
-    seed_path = matches[0]
     seed_info = meta_all.get(seed_path, {})
-    seed_vec = np.load(seed_info["embedding"])  # (1024,)
+    seed_vec = load_embedding_safe(seed_info["embedding"])  # (1024,)
+    if seed_vec is None:
+        console.print(f"[red]Seed embedding missing or invalid: {seed_info.get('embedding')}")
+        return
 
     seed_bpm = seed_info.get("bpm")
     seed_key = seed_info.get("key")
@@ -164,4 +244,81 @@ def recommend(
         )
         rank += 1
 
+    console.print(table)
+
+
+def _resolve_seed(seed: str, paths_map: list[str], meta_all: dict) -> str | None:
+    matches = [
+        p
+        for p in paths_map
+        if seed.lower() in p.lower()
+        or seed.lower() in (meta_all.get(p, {}).get("artist", "") + " - " + meta_all.get(p, {}).get("title", "")).lower()
+    ]
+    return matches[0] if matches else None
+
+
+def recommend_sequence(
+    seeds: list[str],
+    top: int = 25,
+    pool: int = 100,
+) -> None:
+    if not seeds:
+        console.print("[red]Provide at least one seed.")
+        return
+    idxfile = IDX / "hnsw.idx"
+    paths_map = json.load(open(IDX / "paths.json", "r", encoding="utf-8"))
+    meta_all = load_meta()["tracks"]
+
+    resolved: list[str] = []
+    vecs: list[np.ndarray] = []
+    for seed in seeds:
+        p = _resolve_seed(seed, paths_map, meta_all)
+        if not p:
+            console.print(f"[yellow]Seed not found: {seed}")
+            continue
+        info = meta_all.get(p, {})
+        vec = load_embedding_safe(info.get("embedding"))
+        if vec is None:
+            console.print(f"[yellow]Seed has no embedding: {p}")
+            continue
+        resolved.append(p)
+        vecs.append(vec)
+    if not vecs:
+        console.print("[red]No valid seeds with embeddings.")
+        return
+    mat = np.stack(vecs, axis=0)
+    combined = mat.mean(axis=0)
+
+    index = hnswlib.Index(space="cosine", dim=combined.shape[0])
+    index.load_index(str(idxfile))
+    index.set_ef(64)
+    labels, dists = index.knn_query(combined, k=min(pool, len(paths_map)))
+    labels, dists = labels[0].tolist(), dists[0].tolist()
+
+    seen = set(resolved)
+    rows = []
+    for lab, dist in zip(labels, dists):
+        path = paths_map[lab]
+        if path in seen:
+            continue
+        info = meta_all.get(path, {})
+        rows.append((path, info, dist))
+        if len(rows) >= top:
+            break
+
+    table = Table(title=f"Sequence recommendations from seeds: {', '.join(resolved)}")
+    table.add_column("Rank", justify="right")
+    table.add_column("Track")
+    table.add_column("Artist")
+    table.add_column("Title")
+    table.add_column("Dist", justify="right")
+
+    for idx, (path, info, dist) in enumerate(rows, start=1):
+        table.add_row(
+            str(idx),
+            path,
+            info.get("artist", ""),
+            info.get("title", ""),
+            f"{dist:.3f}",
+        )
     console.print(table)
