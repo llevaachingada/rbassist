@@ -1,0 +1,219 @@
+
+# Copilot, implement "club_hifi_150s" sampling in rbassist
+
+**Goal**: integrate the empirically-derived sampling strategy into rbassist so I can (re)analyze my library from VS Code on Windows/macOS (CUDA/MPS). Implement EXACTLY the changes below and create missing files as needed. Use `pip + venv`.
+
+## 1) Add config file
+Create `config/sampling.yml` with EXACT contents:
+```yaml
+sampling_profile: club_hifi_150s
+profiles:
+  club_hifi_150s:
+    start_skip_s: 10
+    main_len_s: 90
+    tail_region: 0.70
+    n_tail: 2
+    tail_len_s: 30
+    min_gap_s: 10
+    force_tail_in_last_60s: true
+    energy_onset_align: true
+    rng_seed: path_hash
+```
+
+## 2) New module: rbassist/sampling_profile.py
+Create this file with EXACT contents:
+```python
+from dataclasses import dataclass
+import numpy as np
+from scipy.signal import find_peaks
+
+try:
+    import librosa
+except Exception:
+    librosa = None
+
+@dataclass
+class SamplingParams:
+    start_skip_s: float = 10
+    main_len_s: float = 90
+    tail_region: float = 0.70
+    n_tail: int = 2
+    tail_len_s: float = 30
+    min_gap_s: float = 10
+    force_tail_in_last_60s: bool = True
+    energy_onset_align: bool = True
+
+def _feature_curves(y, sr, frame=4096, hop=1024):
+    if librosa is None:
+        raise RuntimeError("librosa required for sampling features")
+    onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    times = librosa.times_like(onset, sr=sr, hop_length=hop)
+    return times, onset
+
+def _pick_main_start(times, onset, duration_s, p: SamplingParams):
+    if librosa is None or not p.energy_onset_align:
+        return min(p.start_skip_s, max(0.0, duration_s - 5.0))
+    x = (onset - onset.min()) / (onset.ptp() + 1e-9)
+    mask = times >= p.start_skip_s
+    t_sel = times[mask]; x_sel = x[mask]
+    thr = np.percentile(x_sel, 75)
+    step = np.median(np.diff(t_sel)) if len(t_sel) > 1 else 0.1
+    dist = max(1, int(5/step))
+    peaks, _ = find_peaks(x_sel, height=thr, distance=dist)
+    idx = peaks[0] if len(peaks) else int(np.argmax(x_sel))
+    return float(t_sel[idx])
+
+def _pick_tails(times, onset, duration_s, p: SamplingParams):
+    start_t = duration_s * p.tail_region
+    mask = times >= start_t
+    t_sel = times[mask]
+    x = onset[mask]
+    x = (x - x.min()) / (x.ptp() + 1e-9)
+    step = np.median(np.diff(t_sel)) if len(t_sel) > 1 else 0.1
+    dist = max(1, int(p.min_gap_s/step))
+    peaks, props = find_peaks(x, height=np.percentile(x, 60), distance=dist)
+    ts = list(t_sel[peaks]); hs = list(props.get('peak_heights', []))
+    order = np.argsort(hs)[::-1]
+    out = []
+    for i in order:
+        t0 = float(min(ts[i], duration_s - p.tail_len_s - 1.0))
+        if all(abs(t0 - s) >= p.min_gap_s for s, _ in out):
+            out.append((t0, t0 + p.tail_len_s))
+        if len(out) >= p.n_tail:
+            break
+    if p.force_tail_in_last_60s and duration_s > 90 and out:
+        need = all(t0 < duration_s - 60 for t0, _ in out)
+        if need:
+            t0 = max(duration_s - 60, duration_s - p.tail_len_s - 1)
+            out[-1] = (t0, t0 + p.tail_len_s)
+    return out
+
+def pick_windows(audio_path: str, params: SamplingParams) -> list[tuple[float, float]]:
+    if librosa is None:
+        raise RuntimeError("librosa required for sampling features")
+    y, sr = librosa.load(audio_path, sr=11025, mono=True)
+    duration_s = len(y)/sr
+    times, onset = _feature_curves(y, sr)
+    s0 = _pick_main_start(times, onset, duration_s, params)
+    e0 = min(s0 + params.main_len_s, max(0.0, duration_s - 5.0))
+    tails = _pick_tails(times, onset, duration_s, params)
+    return [(s0, e0), *tails]
+```
+
+## 3) Modify embedding to use windows (rbassist/embed.py)
+Locate the function that embeds a single track. Replace its segment-loading logic with this pattern (adjust names as needed):
+```python
+import numpy as np
+import librosa
+from rbassist.sampling_profile import SamplingParams, pick_windows
+
+def embed_track(path: str, model, device: str, params: SamplingParams) -> np.ndarray:
+    windows = pick_windows(path, params)
+    segs = []
+    for s, e in windows:
+        y, sr = librosa.load(path, sr=32000, mono=True, offset=s, duration=(e - s))
+        feats = to_mel(y, sr)                 # existing feature function
+        z = model.embed(feats, device=device) # (frames, dim)
+        segs.append(z.mean(axis=0))
+    v = np.mean(np.stack(segs, axis=0), axis=0) # pool across segments
+    return project_256(v)                        # existing 256D projection
+```
+
+## 4) Device auto-select (rbassist/utils/device.py)
+Create this helper if missing:
+```python
+import torch
+
+def pick_device(user_choice: str | None = None) -> str:
+    if user_choice in {"cuda", "mps", "cpu"}:
+        return user_choice
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+```
+
+## 5) CLI command (rbassist/cli.py)
+Add a Typer command to run a full (re)analysis with the new profile:
+```python
+import typer
+from pathlib import Path
+from rbassist.sampling_profile import SamplingParams
+from rbassist.utils.device import pick_device
+# from rbassist.embed import embed_track     # import your actual embedder
+# from rbassist.index import build_hnsw_index # import your index builder
+
+app = typer.Typer()
+
+@app.command()
+def analyze(input: Path = typer.Argument(..., exists=True),
+            profile: str = "club_hifi_150s",
+            device: str = "auto",
+            workers: int = 4,
+            rebuild_index: bool = True,
+            overwrite: bool = False):
+    params = load_sampling_params(profile)      # implement to read config/sampling.yml
+    dev = pick_device(device)
+    tracks = scan_audio(input)                  # implement/ reuse existing scanner
+    vecs = {}
+    with ThreadPool(workers) as pool:           # use concurrent.futures or your pool
+        for path, v in pool.imap_unordered(lambda p: (p, embed_track(p, model=get_model(dev), device=dev, params=params)), tracks):
+            vecs[str(path)] = v.astype("float32")
+            persist_metadata(path, params, windows=None)  # optional: store chosen windows
+    save_vectors(vecs)
+    if rebuild_index:
+        build_hnsw_index(vecs)
+
+if __name__ == "__main__":
+    app()
+```
+
+## 6) VS Code tasks
+Add these files for one-click runs:
+
+`.vscode/tasks.json`
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Reanalyze Library",
+      "type": "shell",
+      "command": "python -m rbassist.cli analyze --profile club_hifi_150s --device auto --workers 6 --rebuild-index --input ${workspaceFolder}/Music",
+      "problemMatcher": []
+    }
+  ]
+}
+```
+
+`.vscode/launch.json`
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug analyze",
+      "type": "python",
+      "request": "launch",
+      "module": "rbassist.cli",
+      "args": [
+        "analyze", "--input", "${workspaceFolder}/Music",
+        "--profile", "club_hifi_150s",
+        "--device", "auto", "--workers", "6", "--rebuild-index"
+      ]
+    }
+  ]
+}
+```
+
+## 7) Dependencies & commands
+- Windows (CUDA): `pip install torch --index-url https://download.pytorch.org/whl/cu121`
+- macOS (Apple Silicon): `pip install torch`
+- Common: `pip install librosa soundfile hnswlib typer`
+- Reanalyze:
+  - Windows: `python -m rbassist.cli analyze --input "D:\Music" --profile club_hifi_150s --device auto --workers 6 --rebuild-index`
+  - macOS: `python -m rbassist.cli analyze --input "/Volumes/Music" --profile club_hifi_150s --device auto --workers 6 --rebuild-index`
+
+## 8) Commit message
+`feat(sampling): add club_hifi_150s profile with onset-aligned 90s main + 2x30s tails; CLI analyze entrypoint; VS Code tasks`
