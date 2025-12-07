@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest:*)",
+      "Bash(python -m flake8:*)",
+      "Bash(python -m mypy:*)",
+      "Bash(python:*)",
+      "Bash(rbassist --help:*)",
+      "Bash(find:*)",
+      "Bash(git checkout:*)",
+      "Bash(findstr:*)",
+      "Bash(rbassist ui:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

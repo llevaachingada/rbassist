@@ -27,10 +27,12 @@ ml = ["transformers>=4.40", "accelerate>=0.28", "datasets>=2.18"]
 audio = ["mutagen>=1.47", "pyloudnorm>=0.1.1", "pydub>=0.25.1"]
 ann = ["hnswlib>=0.8"]
 web = ["streamlit>=1.30", "streamlit-modal>=0.1.1,<0.1.3"]
+ui = ["nicegui>=1.4", "pywebview>=4.0"]
 
 [project.scripts]
 rbassist = "rbassist.cli:app"
 rbassist-gui = "rbassist.gui:main"
+rbassist-ui = "rbassist.ui.app:main"
 
 [tool.setuptools]
 include-package-data = false
