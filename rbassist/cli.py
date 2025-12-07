@@ -474,5 +474,20 @@ def cmd_features(root: str, limit: int = 0, duration_s: int = 90):
     console.print(f"[green]Feature backfill attempted for {len(files)} files")
 
 
+@app.command("ui")
+def cmd_ui(
+    port: int = typer.Option(8080, help="Port to run the UI server on"),
+    reload: bool = typer.Option(False, help="Enable hot reload for development"),
+):
+    """Launch the NiceGUI desktop interface."""
+    try:
+        from .ui import run
+    except ImportError as e:
+        console.print(f"[red]UI dependencies not installed. Run: pip install -e '.[ui]'")
+        console.print(f"[red]Error: {e}")
+        raise typer.Exit(1)
+    run(port=port, reload=reload)
+
+
 if __name__ == "__main__":
     main()
