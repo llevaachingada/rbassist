@@ -5,9 +5,10 @@ import hnswlib
 from rich.table import Table
 from .utils import EMB, IDX, META, console, camelot_relation, tempo_match, load_meta
 try:
-    from .features import bass_similarity
+    from .features import bass_similarity, rhythm_similarity
 except Exception:
     bass_similarity = None  # type: ignore
+    rhythm_similarity = None  # type: ignore
 
 DIM = 1024
 
@@ -193,9 +194,11 @@ def recommend(
     w_ann = float(weights.get("ann", 0.0))
     w_samples = float(weights.get("samples", 0.0))
     w_bass = float(weights.get("bass", 0.0))
+    w_rhythm = float(weights.get("rhythm", 0.0))
 
-    # load seed features for bass
+    # load seed features for bass and rhythm
     seed_c = np.array(seed_info.get("features", {}).get("bass_contour", {}).get("contour", []), dtype=float)
+    seed_r = np.array(seed_info.get("features", {}).get("rhythm_contour", {}).get("contour", []), dtype=float)
 
     # collect candidates first
     cands = []
@@ -222,10 +225,15 @@ def recommend(
             c_cont = np.array(info.get("features", {}).get("bass_contour", {}).get("contour", []), dtype=float)
             if seed_c.size and c_cont.size:
                 score += w_bass * float(bass_similarity(seed_c, c_cont))
+        # rhythm similarity
+        if w_rhythm and rhythm_similarity is not None:
+            r_cont = np.array(info.get("features", {}).get("rhythm_contour", {}).get("contour", []), dtype=float)
+            if seed_r.size and r_cont.size:
+                score += w_rhythm * float(rhythm_similarity(seed_r, r_cont))
         cands.append((path, info, cand_bpm, cand_key, rule_name, dist, score))
 
     # sort: if any weight provided, sort by score desc; else by ANN distance asc
-    if any([w_ann, w_samples, w_bass]):
+    if any([w_ann, w_samples, w_bass, w_rhythm]):
         cands.sort(key=lambda x: x[6], reverse=True)
     else:
         cands.sort(key=lambda x: x[5])

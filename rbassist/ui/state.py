@@ -65,11 +65,13 @@ class AppState:
     # Workspace settings
     music_folder: str = ""
     device: str = "auto"
-    duration_s: int = 120
+    duration_s: int = 90
     workers: int = 4
     batch_size: int = 4
     auto_cues: bool = True
     skip_analyzed: bool = True
+    use_timbre: bool = True
+    embed_overwrite: bool = True
 
     def refresh_meta(self) -> None:
         """Reload metadata from disk."""
@@ -111,6 +113,8 @@ class AppState:
             self.batch_size = config.get("batch_size", 4)
             self.auto_cues = config.get("auto_cues", True)
             self.skip_analyzed = config.get("skip_analyzed", True)
+            self.use_timbre = config.get("use_timbre", False)
+            self.embed_overwrite = config.get("embed_overwrite", False)
 
             # Load filter presets
             if "weights" in config:
@@ -128,6 +132,8 @@ class AppState:
             "batch_size": self.batch_size,
             "auto_cues": self.auto_cues,
             "skip_analyzed": self.skip_analyzed,
+            "use_timbre": self.use_timbre,
+            "embed_overwrite": self.embed_overwrite,
             "weights": self.weights,
             "filters": self.filters,
         }

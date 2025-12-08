@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 from nicegui import ui
 
 from ..state import get_state
@@ -27,7 +28,7 @@ def render() -> None:
                         placeholder="Select your music library folder..."
                     ).props("dark dense").classes("flex-1")
 
-                    async def pick_folder():
+                    def pick_folder():
                         try:
                             import tkinter as tk
                             from tkinter import filedialog
@@ -40,7 +41,7 @@ def render() -> None:
                                 state.music_folder = folder
                                 ui.notify(f"Selected: {folder}", type="positive")
                         except Exception as e:
-                            ui.notify(f"Error: {e}", type="negative")
+                            ui.notify(f"Folder picker error: {e}", type="negative")
 
                     ui.button(icon="folder", on_click=pick_folder).props("flat dense")
 
@@ -68,9 +69,9 @@ def render() -> None:
 
             with ui.column().classes("gap-4"):
                 with ui.row().classes("w-full items-center gap-4"):
-                    ui.label("Duration (s):").classes("text-gray-400 w-32")
+                    ui.label("Duration cap (s):").classes("text-gray-400 w-32")
                     duration_input = ui.number(value=state.duration_s, min=30, max=300, step=10).props("dark dense").classes("w-32")
-                    ui.label("Seconds of audio to analyze per track").classes("text-gray-500 text-sm")
+                    ui.label("Cap per track; embed still uses intro/core/late windows").classes("text-gray-500 text-sm")
 
                 with ui.row().classes("w-full items-center gap-4"):
                     ui.label("Workers:").classes("text-gray-400 w-32")
@@ -81,6 +82,99 @@ def render() -> None:
                     ui.label("Batch Size:").classes("text-gray-400 w-32")
                     batch_input = ui.number(value=state.batch_size, min=1, max=16, step=1).props("dark dense").classes("w-32")
                     ui.label("Model inference batch size").classes("text-gray-500 text-sm")
+
+                # Show active flags (read-only)
+                with ui.row().classes("w-full items-center gap-2"):
+                    ui.badge(f"Timbre: {'On' if state.use_timbre else 'Off'}", color="indigo" if state.use_timbre else "gray")
+                    ui.badge(f"Overwrite: {'On' if state.embed_overwrite else 'Off'}", color="red" if state.embed_overwrite else "gray")
+
+                # Pipeline progress UI
+                pipe_progress = ui.linear_progress(value=0).props("rounded color=indigo").classes("w-full")
+                pipe_label = ui.label("Idle").classes("text-gray-400 text-sm")
+
+                async def run_pipeline():
+                    from rbassist.utils import walk_audio
+                    from rbassist.embed import build_embeddings
+                    from rbassist.analyze import analyze_bpm_key
+                    from rbassist.recommend import build_index
+
+                    music_root = state.music_folder
+                    if not music_root:
+                        ui.notify("Set Music Folder first", type="warning")
+                        return
+                    files = walk_audio([music_root])
+                    if not files:
+                        ui.notify("No audio files found under Music Folder", type="warning")
+                        return
+
+                    total_steps = len(files) * 2 + 1  # embed + analyze + index
+                    completed = 0
+                    use_timbre = state.use_timbre
+                    overwrite = state.embed_overwrite
+
+                    def _update(label: str):
+                        pipe_label.text = label
+                        pipe_progress.value = min(max(completed / max(total_steps, 1), 0.0), 1.0)
+                        pipe_progress.update()
+                        pipe_label.update()
+
+                    ui.notify(f"Running pipeline for {len(files)} track(s)...", type="info")
+                    _update("Starting pipeline...")
+
+                    async def _work():
+                        nonlocal completed
+                        # Embed
+                        def _embed_cb(done: int, count: int, path: str):
+                            nonlocal completed
+                            completed = done
+                            _update(f"Embedding {done}/{count}: {path}")
+
+                        build_embeddings(
+                            files,
+                            duration_s=int(duration_input.value or state.duration_s),
+                            device=(state.device if state.device != "auto" else None),
+                            num_workers=int(workers_input.value or state.workers),
+                            batch_size=int(batch_input.value or state.batch_size),
+                            overwrite=overwrite,
+                            timbre=use_timbre,
+                            progress_callback=_embed_cb,
+                        )
+                        completed = len(files)
+                        _update("Embedding complete")
+
+                        # Analyze
+                        def _analyze_cb(done: int, count: int, path: str):
+                            nonlocal completed
+                            completed = len(files) + done
+                            _update(f"Analyzing {done}/{count}: {path}")
+
+                        analyze_bpm_key(
+                            files,
+                            duration_s=90,
+                            only_new=not overwrite,
+                            force=overwrite,
+                            add_cues=state.auto_cues,
+                            workers=(int(workers_input.value) if int(workers_input.value) > 0 else None),
+                            progress_callback=_analyze_cb,
+                        )
+                        completed = len(files) * 2
+                        _update("Analyzing complete")
+
+                        # Index
+                        _update("Building index...")
+                        build_index()
+                        completed = total_steps
+                        _update("Index built")
+
+                    try:
+                        await asyncio.to_thread(_work)
+                        ui.notify("Embed + Analyze + Index complete", type="positive")
+                    except Exception as e:
+                        ui.notify(f"Pipeline failed: {e}", type="negative")
+
+                ui.button("Embed + Analyze + Index", icon="play_arrow", on_click=run_pipeline).props("flat").classes(
+                    "bg-indigo-600 hover:bg-indigo-500 w-64"
+                )
 
         # Analysis Settings
         with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):

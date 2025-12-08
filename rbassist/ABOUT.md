@@ -33,7 +33,11 @@ rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fas
 1. `rbassist embed "D:\Music\YourCrate" --duration-s 60 --device cuda --num-workers 4`
 2. `rbassist analyze "D:\Music\YourCrate" --duration-s 60`
 3. `rbassist index`
-4. `rbassist recommend "Artist - Track" --top 25` or start the GUI via `streamlit run rbassist/webapp.py`
+4. `rbassist recommend "Artist - Track" --top 25` or start the NiceGUI UI via `rbassist ui`
+
+### Embedding updates (Dec 2025)
+- Default embeddings sample intro/core/late slices and average them.
+- Optional timbre branch (OpenL3 music, 48 kHz, 1s/50% overlap) mixes into the main embedding at 70/30 when `--timbre` is used; component files `_mert.npy` and `_timbre.npy` are stored alongside the combined `embedding.npy`.
 5. `rbassist tags-auto --margin 0.05 --apply` or review in the GUI’s Auto Tag Suggestions table.
 6. `rbassist export-xml --out rbassist.xml` for Rekordbox ingest.
 

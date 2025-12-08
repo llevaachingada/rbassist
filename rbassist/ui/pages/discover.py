@@ -80,6 +80,14 @@ class DiscoverPage:
 
     def render(self) -> None:
         """Render the discover page."""
+        if not self.state.has_index():
+            with ui.card().classes("bg-[#1a1a1a] border border-[#333] p-4 w-full"):
+                ui.label("No index found").classes("text-lg font-semibold text-red-400")
+                ui.label("Run Embed + Analyze + Index from Settings or Library to enable recommendations.").classes(
+                    "text-gray-300 text-sm"
+                )
+            return
+
         with ui.row().classes("w-full gap-6 items-start"):
             # Left sidebar - seed + filters (30%)
             with ui.column().classes("w-80 gap-4 flex-shrink-0"):

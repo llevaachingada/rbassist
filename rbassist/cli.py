@@ -55,6 +55,8 @@ def cmd_embed(
     batch_size: Optional[int] = typer.Option(
         None, help="Model batch size (auto: ~4 on GPU, 1 on CPU)"
     ),
+    timbre: bool = typer.Option(False, help="Also write a timbre-only embedding using OpenL3"),
+    timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
 ):
     try:
         from .embed import build_embeddings, DEFAULT_MODEL
@@ -72,6 +74,8 @@ def cmd_embed(
         device=(device or None),
         num_workers=num_workers,
         batch_size=batch_size,
+        timbre=timbre,
+        timbre_size=timbre_size,
     )
 
 
@@ -361,17 +365,6 @@ def cmd_djlink():
         console.print(f"[red]{e}")
         raise typer.Exit(1)
     run()
-
-
-@app.command("web")
-def cmd_web():
-    import subprocess, sys
-    try:
-        import streamlit  # noqa: F401
-    except Exception:
-        console.print("[red]Install Streamlit first: pip install streamlit")
-        raise typer.Exit(1)
-    subprocess.run([sys.executable, "-m", "streamlit", "run", "rbassist/webapp.py"])  # nosec
 
 
 @app.command("cues")

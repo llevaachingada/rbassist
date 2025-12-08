@@ -10,10 +10,19 @@ from .utils import console, EMB, load_meta, save_meta
 from .prefs import mode_for_path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .sampling_profile import SamplingParams, pick_windows
+try:
+    import openl3  # type: ignore
+except Exception:
+    openl3 = None  # type: ignore
 
 DEFAULT_MODEL = "m-a-p/MERT-v1-330M"
 SAMPLE_RATE = 24000  # per model card
 os.environ.setdefault("HF_HOME", str(pathlib.Path.home() / ".cache" / "huggingface"))
+TIMBRE_SR = 48000
+TIMBRE_FRAME_S = 1.0
+TIMBRE_OVERLAP = 0.5
+W_MERT = 0.7
+W_TIMBRE = 0.3
 
 
 def _resolve_device(requested: str | None) -> str:
@@ -87,6 +96,30 @@ class MertEmbedder:
         return self.encode_array(y, sr)
 
 
+class TimbreEmbedder:
+    """Lightweight timbre-focused encoder using OpenL3 (music-mel)."""
+
+    def __init__(self, embedding_size: int = 512):
+        if openl3 is None:
+            raise RuntimeError("openl3 not installed; pip install openl3")
+        self.embedding_size = embedding_size
+
+    def encode_array(self, y: np.ndarray, sr: int) -> np.ndarray:
+        emb, _ = openl3.get_audio_embedding(
+            y,
+            sr,
+            center=True,
+            hop_size=None,
+            content_type="music",
+            embedding_size=self.embedding_size,
+        )
+        if emb.ndim > 1:
+            vec = emb.mean(axis=0)
+        else:
+            vec = emb
+        return np.asarray(vec, dtype=np.float32)
+
+
 def embed_with_sampling(audio_path: str, embedder: MertEmbedder, params: SamplingParams) -> np.ndarray:
     """Embed multiple segments chosen by sampling profile and average them."""
     windows = pick_windows(audio_path, params)
@@ -103,6 +136,159 @@ def embed_with_sampling(audio_path: str, embedder: MertEmbedder, params: Samplin
     return np.mean(np.stack(vecs, axis=0), axis=0)
 
 
+def _first_non_silent_time(y: np.ndarray, sr: int, top_db: float = 40.0) -> float:
+    """Estimate start time of first non-silent region."""
+    try:
+        intervals = librosa.effects.split(y, top_db=top_db)
+        if intervals.size:
+            return float(intervals[0, 0] / sr)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _default_windows(y: np.ndarray, sr: int) -> list[tuple[float, float]]:
+    """
+    Pick intro/core/late windows for embedding according to staged rules:
+      - Short (<80s): single full-track window.
+      - Medium (80–140s): ~10s intro, ~40s core, ~10s late.
+      - Long: 10s intro, 60s core (centered), 10s late near end, no overlap.
+    """
+    T = len(y) / sr if sr else 0.0
+    if T <= 0:
+        return []
+
+    # Short tracks: single pass.
+    if T < 80.0:
+        return [(0.0, T)]
+
+    # Helper to clamp bounds.
+    def _clamp(start: float, end: float) -> tuple[float, float]:
+        s = max(0.0, min(start, T))
+        e = max(s, min(end, T))
+        return s, e
+
+    t_first = _first_non_silent_time(y, sr)
+
+    if T < 140.0:
+        # Medium tracks: intro/core/late but shorter core window.
+        intro = _clamp(t_first, t_first + 10.0)
+        t_mid = T / 2.0
+        core = _clamp(t_mid - 20.0, t_mid + 20.0)
+        tC_end = max(core[1] + 5.0, T - 5.0)
+        late = _clamp(tC_end - 10.0, tC_end)
+        return [intro, core, late]
+
+    # Long/regular tracks.
+    intro = _clamp(t_first, t_first + 10.0)
+
+    t_mid = T / 2.0
+    core_start = max(0.0, min(t_mid - 30.0, T - 60.0))
+    core = _clamp(core_start, core_start + 60.0)
+
+    tC_end = max(core[1] + 5.0, T - 5.0)
+    late = _clamp(tC_end - 10.0, tC_end)
+
+    windows = [intro, core]
+    # Avoid adding a degenerate late window.
+    if late[1] - late[0] > 1e-3 and late[0] < T:
+        windows.append(late)
+    return windows
+
+
+def embed_with_default_windows(y: np.ndarray, sr: int, embedder: MertEmbedder, windows: Optional[list[tuple[float, float]]] = None) -> np.ndarray:
+    """Embed using intro/core/late windows and average the vectors."""
+    windows = windows if windows is not None else _default_windows(y, sr)
+    if not windows:
+        return embedder.encode_array(y, sr)
+
+    segments: list[tuple[np.ndarray, int]] = []
+    for start, end in windows:
+        s = int(start * sr)
+        e = int(end * sr)
+        if e <= s or s >= len(y):
+            continue
+        seg = y[s:e]
+        if seg.size == 0:
+            continue
+        segments.append((seg, sr))
+
+    if not segments:
+        return embedder.encode_array(y, sr)
+
+    vecs = embedder.encode_batch(segments)
+    vecs = [v for v in vecs if v is not None]
+    if not vecs:
+        return embedder.encode_array(y, sr)
+    return np.mean(np.stack(vecs, axis=0), axis=0)
+
+
+def timbre_embedding_from_windows(y: np.ndarray, sr: int, windows: list[tuple[float, float]], emb: TimbreEmbedder) -> Optional[np.ndarray]:
+    """Compute timbre embedding: per-window, 1s frames @48kHz with 50% overlap, mean+var pooling."""
+    if not windows:
+        return None
+    if openl3 is None:
+        return None
+
+    if sr != TIMBRE_SR:
+        y = librosa.resample(y, orig_sr=sr, target_sr=TIMBRE_SR)
+        sr = TIMBRE_SR
+
+    frame_len = int(TIMBRE_SR * TIMBRE_FRAME_S)
+    hop = int(frame_len * (1.0 - TIMBRE_OVERLAP))
+    if hop <= 0:
+        hop = max(1, frame_len // 2)
+
+    win_vecs: list[np.ndarray] = []
+    for start, end in windows:
+        s = int(start * sr)
+        e = int(end * sr)
+        if e <= s or s >= len(y):
+            continue
+        seg = y[s:e]
+        if seg.size == 0:
+            continue
+
+        frames: list[np.ndarray] = []
+        pos = 0
+        while pos + frame_len <= len(seg):
+            frames.append(seg[pos : pos + frame_len])
+            pos += hop
+        if not frames:
+            frames.append(librosa.util.fix_length(seg, frame_len))
+
+        embs: list[np.ndarray] = []
+        for f in frames:
+            try:
+                ev, _ = openl3.get_audio_embedding(
+                    f,
+                    sr,
+                    center=False,
+                    hop_size=None,
+                    content_type="music",
+                    embedding_size=emb.embedding_size,
+                )
+                if ev is None:
+                    continue
+                if ev.ndim > 1:
+                    embs.append(np.mean(ev, axis=0))
+                else:
+                    embs.append(ev)
+            except Exception:
+                continue
+
+        if not embs:
+            continue
+        m = np.mean(np.stack(embs, axis=0), axis=0)
+        v = np.var(np.stack(embs, axis=0), axis=0)
+        win_vec = np.concatenate([m, v]).astype(np.float32)
+        win_vecs.append(win_vec)
+
+    if not win_vecs:
+        return None
+    return np.mean(np.stack(win_vecs, axis=0), axis=0)
+
+
 ProgressCallback = Callable[[int, int, str], None]
 
 
@@ -116,9 +302,18 @@ def build_embeddings(
     sampling: Optional[SamplingParams] = None,
     overwrite: bool = True,
     batch_size: Optional[int] = None,
+    timbre: bool = False,
+    timbre_size: int = 512,
 ) -> None:
     meta = load_meta()
     emb = MertEmbedder(model_name=model_name, device=device)
+    timbre_emb: TimbreEmbedder | None = None
+    if timbre:
+        try:
+            timbre_emb = TimbreEmbedder(embedding_size=timbre_size)
+        except Exception as e:
+            console.print(f"[yellow]Timbre embedding disabled: {e}")
+            timbre_emb = None
     EMB.mkdir(parents=True, exist_ok=True)
     total = len(paths)
 
@@ -176,68 +371,72 @@ def build_embeddings(
             if progress is not None and task_id is not None:
                 progress.advance(task_id)
 
-        def _save_embedding(orig: str, vec: np.ndarray, used: str) -> None:
-            out = EMB / (pathlib.Path(orig).stem + ".npy")
+        def _save_embedding(orig: str, vec: np.ndarray, used: str, kind: str = "embedding") -> None:
+            suffix = "" if kind == "embedding" else f"_{kind}"
+            out = EMB / (pathlib.Path(orig).stem + f"{suffix}.npy")
             vec_fp16 = vec.astype(np.float16)
             np.save(out, vec_fp16)
             info = meta["tracks"].setdefault(orig, {})
             info.setdefault("artist", pathlib.Path(orig).stem.split(" - ")[0] if " - " in pathlib.Path(orig).stem else "")
             info.setdefault("title", pathlib.Path(orig).stem.split(" - ")[-1])
-            info["embedding"] = str(out)
-            info["embedding_source"] = used
+            info[kind] = str(out)
+            if kind == "embedding":
+                info["embedding_source"] = used
 
         # Parallelize I/O + decode; keep model inference batched to reduce GPU overhead
         workers = max(0, int(num_workers))
         done = 0
-        batch: list[tuple[str, str, np.ndarray, int, str]] = []
-
-        def _flush_batch() -> None:
+        def _process_one(orig: str, src_path: str, y: np.ndarray, sr: int, used: str) -> None:
             nonlocal done
-            if not batch:
-                return
             try:
+                windows: list[tuple[float, float]] = _default_windows(y, sr)
+                mert_vec: np.ndarray | None = None
+                timbre_vec: np.ndarray | None = None
                 if sampling is not None:
-                    # Should not enter batching when sampling is active, but guard anyway.
-                    for orig, src_path, _y, _sr, used in batch:
-                        vec = embed_with_sampling(src_path, emb, sampling)
-                        _save_embedding(orig, vec, used)
-                        done += 1
-                        if progress_callback is not None:
-                            progress_callback(done, total, orig)
-                        else:
-                            _tick()
-                    batch.clear()
-                    return
-                vecs = emb.encode_batch([(y, sr) for (_orig, _src, y, sr, _used) in batch])
-            except Exception as e:
-                console.print(f"[red]Embedding batch failed for {[b[0] for b in batch]}: {e}")
-                vecs = [None] * len(batch)
+                    vec = embed_with_sampling(src_path, emb, sampling)
+                    mert_vec = vec
+                else:
+                    vec = embed_with_default_windows(y, sr, emb, windows=windows)
+                    mert_vec = vec
+                _save_embedding(orig, vec, used, kind="embedding_mert")
 
-            for (orig, _src, _y, _sr, used), vec in zip(batch, vecs):
-                try:
-                    if vec is None:
-                        continue
-                    _save_embedding(orig, vec, used)
-                except Exception as se:
-                    console.print(f"[red]Embedding failed for {orig}: {se}")
-                finally:
-                    done += 1
-                    if progress_callback is not None:
-                        progress_callback(done, total, orig)
+                if timbre_emb is not None:
+                    try:
+                        timbre_vec = timbre_embedding_from_windows(y, sr, windows, timbre_emb)
+                        if timbre_vec is not None:
+                            _save_embedding(orig, timbre_vec, used, kind="embedding_timbre")
+                    except Exception as te:
+                        console.print(f"[yellow]Timbre embed failed for {orig}: {te}")
+
+                combined = mert_vec
+                source_label = used
+                if timbre_vec is not None:
+                    if combined is not None and combined.shape == timbre_vec.shape:
+                        combined = (W_MERT * combined) + (W_TIMBRE * timbre_vec)
+                        source_label = f"{used}+timbre({W_MERT:.2f}/{W_TIMBRE:.2f})"
                     else:
-                        _tick()
-            batch.clear()
+                        combined = timbre_vec
+                        source_label = "timbre_only"
+
+                if combined is not None:
+                    _save_embedding(orig, combined, source_label, kind="embedding")
+            except Exception as e:
+                console.print(f"[red]Embedding failed for {orig}: {e}")
+            finally:
+                done += 1
+                if progress_callback is not None:
+                    progress_callback(done, total, orig)
+                else:
+                    _tick()
 
         if workers > 0:
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 future_map = {ex.submit(_load, src): (orig, src, used) for (orig, src, used) in jobs}
                 for fut in as_completed(future_map):
-                    orig, _src, used = future_map[fut]
+                    orig, src_path, used = future_map[fut]
                     try:
                         y, sr = fut.result()
-                        batch.append((orig, _src, y, sr, used))
-                        if len(batch) >= batch_size:
-                            _flush_batch()
+                        _process_one(orig, src_path, y, sr, used)
                     except Exception as e:
                         console.print(f"[red]Embedding failed for {orig}: {e}")
                         done += 1
@@ -245,9 +444,7 @@ def build_embeddings(
                             progress_callback(done, total, orig)
                         else:
                             _tick()
-                _flush_batch()
         else:
-            # Simple serial path with optional batching
             for orig, src, used in jobs:
                 try:
                     if sampling is not None:
@@ -260,9 +457,7 @@ def build_embeddings(
                             _tick()
                         continue
                     y, sr = _load(src)
-                    batch.append((orig, src, y, sr, used))
-                    if len(batch) >= batch_size:
-                        _flush_batch()
+                    _process_one(orig, src, y, sr, used)
                 except Exception as e:
                     console.print(f"[red]Embedding failed for {orig}: {e}")
                     done += 1
@@ -270,7 +465,6 @@ def build_embeddings(
                         progress_callback(done, total, orig)
                     else:
                         _tick()
-            _flush_batch()
 
         save_meta(meta)
     finally:

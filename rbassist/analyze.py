@@ -6,10 +6,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, TaskID
 from .utils import current_file_sig, console, MetaManager
 try:
-    from .features import samples_score, bass_contour
+    from .features import samples_score, bass_contour, rhythm_contour
 except Exception:
     samples_score = None  # type: ignore
     bass_contour = None  # type: ignore
+    rhythm_contour = None  # type: ignore
 
 # Krumhansl & Kessler key profiles (major/minor)
 _MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], dtype=float)
@@ -89,6 +90,12 @@ def _analyze_single(
                 contour, rel = bass_contour(y, sr)
                 ds = librosa.util.fix_length(contour, size=256).astype(float).tolist()
                 feats["bass_contour"] = {"contour": ds, "reliability": float(rel)}
+            if rhythm_contour is not None:
+                rcont, rrel = rhythm_contour(y, sr)
+                feats["rhythm_contour"] = {
+                    "contour": librosa.util.fix_length(rcont, size=256).astype(float).tolist(),
+                    "reliability": float(rrel),
+                }
             if feats:
                 result["features"] = feats
         except Exception as e:
