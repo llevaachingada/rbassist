@@ -75,3 +75,50 @@ def bass_similarity(seed_contour: np.ndarray, cand_contour: np.ndarray) -> float
     d = float(D[-1, -1]) / max(1, len(wp))
     return float(np.exp(-d / 2.0))
 
+
+def rhythm_contour(y: np.ndarray, sr: int) -> Tuple[np.ndarray, float]:
+    """
+    Extract a normalized onset based rhythm contour and a simple reliability score.
+    Returns (contour, reliability), where:
+      - contour is a 1D np.ndarray of fixed length (256).
+      - reliability is a float in [0, 1].
+    """
+    hop = 512
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+
+    if onset_env.size == 0:
+        return np.zeros(0, dtype=np.float32), 0.0
+
+    # Normalize 0..1
+    onset_env = onset_env.astype(np.float32)
+    onset_env -= onset_env.min()
+    if onset_env.max() > 0:
+        onset_env /= onset_env.max()
+
+    contour = librosa.util.fix_length(onset_env, size=256)
+
+    # Reliability: how peaky the rhythm is, crude but useful
+    peak_ratio = float(np.mean(onset_env > 0.5))
+    rel = float(np.clip(peak_ratio * 2.0, 0.0, 1.0))
+
+    return contour.astype(np.float32), rel
+
+
+def rhythm_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Similarity of two rhythm contours in [0, 1] using DTW.
+    Higher means more similar rhythm shape.
+    """
+    if a.size == 0 or b.size == 0:
+        return 0.0
+
+    a = librosa.util.fix_length(a, size=256)
+    b = librosa.util.fix_length(b, size=256)
+
+    # 1D DTW over the contours
+    D, wp = librosa.sequence.dtw(a[:, None], b[:, None], metric="euclidean")
+    d = float(D[-1, -1]) / max(1, len(wp))
+
+    # Convert distance to similarity, scale is tunable
+    return float(np.exp(-d / 2.0))
+

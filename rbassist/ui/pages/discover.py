@@ -11,6 +11,65 @@ from ..components.filters import FilterPanel
 from ..components.track_table import TrackTable
 
 
+def tempo_score(seed_bpm: float, cand_bpm: float, max_diff: float = 6.0) -> float:
+    """Calculate BPM similarity score in [0, 1]."""
+    if seed_bpm <= 0 or cand_bpm <= 0:
+        return 0.0
+    diff = abs(seed_bpm - cand_bpm)
+    if max_diff > 0 and diff > max_diff:
+        return 0.0
+    if max_diff <= 0:
+        max_diff = 6.0
+    return max(0.0, 1.0 - diff / max_diff)
+
+
+def camelot_relation_score(seed: str, cand: str) -> float:
+    """Calculate key relation score in [0, 1] based on Camelot wheel."""
+    if not seed or not cand:
+        return 0.0
+    if seed == cand:
+        return 1.0
+
+    try:
+        n1, m1 = int(seed[:-1]), seed[-1].upper()
+        n2, m2 = int(cand[:-1]), cand[-1].upper()
+    except Exception:
+        return 0.0
+
+    # Same number, different mode: relative major or minor
+    if n1 == n2 and m1 != m2:
+        return 0.8
+
+    # Neighbor on the circle (mod 12)
+    if (n1 - n2) % 12 in (1, 11):
+        return 0.7
+
+    return 0.0
+
+
+def tag_similarity_score(seed_tags: set, cand_tags: set, prefer_tags: set = None) -> float:
+    """Calculate tag similarity using Jaccard similarity."""
+    if not seed_tags and not cand_tags:
+        return 0.0
+
+    if prefer_tags:
+        # Use prefer_tags as the reference
+        all_tags = seed_tags | prefer_tags
+    else:
+        all_tags = seed_tags
+
+    if not all_tags:
+        return 0.0
+
+    inter = len(cand_tags & all_tags)
+    union = len(cand_tags | all_tags)
+
+    if union == 0:
+        return 0.0
+
+    return inter / union
+
+
 class DiscoverPage:
     """Main recommendations page."""
 
@@ -100,11 +159,17 @@ class DiscoverPage:
             ui.notify(f"Error: {e}", type="negative")
 
     def _get_recommendations(self, seed_path: str, top: int = 50) -> list[dict]:
-        """Get recommendations for seed track."""
+        """Get recommendations for seed track with weighted scoring."""
         from rbassist.recommend import load_embedding_safe, IDX
         from rbassist.utils import camelot_relation, tempo_match
         import hnswlib
         import json
+
+        try:
+            from rbassist.features import bass_similarity, rhythm_similarity
+        except Exception:
+            bass_similarity = None
+            rhythm_similarity = None
 
         meta = self.state.meta
         tracks = meta.get("tracks", {})
@@ -127,14 +192,40 @@ class DiscoverPage:
         index.load_index(str(IDX / "hnsw.idx"))
         index.set_ef(64)
 
-        # Query
-        labels, dists = index.knn_query(seed_vec, k=min(top * 2, len(paths_map)))
+        # Query - get more candidates for scoring
+        labels, dists = index.knn_query(seed_vec, k=min(top * 4, len(paths_map)))
         labels, dists = labels[0].tolist(), dists[0].tolist()
 
-        # Filter and format results
+        # Extract seed features
         filters = self.state.filters
-        seed_bpm = seed_info.get("bpm")
-        seed_key = seed_info.get("key")
+        weights = self.state.weights
+
+        seed_bpm = float(seed_info.get("bpm") or 0.0)
+        seed_key = str(seed_info.get("key") or "")
+        seed_camelot = str(seed_info.get("camelot") or "")
+        seed_features = seed_info.get("features", {})
+        seed_tags = set(seed_info.get("tags", []) + seed_info.get("mytags", []))
+
+        # Load seed contours
+        seed_bass_contour = np.array(
+            seed_features.get("bass_contour", {}).get("contour", []),
+            dtype=float,
+        )
+        seed_rhythm_contour = np.array(
+            seed_features.get("rhythm_contour", {}).get("contour", []),
+            dtype=float,
+        )
+
+        # Hard filter settings
+        bpm_max_diff = float(filters.get("bpm_max_diff", 0.0))
+        allowed_key_rel = set(filters.get("allowed_key_relations", []))
+        require_tags = set(filters.get("require_tags", []))
+        prefer_tags = set(filters.get("prefer_tags", []))
+
+        # Calculate total weight for normalization
+        weight_sum = sum(weights.values())
+        if weight_sum <= 0:
+            weight_sum = 1.0
 
         results = []
         for label, dist in zip(labels, dists):
@@ -143,24 +234,109 @@ class DiscoverPage:
                 continue
 
             info = tracks.get(path, {})
-            cand_bpm = info.get("bpm")
-            cand_key = info.get("key")
+            cand_bpm = float(info.get("bpm") or 0.0)
+            cand_key = str(info.get("key") or "")
+            cand_camelot = str(info.get("camelot") or "")
+            cand_features = info.get("features", {})
+            cand_tags = set(info.get("tags", []) + info.get("mytags", []))
 
-            # Apply Camelot filter
-            if filters.get("camelot"):
-                ok, rule = camelot_relation(seed_key, cand_key)
-                if not ok:
+            # Hard BPM filter
+            if bpm_max_diff > 0 and seed_bpm > 0 and cand_bpm > 0:
+                if abs(seed_bpm - cand_bpm) > bpm_max_diff:
                     continue
-            else:
-                rule = "-"
 
-            # Apply tempo filter
+            # Apply legacy tempo filter (soft or hard based on tempo_pct)
             if not tempo_match(
                 seed_bpm, cand_bpm,
                 pct=filters.get("tempo_pct", 6.0),
                 allow_doubletime=filters.get("doubletime", True)
             ):
                 continue
+
+            # Hard tag filter
+            if require_tags and not require_tags.issubset(cand_tags):
+                continue
+
+            # Calculate key relation
+            key_score = camelot_relation_score(seed_camelot or seed_key, cand_camelot or cand_key)
+
+            # Hard key relation filter
+            if allowed_key_rel:
+                if key_score >= 0.99:
+                    rel = "same"
+                elif key_score >= 0.79:
+                    rel = "relative"
+                elif key_score >= 0.69:
+                    rel = "neighbor"
+                else:
+                    rel = "other"
+
+                if rel not in allowed_key_rel:
+                    continue
+            else:
+                # For display purposes
+                if key_score >= 0.99:
+                    rel = "same"
+                elif key_score >= 0.79:
+                    rel = "relative"
+                elif key_score >= 0.69:
+                    rel = "neighbor"
+                else:
+                    ok, rel = camelot_relation(seed_key, cand_key)
+                    if filters.get("camelot") and not ok:
+                        continue
+                    if not ok:
+                        rel = "-"
+
+            # Calculate all feature scores
+            score = 0.0
+
+            # ANN similarity
+            if weights.get("ann", 0.0):
+                ann_score = 1.0 - float(dist)
+                score += weights["ann"] * ann_score
+
+            # Samples score
+            if weights.get("samples", 0.0):
+                samples_val = float(cand_features.get("samples", 0.0))
+                score += weights["samples"] * samples_val
+
+            # Bass similarity
+            if weights.get("bass", 0.0) and bass_similarity is not None:
+                cand_bass_contour = np.array(
+                    cand_features.get("bass_contour", {}).get("contour", []),
+                    dtype=float,
+                )
+                if seed_bass_contour.size and cand_bass_contour.size:
+                    bass_score = float(bass_similarity(seed_bass_contour, cand_bass_contour))
+                    score += weights["bass"] * bass_score
+
+            # Rhythm similarity
+            if weights.get("rhythm", 0.0) and rhythm_similarity is not None:
+                cand_rhythm_contour = np.array(
+                    cand_features.get("rhythm_contour", {}).get("contour", []),
+                    dtype=float,
+                )
+                if seed_rhythm_contour.size and cand_rhythm_contour.size:
+                    rhythm_score = float(rhythm_similarity(seed_rhythm_contour, cand_rhythm_contour))
+                    score += weights["rhythm"] * rhythm_score
+
+            # BPM similarity (soft weight)
+            if weights.get("bpm", 0.0) and seed_bpm > 0 and cand_bpm > 0:
+                bpm_score = tempo_score(seed_bpm, cand_bpm, bpm_max_diff or filters.get("tempo_pct", 6.0))
+                score += weights["bpm"] * bpm_score
+
+            # Key similarity (soft weight)
+            if weights.get("key", 0.0):
+                score += weights["key"] * key_score
+
+            # Tag similarity (soft weight)
+            if weights.get("tags", 0.0):
+                tag_score = tag_similarity_score(seed_tags, cand_tags, prefer_tags)
+                score += weights["tags"] * tag_score
+
+            # Normalize by total weight
+            score /= weight_sum
 
             results.append({
                 "path": path,
@@ -169,13 +345,15 @@ class DiscoverPage:
                 "bpm": f"{cand_bpm:.0f}" if cand_bpm else "-",
                 "key": cand_key or "-",
                 "dist": f"{dist:.3f}",
-                "key_rule": rule,
+                "key_rule": rel,
+                "score": score,
             })
 
-            if len(results) >= top:
-                break
+        # Sort by combined score
+        results.sort(key=lambda r: r["score"], reverse=True)
 
-        return results
+        # Return top N
+        return results[:top]
 
 
 # Page instance

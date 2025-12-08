@@ -43,8 +43,12 @@ class AppState:
     # Filter weights
     weights: dict = field(default_factory=lambda: {
         "ann": 0.6,
-        "samples": 0.25,
-        "bass": 0.15,
+        "samples": 0.1,
+        "bass": 0.1,
+        "rhythm": 0.1,
+        "bpm": 0.05,
+        "key": 0.05,
+        "tags": 0.0,
     })
 
     # Filter settings
@@ -52,6 +56,10 @@ class AppState:
         "tempo_pct": 6.0,
         "camelot": True,
         "doubletime": True,
+        "bpm_max_diff": 0.0,  # 0 = disabled, otherwise hard limit in BPM
+        "allowed_key_relations": [],  # empty = all allowed, or ["same", "relative", "neighbor"]
+        "require_tags": [],  # must have all these tags
+        "prefer_tags": [],  # soft preference for these tags
     })
 
     # Workspace settings

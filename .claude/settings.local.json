@@ -9,7 +9,11 @@
       "Bash(find:*)",
       "Bash(git checkout:*)",
       "Bash(findstr:*)",
-      "Bash(rbassist ui:*)"
+      "Bash(rbassist ui:*)",
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
