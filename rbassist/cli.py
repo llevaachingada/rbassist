@@ -89,6 +89,8 @@ def cmd_reanalyze(
     analyze_bpm: bool = typer.Option(True, help="Run BPM/Key analysis after embeddings"),
     overwrite: bool = typer.Option(False, help="Overwrite existing embeddings/BPM/Key info"),
     analyze_workers: int = typer.Option(0, help="Process workers for BPM/Key (0 = serial)"),
+    timbre: bool = typer.Option(False, help="Also write timbre embeddings (OpenL3) and blend them into main embeddings"),
+    timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
 ):
     from .embed import build_embeddings
 
@@ -105,6 +107,8 @@ def cmd_reanalyze(
         num_workers=workers,
         sampling=params,
         overwrite=overwrite,
+        timbre=timbre,
+        timbre_size=timbre_size,
     )
     if analyze_bpm:
         analyze_bpm_key(

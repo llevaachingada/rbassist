@@ -28,6 +28,18 @@ def render() -> None:
                         placeholder="Select your music library folder..."
                     ).props("dark dense").classes("flex-1")
 
+                    def _set_folder(val: str) -> None:
+                        if not val:
+                            ui.notify("Folder path is empty", type="warning")
+                            return
+                        p = Path(val)
+                        if not p.exists():
+                            ui.notify(f"Folder does not exist: {val}", type="warning")
+                            return
+                        folder_input.value = str(p)
+                        state.music_folder = str(p)
+                        ui.notify(f"Selected: {p}", type="positive")
+
                     def pick_folder():
                         try:
                             import tkinter as tk
@@ -37,13 +49,14 @@ def render() -> None:
                             folder = filedialog.askdirectory(title="Select Music Folder")
                             root.destroy()
                             if folder:
-                                folder_input.value = folder
-                                state.music_folder = folder
-                                ui.notify(f"Selected: {folder}", type="positive")
+                                _set_folder(folder)
+                            else:
+                                ui.notify("No folder selected. Paste a path instead.", type="info")
                         except Exception as e:
-                            ui.notify(f"Folder picker error: {e}", type="negative")
+                            ui.notify(f"Folder picker error: {e}. Paste a path instead.", type="warning")
 
                     ui.button(icon="folder", on_click=pick_folder).props("flat dense")
+                    ui.button("Use path", on_click=lambda: _set_folder(folder_input.value)).props("flat dense").classes("bg-[#252525] text-gray-200")
 
                 with ui.row().classes("w-full items-center gap-4"):
                     ui.label("Device:").classes("text-gray-400 w-32")
