@@ -18,14 +18,34 @@ _MIN = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.3
 
 # Mapping from pitch class name (sharp) to Camelot
 _CAML_MAJ = {
-    'C':'8B','C#':'3B','D':'10B','D#':'5B','E':'12B','F':'7B',
-    'F#':'2B','G':'9B','G#':'4B','A':'11B','A#':'6B','B':'1B'
+    "C": "8B",
+    "C#": "3B",
+    "D": "10B",
+    "D#": "5B",
+    "E": "12B",
+    "F": "7B",
+    "F#": "2B",
+    "G": "9B",
+    "G#": "4B",
+    "A": "11B",
+    "A#": "6B",
+    "B": "1B",
 }
 _CAML_MIN = {
-    'C':'5A','C#':'12A','D':'7A','D#':'2A','E':'9A','F':'4A',
-    'F#':'11A','G':'6A','G#':'1A','A':'8A','A#':'3A','B':'10A'
+    "C": "5A",
+    "C#": "12A",
+    "D": "7A",
+    "D#": "2A",
+    "E": "9A",
+    "F": "4A",
+    "F#": "11A",
+    "G": "6A",
+    "G#": "1A",
+    "A": "8A",
+    "A#": "3A",
+    "B": "10A",
 }
-_PC_TO_NAME_SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+_PC_TO_NAME_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
 def _estimate_tempo(y: np.ndarray, sr: int) -> float:
@@ -42,17 +62,17 @@ def _estimate_key(y: np.ndarray, sr: int) -> tuple[str, str]:
     if np.linalg.norm(chroma) > 0:
         chroma = chroma / np.linalg.norm(chroma)
     best_score = -1e9
-    best = (0, 'maj')
+    best = (0, "maj")
     for pc in range(12):
         maj_s = float(chroma @ np.roll(_MAJ, pc))
         min_s = float(chroma @ np.roll(_MIN, pc))
         if maj_s > best_score:
-            best_score, best = maj_s, (pc, 'maj')
+            best_score, best = maj_s, (pc, "maj")
         if min_s > best_score:
-            best_score, best = min_s, (pc, 'min')
+            best_score, best = min_s, (pc, "min")
     pc, mode = best
     name = _PC_TO_NAME_SHARP[pc]
-    if mode == 'maj':
+    if mode == "maj":
         camelot = _CAML_MAJ[name]
         full = f"{name} major"
     else:
@@ -79,6 +99,7 @@ def _analyze_single(
         if add_cues:
             try:
                 from .cues import propose_cues
+
                 result["cues"] = propose_cues(y, sr, bpm=result["bpm"])
             except Exception:
                 pass
@@ -211,3 +232,4 @@ def analyze_bpm_key(
         finally:
             if progress is not None:
                 progress.stop()
+

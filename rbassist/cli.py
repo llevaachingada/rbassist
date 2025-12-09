@@ -58,6 +58,13 @@ def cmd_embed(
     timbre: bool = typer.Option(False, help="Also write a timbre-only embedding using OpenL3"),
     timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
 ):
+    # Enforce canonical embedding defaults to keep library consistent.
+    if duration_s != 120:
+        console.print("[red]Non-default --duration-s is not allowed; embeddings must use the canonical windowing setup (120s cap).[/red]")
+        raise typer.Exit(1)
+    if timbre_size != 512:
+        console.print("[red]Non-default --timbre-size is not allowed; embeddings must use 512-d OpenL3 timbre vectors.[/red]")
+        raise typer.Exit(1)
     try:
         from .embed import build_embeddings, DEFAULT_MODEL
     except Exception as e:

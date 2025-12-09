@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import asyncio
+import shlex
+import re
 from nicegui import ui
 
 from ..state import get_state
@@ -21,24 +23,105 @@ def render() -> None:
             ui.label("Workspace").classes("text-lg font-semibold text-gray-200 mb-3")
 
             with ui.column().classes("gap-4"):
-                with ui.row().classes("w-full items-center gap-4"):
-                    ui.label("Music Folder:").classes("text-gray-400 w-32")
-                    folder_input = ui.input(
-                        value=state.music_folder or "",
-                        placeholder="Select your music library folder..."
-                    ).props("dark dense").classes("flex-1")
+                with ui.row().classes("w-full items-start gap-4"):
+                    ui.label("Music Folders:").classes("text-gray-400 w-32 pt-1")
 
-                    def _set_folder(val: str) -> None:
-                        if not val:
+                    folder_list = ui.column().classes("flex-1 gap-2")
+                    folder_input = ui.input(
+                        value="",
+                        placeholder="Paste a folder path to add..."
+                    ).props("dark dense").classes("w-full")
+
+                    def _render_folder_list() -> None:
+                        folder_list.clear()
+                        with folder_list:
+                            if not state.music_folders:
+                                ui.label("No folders selected. Add one below.").classes("text-gray-500 text-sm")
+                            for path in state.music_folders:
+                                with ui.row().classes("w-full items-center gap-2"):
+                                    ui.label(path).classes("text-gray-200 text-sm truncate")
+
+                                    def _remove(p: str = path) -> None:
+                                        state.music_folders = [f for f in state.music_folders if f != p]
+                                        _render_folder_list()
+
+                                    ui.button(icon="close", on_click=_remove).props("flat round dense").classes("text-gray-400")
+
+                    def _add_folder(val: str) -> None:
+                        def _parse_folder_inputs(raw: str) -> list[str]:
+                            if not raw:
+                                return []
+                            tokens: list[str] = []
+
+                            def _strip_quotes(s: str) -> str:
+                                s = s.strip()
+                                if len(s) >= 2 and s[0] == s[-1] and s[0] in {"'", '"', "“", "”", "‘", "’"}:
+                                    return s[1:-1]
+                                # handle mismatched leading/trailing smart quotes
+                                if s[:1] in {"'", '"', "“", "”", "‘", "’"}:
+                                    s = s[1:]
+                                if s[-1:] in {"'", '"', "“", "”", "‘", "’"}:
+                                    s = s[:-1]
+                                return s.strip()
+
+                            def _extract_quoted(line: str) -> list[str]:
+                                # Look for "quoted", 'quoted', or “smart quoted” segments
+                                matches = re.findall(r'"([^"]+)"|“([^”]+)”|\'([^\']+)\'|‘([^’]+)’', line)
+                                out: list[str] = []
+                                for a, b, c, d in matches:
+                                    candidate = a or b or c or d
+                                    if candidate:
+                                        out.append(candidate)
+                                return out
+
+                            for line in raw.replace("\r", "\n").split("\n"):
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    parts = shlex.split(line, posix=False)
+                                except ValueError:
+                                    parts = [line]
+                                # Fallback: if shlex returned one long string but we had multiple quoted segments
+                                if len(parts) == 1:
+                                    quoted = _extract_quoted(line)
+                                    if len(quoted) > 1:
+                                        parts = quoted
+                                for part in parts:
+                                    for piece in part.split(";"):
+                                        piece = _strip_quotes(piece)
+                                        if piece:
+                                            tokens.append(piece)
+                            return tokens
+
+                        paths = _parse_folder_inputs(val)
+                        if not paths:
                             ui.notify("Folder path is empty", type="warning")
                             return
-                        p = Path(val)
-                        if not p.exists():
-                            ui.notify(f"Folder does not exist: {val}", type="warning")
-                            return
-                        folder_input.value = str(p)
-                        state.music_folder = str(p)
-                        ui.notify(f"Selected: {p}", type="positive")
+                        added = 0
+                        skipped_dupe = 0
+                        missing: list[str] = []
+
+                        for raw_path in paths:
+                            p = Path(raw_path).expanduser()
+                            if not p.exists():
+                                missing.append(str(raw_path))
+                                continue
+                            resolved = str(p.resolve())
+                            if resolved in state.music_folders:
+                                skipped_dupe += 1
+                                continue
+                            state.music_folders.append(resolved)
+                            added += 1
+
+                        folder_input.value = ""
+                        _render_folder_list()
+                        if added:
+                            ui.notify(f"Added {added} folder(s)", type="positive")
+                        if skipped_dupe:
+                            ui.notify(f"{skipped_dupe} duplicate folder(s) skipped", type="info")
+                        if missing:
+                            ui.notify(f"Folder does not exist: {', '.join(missing)}", type="warning")
 
                     def pick_folder():
                         try:
@@ -49,14 +132,18 @@ def render() -> None:
                             folder = filedialog.askdirectory(title="Select Music Folder")
                             root.destroy()
                             if folder:
-                                _set_folder(folder)
+                                _add_folder(folder)
                             else:
                                 ui.notify("No folder selected. Paste a path instead.", type="info")
                         except Exception as e:
                             ui.notify(f"Folder picker error: {e}. Paste a path instead.", type="warning")
 
-                    ui.button(icon="folder", on_click=pick_folder).props("flat dense")
-                    ui.button("Use path", on_click=lambda: _set_folder(folder_input.value)).props("flat dense").classes("bg-[#252525] text-gray-200")
+                    with ui.column().classes("flex-1 gap-2"):
+                        _render_folder_list()
+                        with ui.row().classes("w-full items-center gap-2"):
+                            ui.button(icon="folder", on_click=pick_folder).props("flat dense")
+                            ui.button("Add path", on_click=lambda: _add_folder(folder_input.value)).props("flat dense").classes("bg-[#252525] text-gray-200")
+                        ui.label("You can add multiple folders; all will be scanned.").classes("text-gray-500 text-xs")
 
                 with ui.row().classes("w-full items-center gap-4"):
                     ui.label("Device:").classes("text-gray-400 w-32")
@@ -83,8 +170,9 @@ def render() -> None:
             with ui.column().classes("gap-4"):
                 with ui.row().classes("w-full items-center gap-4"):
                     ui.label("Duration cap (s):").classes("text-gray-400 w-32")
-                    duration_input = ui.number(value=state.duration_s, min=30, max=300, step=10).props("dark dense").classes("w-32")
-                    ui.label("Cap per track; embed still uses intro/core/late windows").classes("text-gray-500 text-sm")
+                    # Hard-wired to canonical default; UI is informational only.
+                    duration_input = ui.number(value=120, min=120, max=120, step=0).props("dark dense readonly").classes("w-32")
+                    ui.label("Fixed: canonical intro/core/late windowing (120s cap)").classes("text-gray-500 text-sm")
 
                 with ui.row().classes("w-full items-center gap-4"):
                     ui.label("Workers:").classes("text-gray-400 w-32")
@@ -111,30 +199,47 @@ def render() -> None:
                     from rbassist.analyze import analyze_bpm_key
                     from rbassist.recommend import build_index
 
-                    music_root = state.music_folder
-                    if not music_root:
-                        ui.notify("Set Music Folder first", type="warning")
+                    # If user pasted paths but didn't click "Add path", ingest them now
+                    if folder_input.value:
+                        _add_folder(folder_input.value)
+                    # Filter out missing paths but warn the user
+                    music_roots = [p for p in state.music_folders if Path(p).exists()]
+                    missing = [p for p in state.music_folders if p not in music_roots]
+                    if missing:
+                        ui.notify(f"Skipping missing folder(s): {', '.join(missing)}", type="warning")
+                    if not music_roots:
+                        ui.notify("Set at least one Music Folder first", type="warning")
                         return
-                    files = walk_audio([music_root])
+                    files = walk_audio(music_roots)
                     if not files:
-                        ui.notify("No audio files found under Music Folder", type="warning")
+                        ui.notify("No audio files found under Music Folders", type="warning")
                         return
 
                     total_steps = len(files) * 2 + 1  # embed + analyze + index
                     completed = 0
-                    use_timbre = state.use_timbre
+                    use_timbre = True
                     overwrite = state.embed_overwrite
 
                     def _update(label: str):
-                        pipe_label.text = label
-                        pipe_progress.value = min(max(completed / max(total_steps, 1), 0.0), 1.0)
-                        pipe_progress.update()
-                        pipe_label.update()
+                        """Safely update progress UI; ignore if client/slot is gone."""
+                        try:
+                            pipe_label.text = label
+                            pipe_progress.value = min(max(completed / max(total_steps, 1), 0.0), 1.0)
+                            pipe_progress.update()
+                            pipe_label.update()
+                        except RuntimeError:
+                            # Client or parent element has been deleted (tab closed/reloaded);
+                            # allow background pipeline to continue silently.
+                            pass
 
-                    ui.notify(f"Running pipeline for {len(files)} track(s)...", type="info")
+                    try:
+                        ui.notify(f"Running pipeline for {len(files)} track(s)...", type="info")
+                    except RuntimeError:
+                        # Same rationale as _update: UI may no longer be attached.
+                        pass
                     _update("Starting pipeline...")
 
-                    async def _work():
+                    def _work():
                         nonlocal completed
                         # Embed
                         def _embed_cb(done: int, count: int, path: str):
@@ -144,7 +249,7 @@ def render() -> None:
 
                         build_embeddings(
                             files,
-                            duration_s=int(duration_input.value or state.duration_s),
+                            duration_s=120,
                             device=(state.device if state.device != "auto" else None),
                             num_workers=int(workers_input.value or state.workers),
                             batch_size=int(batch_input.value or state.batch_size),
@@ -181,9 +286,18 @@ def render() -> None:
 
                     try:
                         await asyncio.to_thread(_work)
-                        ui.notify("Embed + Analyze + Index complete", type="positive")
+                        try:
+                            ui.notify("Embed + Analyze + Index complete", type="positive")
+                        except RuntimeError:
+                            # Client may have gone away; pipeline still finished.
+                            pass
                     except Exception as e:
-                        ui.notify(f"Pipeline failed: {e}", type="negative")
+                        try:
+                            ui.notify(f"Pipeline failed: {e}", type="negative")
+                        except RuntimeError:
+                            # If the client is gone we can't surface the error in UI;
+                            # let it be visible in the terminal logs only.
+                            pass
 
                 ui.button("Embed + Analyze + Index", icon="play_arrow", on_click=run_pipeline).props("flat").classes(
                     "bg-indigo-600 hover:bg-indigo-500 w-64"
@@ -223,8 +337,10 @@ def render() -> None:
         # Save button
         def save_all_settings():
             try:
+                if folder_input.value:
+                    _add_folder(folder_input.value)
                 # Update state from inputs
-                state.music_folder = folder_input.value or ""
+                state.music_folders = [str(Path(f).resolve()) for f in state.music_folders if Path(f).exists()]
                 state.device = device_select.value or "auto"
                 state.duration_s = int(duration_input.value or 120)
                 state.workers = int(workers_input.value or 4)

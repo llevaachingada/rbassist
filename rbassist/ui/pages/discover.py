@@ -123,15 +123,21 @@ class DiscoverPage:
 
                 # Action buttons
                 with ui.row().classes("w-full gap-2"):
-                    ui.button("Select All", icon="select_all").props("flat dense").classes(
-                        "bg-[#252525] hover:bg-[#333] text-gray-300"
-                    )
-                    ui.button("Add to Playlist", icon="playlist_add").props("flat dense").classes(
-                        "bg-[#252525] hover:bg-[#333] text-gray-300"
-                    )
-                    ui.button("Export Selection", icon="download").props("flat dense").classes(
-                        "bg-[#252525] hover:bg-[#333] text-gray-300"
-                    )
+                    ui.button(
+                        "Select All",
+                        icon="select_all",
+                        on_click=lambda: ui.notify("Bulk selection coming soon", type="info"),
+                    ).props("flat dense").classes("bg-[#252525] hover:bg-[#333] text-gray-300")
+                    ui.button(
+                        "Add to Playlist",
+                        icon="playlist_add",
+                        on_click=lambda: ui.notify("Playlist export coming soon", type="info"),
+                    ).props("flat dense").classes("bg-[#252525] hover:bg-[#333] text-gray-300")
+                    ui.button(
+                        "Export Selection",
+                        icon="download",
+                        on_click=lambda: ui.notify("Selection export coming soon", type="info"),
+                    ).props("flat dense").classes("bg-[#252525] hover:bg-[#333] text-gray-300")
 
     def _on_seed_change(self) -> None:
         """Handle seed track change."""

@@ -35,9 +35,12 @@ rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fas
 3. `rbassist index`
 4. `rbassist recommend "Artist - Track" --top 25` or start the NiceGUI UI via `rbassist ui`
 
-### Embedding updates (Dec 2025)
-- Default embeddings sample intro/core/late slices and average them.
-- Optional timbre branch (OpenL3 music, 48 kHz, 1s/50% overlap) mixes into the main embedding at 70/30 when `--timbre` is used; component files `_mert.npy` and `_timbre.npy` are stored alongside the combined `embedding.npy`.
+### Embedding defaults (Dec 2025)
+- **Slicing policy:** per track, rbassist spends ~80 seconds of audio budget using three fixed slices: 10s intro, 60s core (40s on medium-length tracks), and 10s late. The intro starts at the first non-silent audio, the core slice is centered on the track midpoint (clamped to stay inside the file), and the late slice sits near the end with 5s of headroom and no overlap with the core.
+- **Edge cases:** tracks shorter than ~80s are embedded as a single full-track window; medium tracks use a 10/40/10 pattern; very long tracks still use the same 80s budget to capture overall “vibe” rather than full coverage.
+- **Layer / pooling policy:** MERT embeddings use the model’s upper layers with mean pooling over each slice, and then mean-pool across the three slices into a single 1024-d vector.
+- **Timbre branch:** an OpenL3 “music” model at 48 kHz with 1.0s frames and 50% overlap produces a timbre embedding for the same windows. Each slice aggregates mean and variance to form a 1024-d timbre vector (mean || variance), and rbassist blends MERT and timbre at fixed weights 70/30 (W_MERT / W_TIMBRE). Component files `_mert.npy` and `_timbre.npy` are saved alongside the combined `embedding.npy`.
+- **Hard defaults:** the core parameters (slice durations, OpenL3 frame/hop, and 512-d timbre size) are treated as canonical; CLI/UI guardrails prevent running with non-default duration or timbre size so that a library’s embeddings remain consistent over time.
 5. `rbassist tags-auto --margin 0.05 --apply` or review in the GUI’s Auto Tag Suggestions table.
 6. `rbassist export-xml --out rbassist.xml` for Rekordbox ingest.
 

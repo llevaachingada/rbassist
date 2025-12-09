@@ -122,152 +122,70 @@ class TimbreEmbedder:
 
 def embed_with_sampling(audio_path: str, embedder: MertEmbedder, params: SamplingParams) -> np.ndarray:
     """Embed multiple segments chosen by sampling profile and average them."""
-    windows = pick_windows(audio_path, params)
-    vecs: list[np.ndarray] = []
-    for start, end in windows:
-        try:
-            y, sr = librosa.load(audio_path, sr=None, mono=True, offset=start, duration=(end - start))
-            vecs.append(embedder.encode_array(y, sr))
-        except Exception as e:
-            console.print(f"[yellow]Sampling segment failed for {audio_path} [{start:.1f}-{end:.1f}s]: {e}")
-    if not vecs:
-        # Fallback: full embed
-        return embedder.embed(audio_path)
-    return np.mean(np.stack(vecs, axis=0), axis=0)
-
-
-def _first_non_silent_time(y: np.ndarray, sr: int, top_db: float = 40.0) -> float:
-    """Estimate start time of first non-silent region."""
-    try:
-        intervals = librosa.effects.split(y, top_db=top_db)
-        if intervals.size:
-            return float(intervals[0, 0] / sr)
-    except Exception:
-        pass
-    return 0.0
-
-
-def _default_windows(y: np.ndarray, sr: int) -> list[tuple[float, float]]:
-    """
-    Pick intro/core/late windows for embedding according to staged rules:
-      - Short (<80s): single full-track window.
-      - Medium (80–140s): ~10s intro, ~40s core, ~10s late.
-      - Long: 10s intro, 60s core (centered), 10s late near end, no overlap.
-    """
-    T = len(y) / sr if sr else 0.0
-    if T <= 0:
-        return []
-
-    # Short tracks: single pass.
-    if T < 80.0:
-        return [(0.0, T)]
-
-    # Helper to clamp bounds.
-    def _clamp(start: float, end: float) -> tuple[float, float]:
-        s = max(0.0, min(start, T))
-        e = max(s, min(end, T))
-        return s, e
-
-    t_first = _first_non_silent_time(y, sr)
-
-    if T < 140.0:
-        # Medium tracks: intro/core/late but shorter core window.
-        intro = _clamp(t_first, t_first + 10.0)
-        t_mid = T / 2.0
-        core = _clamp(t_mid - 20.0, t_mid + 20.0)
-        tC_end = max(core[1] + 5.0, T - 5.0)
-        late = _clamp(tC_end - 10.0, tC_end)
-        return [intro, core, late]
-
-    # Long/regular tracks.
-    intro = _clamp(t_first, t_first + 10.0)
-
-    t_mid = T / 2.0
-    core_start = max(0.0, min(t_mid - 30.0, T - 60.0))
-    core = _clamp(core_start, core_start + 60.0)
-
-    tC_end = max(core[1] + 5.0, T - 5.0)
-    late = _clamp(tC_end - 10.0, tC_end)
-
-    windows = [intro, core]
-    # Avoid adding a degenerate late window.
-    if late[1] - late[0] > 1e-3 and late[0] < T:
-        windows.append(late)
-    return windows
-
-
-def embed_with_default_windows(y: np.ndarray, sr: int, embedder: MertEmbedder, windows: Optional[list[tuple[float, float]]] = None) -> np.ndarray:
-    """Embed using intro/core/late windows and average the vectors."""
-    windows = windows if windows is not None else _default_windows(y, sr)
-    if not windows:
-        return embedder.encode_array(y, sr)
-
-    segments: list[tuple[np.ndarray, int]] = []
-    for start, end in windows:
+    y, sr = librosa.load(audio_path, sr=None, mono=True)
+    segments = pick_windows(y, sr, params)
+    embs: list[np.ndarray] = []
+    for start, end in segments:
         s = int(start * sr)
         e = int(end * sr)
-        if e <= s or s >= len(y):
+        if s >= e or s >= y.shape[0]:
             continue
         seg = y[s:e]
-        if seg.size == 0:
+        embs.append(embedder.encode_array(seg, sr))
+    if not embs:
+        return embedder.encode_array(y, sr)
+    return np.mean(np.stack(embs, axis=0), axis=0)
+
+
+def _window_slices(y: np.ndarray, sr: int, windows: list[tuple[float, float]]) -> list[np.ndarray]:
+    slices: list[np.ndarray] = []
+    n = y.shape[0]
+    for start_s, end_s in windows:
+        s = int(start_s * sr)
+        e = int(end_s * sr)
+        if s >= e or s >= n:
             continue
-        segments.append((seg, sr))
-
-    if not segments:
-        return embedder.encode_array(y, sr)
-
-    vecs = embedder.encode_batch(segments)
-    vecs = [v for v in vecs if v is not None]
-    if not vecs:
-        return embedder.encode_array(y, sr)
-    return np.mean(np.stack(vecs, axis=0), axis=0)
+        e = min(e, n)
+        slices.append(y[s:e])
+    return slices
 
 
-def timbre_embedding_from_windows(y: np.ndarray, sr: int, windows: list[tuple[float, float]], emb: TimbreEmbedder) -> Optional[np.ndarray]:
-    """Compute timbre embedding: per-window, 1s frames @48kHz with 50% overlap, mean+var pooling."""
-    if not windows:
-        return None
+def timbre_embedding_from_windows(
+    y: np.ndarray,
+    sr: int,
+    windows: list[tuple[float, float]],
+    timbre_emb: TimbreEmbedder,
+) -> np.ndarray | None:
+    """Compute OpenL3 timbre embedding over given windows using 1s/50% frames."""
     if openl3 is None:
         return None
-
+    if y.ndim != 1:
+        y = librosa.to_mono(y)
+    # resample once for timbre
     if sr != TIMBRE_SR:
         y = librosa.resample(y, orig_sr=sr, target_sr=TIMBRE_SR)
         sr = TIMBRE_SR
 
-    frame_len = int(TIMBRE_SR * TIMBRE_FRAME_S)
-    hop = int(frame_len * (1.0 - TIMBRE_OVERLAP))
-    if hop <= 0:
-        hop = max(1, frame_len // 2)
-
     win_vecs: list[np.ndarray] = []
-    for start, end in windows:
-        s = int(start * sr)
-        e = int(end * sr)
-        if e <= s or s >= len(y):
+    for start_s, end_s in windows:
+        s = int(start_s * sr)
+        e = int(end_s * sr)
+        if s >= e or s >= y.shape[0]:
             continue
+        e = min(e, y.shape[0])
         seg = y[s:e]
         if seg.size == 0:
             continue
-
-        frames: list[np.ndarray] = []
-        pos = 0
-        while pos + frame_len <= len(seg):
-            frames.append(seg[pos : pos + frame_len])
-            pos += hop
-        if not frames:
-            frames.append(librosa.util.fix_length(seg, frame_len))
-
+        frame_len = int(TIMBRE_FRAME_S * sr)
+        hop = int(frame_len * (1.0 - TIMBRE_OVERLAP))
         embs: list[np.ndarray] = []
-        for f in frames:
+        for i in range(0, max(len(seg) - frame_len, 1), hop):
+            frame = seg[i : i + frame_len]
+            if frame.size < frame_len:
+                pad = np.zeros(frame_len - frame.size, dtype=seg.dtype)
+                frame = np.concatenate([frame, pad])
             try:
-                ev, _ = openl3.get_audio_embedding(
-                    f,
-                    sr,
-                    center=False,
-                    hop_size=None,
-                    content_type="music",
-                    embedding_size=emb.embedding_size,
-                )
+                ev = timbre_emb.encode_array(frame, sr)
                 if ev is None:
                     continue
                 if ev.ndim > 1:
@@ -290,6 +208,90 @@ def timbre_embedding_from_windows(y: np.ndarray, sr: int, windows: list[tuple[fl
 
 
 ProgressCallback = Callable[[int, int, str], None]
+
+
+def _first_non_silent_time(y: np.ndarray, sr: int, threshold: float = 1e-4) -> float:
+    """Return the time (s) of the first sample above a small energy threshold."""
+    if y.size == 0 or sr <= 0:
+        return 0.0
+    amp = np.abs(y)
+    idx = np.argmax(amp > threshold)
+    if amp[idx] <= threshold:
+        return 0.0
+    return float(idx) / float(sr)
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _default_windows(y: np.ndarray, sr: int) -> list[tuple[float, float]]:
+    """Intro / core / late slicing with ~80s budget (10 / 60 / 10).
+
+    Rules (simple version from design doc):
+      - Intro: 10 s starting at first non‑silent audio.
+      - Core: 60 s centered at track midpoint (clamped to [0, T-60]).
+      - Late: 10 s ending ~5 s before the end, and not overlapping core.
+
+    Edge cases:
+      - T < 80 s: single window over full track.
+      - 80 s ≤ T < 140 s: use 10/40/10 pattern (shorter core).
+    """
+    dur = y.shape[0] / sr if sr > 0 else 0.0
+    if dur <= 0:
+        return [(0.0, 10.0)]
+
+    # Very short: just embed the whole track once.
+    if dur < 80.0:
+        return [(0.0, dur)]
+
+    intro_len = 10.0
+    late_len = 10.0
+    core_len = 60.0 if dur >= 140.0 else 40.0
+
+    # Intro slice
+    tA_start = _first_non_silent_time(y, sr)
+    tA_end = _clamp(tA_start + intro_len, 0.0, dur)
+
+    # Core slice centered on midpoint
+    t_mid = dur / 2.0
+    tB_start = _clamp(t_mid - core_len / 2.0, 0.0, max(dur - core_len, 0.0))
+    tB_end = _clamp(tB_start + core_len, 0.0, dur)
+
+    # Late slice near the end, avoiding overlap with core (leave 5s margin)
+    tC_end = max(dur - 5.0, 0.0)
+    tC_start = max(tC_end - late_len, tB_end + 5.0)
+    windows: list[tuple[float, float]] = []
+
+    def _add_window(start: float, end: float) -> None:
+        if end - start > 1.0 and end > 0.0 and start < dur:
+            windows.append((max(start, 0.0), min(end, dur)))
+
+    _add_window(tA_start, tA_end)
+    _add_window(tB_start, tB_end)
+    _add_window(tC_start, tC_end)
+
+    # Fallback: if something degenerated, at least cover 10 s from start.
+    if not windows:
+        windows.append((0.0, min(10.0, dur)))
+    return windows
+
+
+def embed_with_default_windows(
+    y: np.ndarray,
+    sr: int,
+    embedder: MertEmbedder,
+    windows: Optional[list[tuple[float, float]]] = None,
+) -> np.ndarray:
+    if windows is None:
+        windows = _default_windows(y, sr)
+    slices = _window_slices(y, sr, windows)
+    if not slices:
+        return embedder.encode_array(y, sr)
+    embs: list[np.ndarray] = []
+    for seg in slices:
+        embs.append(embedder.encode_array(seg, sr))
+    return np.mean(np.stack(embs, axis=0), axis=0)
 
 
 def build_embeddings(

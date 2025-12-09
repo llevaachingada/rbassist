@@ -79,23 +79,30 @@ def flush_meta(manager: MetaManager) -> None:
 
 
 def pick_device(user_choice: str | None = None) -> str:
-    """Choose best available device, honoring an explicit user choice when valid."""
-    if user_choice:
-        choice = user_choice.lower()
-        if choice == "cpu":
-            return "cpu"
-        if choice in {"cuda", "rocm"}:
-            if torch.cuda.is_available():
-                return "cuda"
-            return "cpu"
-        if choice == "mps":
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                return "mps"
-            return "cpu"
+    """Choose best available device, preferring CUDA and warning loudly on CPU fallback.
+
+    - Default / 'cuda': require a visible CUDA GPU; if not present, print a red warning
+      so the user knows embeddings will not run on GPU.
+    - 'cpu': explicitly request CPU (used only for debugging).
+    - 'mps': use Apple MPS if available, otherwise warn and fall back to CPU.
+    """
+    choice = (user_choice or "cuda").lower()
+    if choice == "cpu":
+        return "cpu"
+    if choice in {"cuda", "rocm"}:
+        if torch.cuda.is_available():
+            return "cuda"
+        console.print("[red]CUDA requested but no GPU is available; falling back to CPU.[/red]")
+        return "cpu"
+    if choice == "mps":
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        console.print("[red]MPS requested but not available; falling back to CPU.[/red]")
+        return "cpu"
+    # Unknown choice: treat as 'cuda' preference.
     if torch.cuda.is_available():
         return "cuda"
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
+    console.print(f"[red]Unknown device '{user_choice}'; no GPU detected, using CPU.[/red]")
     return "cpu"
 
 # ------------------------------

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rbassist.utils import load_meta, DATA, IDX, ROOT
+from rbassist.utils import load_meta, DATA, IDX, ROOT, pick_device
 
 # UI config file
 UI_CONFIG = ROOT / "config" / "ui_settings.json"
@@ -63,8 +63,8 @@ class AppState:
     })
 
     # Workspace settings
-    music_folder: str = ""
-    device: str = "auto"
+    music_folders: list[str] = field(default_factory=list)
+    device: str = pick_device("cuda")
     duration_s: int = 90
     workers: int = 4
     batch_size: int = 4
@@ -72,6 +72,19 @@ class AppState:
     skip_analyzed: bool = True
     use_timbre: bool = True
     embed_overwrite: bool = True
+
+    @property
+    def music_folder(self) -> str:
+        """Backward-compatible single-folder accessor."""
+        return self.music_folders[0] if self.music_folders else ""
+
+    @music_folder.setter
+    def music_folder(self, value: str) -> None:
+        """Set a single music folder (clears existing list)."""
+        if value:
+            self.music_folders = [str(Path(value))]
+        else:
+            self.music_folders = []
 
     def refresh_meta(self) -> None:
         """Reload metadata from disk."""
@@ -106,8 +119,16 @@ class AppState:
         """Load settings from config file."""
         config = load_ui_config()
         if config:
-            self.music_folder = config.get("music_folder", "")
-            self.device = config.get("device", "auto")
+            folders = config.get("music_folders")
+            # Backward compatibility: accept single string key
+            if folders is None:
+                legacy = config.get("music_folder", "")
+                folders = [legacy] if legacy else []
+            # Normalize to list[str]
+            if isinstance(folders, str):
+                folders = [folders] if folders else []
+            self.music_folders = [str(Path(p)) for p in folders if p]
+            self.device = config.get("device", pick_device("cuda"))
             self.duration_s = config.get("duration_s", 120)
             self.workers = config.get("workers", 4)
             self.batch_size = config.get("batch_size", 4)
@@ -125,7 +146,9 @@ class AppState:
     def save_settings(self) -> None:
         """Save settings to config file."""
         config = {
-            "music_folder": self.music_folder,
+            "music_folders": self.music_folders,
+            # legacy key retained for compatibility with older configs
+            "music_folder": self.music_folders[0] if self.music_folders else "",
             "device": self.device,
             "duration_s": self.duration_s,
             "workers": self.workers,

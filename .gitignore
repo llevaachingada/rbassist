@@ -46,6 +46,9 @@ Thumbs.db
 data/**
 !data/.gitkeep
 
+# Local archives (do not sync)
+archive_*/**
+
 # Temp/log/backup
 *.log
 *.tmp

@@ -54,10 +54,10 @@ Once I have that information, I can help you understand how to integrate these e
 ### Workflow Improvements
 
 #### Library Management
-- [ ] Intelligent track deduplication
-- [ ] Automated metadata cleanup
-- [ ] Advanced tag inference
-- [ ] Comprehensive library health checks
+- [ ] Intelligent track deduplication UI: wire Tools → Duplicate Finder to `duplicates.find_duplicates` and show KEEP/REMOVE pairs with CDJ warnings.
+- [ ] Automated metadata cleanup helpers (artist/title normalization, missing BPM/key reports).
+- [ ] Advanced tag inference UI: expose `tags-auto` parameters in the Tagging page (min_samples, margin, prune_margin, apply) beyond the current CSV-only GUI flow.
+- [ ] Comprehensive library health checks (counts of missing embeddings/BPM/key/cues, corrupt files, inconsistent tags).
 
 #### User Preferences
 - [ ] Machine learning-based preference learning
@@ -79,10 +79,10 @@ Once I have that information, I can help you understand how to integrate these e
 ### Future Exploration
 
 #### Experimental Features
-- [ ] DJ-style intelligent playlist generation
-- [ ] Advanced beat grid analysis
-- [ ] Automatic set preparation tools
-- [ ] Cloud/distributed recommendation services
+- [ ] DJ-style intelligent playlist generation surfaced in the Discover/Tools pages (front-end for existing `int-pl` logic).
+- [ ] Advanced beat grid analysis and visual cue editing tools in the GUI.
+- [ ] Automatic set preparation tools (end-to-end: seed → recommendations → ordered export with cues).
+- [ ] Cloud/distributed recommendation services (optional, opt-in only; keep local-first workflow primary).
 
 ## Contributing
 
@@ -90,5 +90,5 @@ Interested in helping? Check the current roadmap and open issues.
 Pull requests welcome!
 
 ---
-Last Updated: {{ current_date }}
-Curator: Claude
+Last Updated: 2025-12-09
+Curator: Claude & Hunter
