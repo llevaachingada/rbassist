@@ -14,6 +14,7 @@
 ### 2025-12-09
 - Embedding windows: Default `_default_windows` now follows a fixed 80s budget (10s intro, 60s or 40s core, 10s late) with first-non-silent intro, midpoint-centered core, and late slice 5s before the end; short/medium track edge cases handled explicitly.
 - Timbre branch: Confirmed OpenL3 settings in code/docs (48 kHz, 1.0s frames, 50% overlap, mean+var pooling) and enforced canonical 512-d timbre size; CLI/UI guard against non-default duration/timbre to keep embeddings consistent.
+  - Load reduction: Timbre now evaluates only intro and late slices (dropping the core slice) and uses a sparser 1s/75% hop framing, cutting CPU work by roughly half while still sampling beginning/end texture.
 - Analyze pipeline: Restored full BPM/Key/feature/cue analysis (`analyze_bpm_key`, `_analyze_single`) including bass/rhythm contours and optional auto-cues; GUI Settings now passes `add_cues` through and these cues are emitted in Rekordbox XML.
 - UI robustness: Hardened Settings "Embed + Analyze + Index" against tab closes by wrapping progress updates and notifications in `try/except RuntimeError`; long runs continue even if the client disconnects.
 - Rekordbox export (GUI): Tools page "Export Rekordbox XML" now calls `export_xml.write_rekordbox_xml` and writes `rbassist.xml` in the project root, mirroring `rbassist export-xml` behavior.

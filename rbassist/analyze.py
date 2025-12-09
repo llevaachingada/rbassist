@@ -1,6 +1,7 @@
 from __future__ import annotations
 import pathlib, numpy as np
 import librosa
+import warnings
 from typing import Callable, Iterable, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, TaskID
@@ -46,6 +47,13 @@ _CAML_MIN = {
     "B": "10A",
 }
 _PC_TO_NAME_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+# Suppress known, harmless FutureWarnings from librosa API shims (0.10+).
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message="librosa.beat.tempo",
+)
 
 
 def _estimate_tempo(y: np.ndarray, sr: int) -> float:
@@ -232,4 +240,3 @@ def analyze_bpm_key(
         finally:
             if progress is not None:
                 progress.stop()
-

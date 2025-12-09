@@ -66,7 +66,7 @@ class AppState:
     music_folders: list[str] = field(default_factory=list)
     device: str = pick_device("cuda")
     duration_s: int = 90
-    workers: int = 4
+    workers: int = 12
     batch_size: int = 4
     auto_cues: bool = True
     skip_analyzed: bool = True

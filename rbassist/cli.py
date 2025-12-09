@@ -23,7 +23,7 @@ def cmd_analyze(
     duration_s: int = typer.Option(90, help="Max seconds per track to analyze (0 = full)"),
     only_new: bool = typer.Option(True, help="Skip files already analyzed with same signature"),
     force: bool = typer.Option(False, help="Force re-analyze even if cached"),
-    workers: int = typer.Option(0, help="Process workers for BPM/Key (0 = serial)"),
+    workers: int = typer.Option(12, help="Process workers for BPM/Key (0 = serial)"),
 ):
     files = walk_audio(paths)
     if not files:
@@ -51,7 +51,7 @@ def cmd_embed(
         None,
         help="Compute device: 'cuda' (NVIDIA/ROCm), 'rocm', 'mps', or 'cpu' (auto if omitted)",
     ),
-    num_workers: int = typer.Option(0, help="Parallel audio loaders (0=serial; 4-8 typical)"),
+    num_workers: int = typer.Option(8, help="Parallel audio loaders (0=serial; 4-8 typical)"),
     batch_size: Optional[int] = typer.Option(
         None, help="Model batch size (auto: ~4 on GPU, 1 on CPU)"
     ),
@@ -91,11 +91,11 @@ def cmd_reanalyze(
     input: pathlib.Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True, readable=True, help="Root music folder"),
     profile: Optional[str] = typer.Option(None, help="Sampling profile name from config/sampling.yml (defaults to sampling_profile value)"),
     device: str = typer.Option("auto", help="Compute device: auto|cuda|rocm|mps|cpu"),
-    workers: int = typer.Option(4, help="Parallel audio loaders (0=serial)"),
+    workers: int = typer.Option(8, help="Parallel audio loaders (0=serial)"),
     rebuild_index: bool = typer.Option(True, help="Rebuild HNSW index after embeddings"),
     analyze_bpm: bool = typer.Option(True, help="Run BPM/Key analysis after embeddings"),
     overwrite: bool = typer.Option(False, help="Overwrite existing embeddings/BPM/Key info"),
-    analyze_workers: int = typer.Option(0, help="Process workers for BPM/Key (0 = serial)"),
+    analyze_workers: int = typer.Option(12, help="Process workers for BPM/Key (0 = serial)"),
     timbre: bool = typer.Option(False, help="Also write timbre embeddings (OpenL3) and blend them into main embeddings"),
     timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
 ):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os, pathlib, numpy as np
 import librosa, soundfile as sf
+import warnings
 from typing import Callable, List, Optional
 from transformers import AutoModel, Wav2Vec2FeatureExtractor
 import torch
@@ -23,6 +24,13 @@ TIMBRE_FRAME_S = 1.0
 TIMBRE_OVERLAP = 0.5
 W_MERT = 0.7
 W_TIMBRE = 0.3
+
+# Quiet known noisy warnings that are not actionable for users.
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message="pkg_resources is deprecated as an API",
+)
 
 
 def _resolve_device(requested: str | None) -> str:
@@ -156,7 +164,14 @@ def timbre_embedding_from_windows(
     windows: list[tuple[float, float]],
     timbre_emb: TimbreEmbedder,
 ) -> np.ndarray | None:
-    """Compute OpenL3 timbre embedding over given windows using 1s/50% frames."""
+    """Compute OpenL3 timbre embedding over selected windows using 1s frames.
+
+    To reduce CPU load, timbre now focuses on the beginning and end of the track:
+      - If multiple windows are provided (intro/core/late), only the first and
+        last are used (typically intro and late).
+      - Frames use a larger hop (75% of frame length) compared to MERT’s
+        coverage, which cuts the number of OpenL3 calls by ~50%.
+    """
     if openl3 is None:
         return None
     if y.ndim != 1:
@@ -166,8 +181,15 @@ def timbre_embedding_from_windows(
         y = librosa.resample(y, orig_sr=sr, target_sr=TIMBRE_SR)
         sr = TIMBRE_SR
 
+    # Focus timbre on intro + late to reduce work while still sampling texture
+    selected_windows: list[tuple[float, float]]
+    if len(windows) >= 2:
+        selected_windows = [windows[0], windows[-1]]
+    else:
+        selected_windows = windows
+
     win_vecs: list[np.ndarray] = []
-    for start_s, end_s in windows:
+    for start_s, end_s in selected_windows:
         s = int(start_s * sr)
         e = int(end_s * sr)
         if s >= e or s >= y.shape[0]:
@@ -177,7 +199,8 @@ def timbre_embedding_from_windows(
         if seg.size == 0:
             continue
         frame_len = int(TIMBRE_FRAME_S * sr)
-        hop = int(frame_len * (1.0 - TIMBRE_OVERLAP))
+        # Use a larger hop (e.g., 75% of frame length) to reduce frame count.
+        hop = max(1, int(frame_len * 0.75))
         embs: list[np.ndarray] = []
         for i in range(0, max(len(seg) - frame_len, 1), hop):
             frame = seg[i : i + frame_len]
@@ -423,7 +446,14 @@ def build_embeddings(
                 if combined is not None:
                     _save_embedding(orig, combined, source_label, kind="embedding")
             except Exception as e:
-                console.print(f"[red]Embedding failed for {orig}: {e}")
+                # Per-file failures should never crash the whole job; some file
+                # paths may also contain characters that the Windows console
+                # cannot encode. Fall back to a safe representation.
+                try:
+                    console.print(f"[red]Embedding failed for {orig}: {e!r}")
+                except Exception:
+                    safe_path = repr(str(orig))
+                    console.print(f"[red]Embedding failed for {safe_path}: {e!r}")
             finally:
                 done += 1
                 if progress_callback is not None:
@@ -440,7 +470,11 @@ def build_embeddings(
                         y, sr = fut.result()
                         _process_one(orig, src_path, y, sr, used)
                     except Exception as e:
-                        console.print(f"[red]Embedding failed for {orig}: {e}")
+                        try:
+                            console.print(f"[red]Embedding failed for {orig}: {e!r}")
+                        except Exception:
+                            safe_path = repr(str(orig))
+                            console.print(f"[red]Embedding failed for {safe_path}: {e!r}")
                         done += 1
                         if progress_callback is not None:
                             progress_callback(done, total, orig)
@@ -461,7 +495,11 @@ def build_embeddings(
                     y, sr = _load(src)
                     _process_one(orig, src, y, sr, used)
                 except Exception as e:
-                    console.print(f"[red]Embedding failed for {orig}: {e}")
+                    try:
+                        console.print(f"[red]Embedding failed for {orig}: {e!r}")
+                    except Exception:
+                        safe_path = repr(str(orig))
+                        console.print(f"[red]Embedding failed for {safe_path}: {e!r}")
                     done += 1
                     if progress_callback is not None:
                         progress_callback(done, total, orig)
