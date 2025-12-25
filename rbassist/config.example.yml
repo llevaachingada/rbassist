@@ -1,0 +1,8 @@
+# Folder-level preferences. First match wins.
+# mode: baseline | stems
+folders:
+  - path: "D:/Music/TestCrate/House"
+    mode: baseline
+  - path: "D:/Music/TestCrate/Vocals"
+    mode: stems
+default_mode: baseline

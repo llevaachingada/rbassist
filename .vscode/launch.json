@@ -7,7 +7,7 @@
       "request": "launch",
       "module": "rbassist.cli",
       "args": [
-        "reanalyze", "C:\\Users\\hunte\\Music\\BREAKS",
+        "reanalyze", "${env:USERPROFILE}\\Music\\YourCrate",
         "--profile", "club_hifi_150s",
         "--device", "auto", "--workers", "6", "--rebuild-index"
       ]

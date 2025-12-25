@@ -71,36 +71,64 @@ def render() -> None:
             # Beatgrid preview (first ~16 bars)
             preview_path: dict[str, Optional[str]] = {"path": None}
             preview_img = ui.image().style("max-width: 100%; display: none;")
-            preview_label = ui.label("").classes("text-gray-400 text-sm")
+            preview_label = ui.label("Select a file to preview beatgrid analysis").classes("text-gray-400 text-sm")
+            beat_progress = ui.linear_progress(value=0).props("rounded").style("max-width: 240px; display: none;")
+            beat_status = ui.label("").classes("text-gray-400 text-sm")
+            preview_file_input = ui.input(
+                placeholder="Or type/paste file path here..."
+            ).props("dark dense clearable").classes("w-96")
 
             async def _pick_preview_file():
-                try:
-                    result = await ui.run_javascript('''
-                        return await new Promise(resolve => {
-                            const input = document.createElement('input');
-                            input.type = 'file';
-                            input.accept = '.wav,.flac,.mp3,.m4a,.aiff,.aif';
-                            input.onchange = () => {
-                                const file = input.files[0];
-                                resolve(file ? file.path || file.name : null);
-                            };
-                            input.click();
-                        });
-                    ''')
-                except Exception:
-                    ui.notify("File picker not supported in this session.", type="warning")
-                    return
-                if result:
-                    preview_path["path"] = str(result)
-                    preview_label.text = f"Preview: {preview_path['path']}"
+                """Use tkinter to select a file for preview."""
+                def _pick():
+                    try:
+                        import tkinter as tk
+                        from tkinter import filedialog
+                        root = tk.Tk()
+                        root.withdraw()
+                        root.attributes('-topmost', True)
+                        path = filedialog.askopenfilename(
+                            title="Select audio file for beatgrid preview",
+                            filetypes=[
+                                ("Audio files", "*.wav *.flac *.mp3 *.m4a *.aiff *.aif"),
+                                ("All files", "*.*")
+                            ]
+                        )
+                        root.destroy()
+                        return path
+                    except Exception as e:
+                        return None
+
+                path = await asyncio.to_thread(_pick)
+                if path:
+                    preview_path["path"] = path
+                    preview_file_input.value = path
+                    preview_file_input.update()
+                    preview_label.text = f"Selected: {Path(path).name}"
                     preview_label.update()
+                    ui.notify(f"Selected: {Path(path).name}", type="positive")
                 else:
-                    ui.notify("No file selected.", type="info")
+                    ui.notify("No file selected. You can also type/paste the file path.", type="info")
 
             async def _render_preview():
-                if not preview_path.get("path"):
-                    ui.notify("Pick a file to preview.", type="warning")
+                # Get path from either the stored value or the input field
+                path = preview_path.get("path") or (preview_file_input.value or "").strip()
+                if not path:
+                    ui.notify("Please select a file first using 'Browse' or type the path.", type="warning")
                     return
+
+                # Update preview_path if user typed path manually
+                if path != preview_path.get("path"):
+                    preview_path["path"] = path
+                    preview_label.text = f"Selected: {Path(path).name}"
+                    preview_label.update()
+
+                # Check if file exists
+                if not Path(path).exists():
+                    ui.notify(f"File not found: {path}", type="negative")
+                    ui.notify("Please check the path and try again.", type="info")
+                    return
+
                 cfg = BeatgridConfig(
                     mode=str(mode_toggle.value).strip().lower(),
                     backend=str(backend_select.value or "beatnet").strip().lower(),
@@ -109,56 +137,103 @@ def render() -> None:
                     duration_s=int(duration_input.value or 0),
                 )
 
+                preview_label.text = f"Analyzing: {Path(path).name}..."
+                preview_label.update()
+
                 def _work():
                     # Run beatgrid to get beats
-                    _path, result, err, warns = analyze_file(preview_path["path"], cfg)
+                    _path, result, err, warns = analyze_file(path, cfg)
                     if err or result is None or not result.get("beats"):
-                        return None, err or "no beats detected", warns
+                        return None, err or "no beats detected", warns, None
                     beats = np.array(result["beats"], dtype=float)
+                    downbeats = np.array(result.get("downbeats", []), dtype=float)
+
                     # Limit to first ~16 bars (~64 beats)
                     max_beats = 64
                     if beats.size == 0:
-                        return None, "no beats detected", warns
+                        return None, "no beats detected", warns, None
                     cutoff_idx = min(len(beats) - 1, max_beats - 1)
                     window_end = beats[cutoff_idx] + 1.0
-                    y, sr = librosa.load(preview_path["path"], sr=None, mono=True, duration=window_end)
+
+                    y, sr = librosa.load(path, sr=None, mono=True, duration=window_end)
                     t = np.linspace(0, len(y) / sr, num=len(y))
-                    fig, ax = plt.subplots(figsize=(8, 2))
-                    ax.plot(t, y, color="#4ade80", linewidth=0.8)
+
+                    fig, ax = plt.subplots(figsize=(10, 3))
+                    ax.plot(t, y, color="#4ade80", linewidth=0.8, alpha=0.7)
+
+                    # Draw beats (pink dashed)
                     for b in beats:
                         if b <= window_end:
-                            ax.axvline(b, color="#f472b6", linestyle="--", linewidth=0.6, alpha=0.8)
+                            ax.axvline(b, color="#f472b6", linestyle="--", linewidth=0.6, alpha=0.7, label="Beat" if b == beats[0] else "")
+
+                    # Draw downbeats (yellow solid) if available
+                    if downbeats.size > 0:
+                        for db in downbeats:
+                            if db <= window_end:
+                                ax.axvline(db, color="#fbbf24", linestyle="-", linewidth=1.2, alpha=0.9, label="Downbeat" if db == downbeats[0] else "")
+
                     ax.set_xlim(0, window_end)
-                    ax.set_xlabel("Seconds")
-                    ax.set_ylabel("Amplitude")
-                    ax.set_title("Beatgrid preview (first ~16 bars)")
+                    ax.set_xlabel("Time (seconds)", fontsize=10)
+                    ax.set_ylabel("Amplitude", fontsize=10)
+
+                    # Add BPM and confidence to title
+                    bpm_str = f"{result.get('bpm_est', 0):.1f} BPM"
+                    conf_str = f"Confidence: {result.get('confidence', 0):.2f}"
+                    seg_count = len(result.get('tempos', []))
+                    title = f"Beatgrid Preview - {bpm_str} - {conf_str} - {seg_count} segment(s)"
+                    ax.set_title(title, fontsize=11, pad=10)
+
+                    # Add legend if downbeats exist
+                    if downbeats.size > 0:
+                        ax.legend(loc='upper right', fontsize=9)
+
                     fig.tight_layout()
                     buf = io.BytesIO()
-                    fig.savefig(buf, format="png", dpi=120)
+                    fig.savefig(buf, format="png", dpi=120, facecolor='#1a1a1a')
                     plt.close(fig)
                     buf.seek(0)
                     b64 = base64.b64encode(buf.read()).decode("ascii")
-                    return b64, None, warns
+                    return b64, None, warns, result
 
-                b64, err, warns = await asyncio.to_thread(_work)
+                b64, err, warns, result = await asyncio.to_thread(_work)
+
+                # Show warnings
                 for w in (warns or []):
                     ui.notify(w, type="warning")
+
                 if err or not b64:
                     ui.notify(f"Preview failed: {err}", type="negative")
+                    preview_label.text = f"Preview failed for {Path(path).name}"
+                    preview_label.update()
                     return
+
+                # Update UI with success
                 preview_img.source = f"data:image/png;base64,{b64}"
                 preview_img.style("max-width: 100%; display: block;")
                 preview_img.update()
 
+                if result:
+                    bpm = result.get('bpm_est', 0)
+                    conf = result.get('confidence', 0)
+                    beats_count = len(result.get('beats', []))
+                    downbeats_count = len(result.get('downbeats', []))
+                    preview_label.text = f"✓ {Path(path).name}: {bpm:.1f} BPM, {beats_count} beats, {downbeats_count} downbeats (confidence: {conf:.2f})"
+                    preview_label.update()
+                    ui.notify("Preview generated successfully!", type="positive")
+
             with ui.row().classes("gap-3 items-center mt-2"):
-                ui.button("Pick preview file", icon="folder_open", on_click=_pick_preview_file).props("flat").classes(
-                    "bg-[#252525] hover:bg-[#333] text-gray-200"
+                ui.button("Browse", icon="folder_open", on_click=_pick_preview_file).props("flat").classes(
+                    "bg-indigo-600 hover:bg-indigo-500 text-white"
                 )
-                ui.button("Preview beatgrid (16 bars)", icon="visibility", on_click=_render_preview).props("flat").classes(
-                    "bg-[#252525] hover:bg-[#333] text-gray-200"
+                preview_file_input
+                ui.button("Generate Preview", icon="visibility", on_click=_render_preview).props("flat").classes(
+                    "bg-purple-600 hover:bg-purple-500 text-white"
                 )
+            with ui.row().classes("gap-2 items-center"):
                 preview_label
             preview_img
+            beat_progress
+            beat_status
 
             async def _beatgrid_paths(paths: list[str]) -> None:
                 if not paths:
@@ -171,6 +246,12 @@ def render() -> None:
                     bars_window=int(bars_input.value or 16),
                     duration_s=int(duration_input.value or 0),
                 )
+                total = len(paths)
+                beat_progress.style("max-width: 240px; display: block;")
+                beat_progress.value = 0
+                beat_progress.update()
+                beat_status.text = f"Starting beatgrid..."
+                beat_status.update()
                 ui.notify(f"Beatgridding {len(paths)} track(s)...", type="info")
 
                 def _work():
@@ -178,10 +259,19 @@ def render() -> None:
                     if not overwrite_check.value:
                         meta = state.meta
                         targets = [p for p in paths if not meta.get("tracks", {}).get(p, {}).get("tempos")]
-                    analyze_beatgrid_paths(targets, cfg=cfg, overwrite=overwrite_check.value)
+                    def _cb(done: int, count: int, path: str):
+                        beat_progress.value = max(0.0, min(1.0, done / max(count, 1)))
+                        beat_progress.update()
+                        beat_status.text = f"Beatgrid {done}/{count}: {Path(path).name}"
+                        beat_status.update()
+                    analyze_beatgrid_paths(targets, cfg=cfg, overwrite=overwrite_check.value, progress_callback=_cb)
 
                 await asyncio.to_thread(_work)
                 state.refresh_meta()
+                beat_progress.value = 1
+                beat_progress.update()
+                beat_status.text = f"Beatgrid complete ({total} track(s))"
+                beat_status.update()
                 ui.notify("Beatgrid complete", type="positive")
 
             async def _run_music_folders():
@@ -191,27 +281,55 @@ def render() -> None:
                 files = walk_audio(state.music_folders)
                 await _beatgrid_paths(files)
 
+            single_path = {"path": ""}
+            file_input = ui.input(
+                placeholder="Type/paste file path or use Browse button..."
+            ).props("dark dense clearable").classes("w-96")
+
+            async def _browse_file():
+                """Browse for a single file to process."""
+                def _pick():
+                    try:
+                        import tkinter as tk
+                        from tkinter import filedialog
+                        root = tk.Tk()
+                        root.withdraw()
+                        root.attributes('-topmost', True)
+                        path = filedialog.askopenfilename(
+                            title="Select audio file for beatgrid analysis",
+                            filetypes=[
+                                ("Audio files", "*.wav *.flac *.mp3 *.m4a *.aiff *.aif"),
+                                ("All files", "*.*")
+                            ]
+                        )
+                        root.destroy()
+                        return path
+                    except Exception as e:
+                        return None
+
+                path = await asyncio.to_thread(_pick)
+                if path:
+                    single_path["path"] = path
+                    file_input.value = path
+                    file_input.update()
+                    ui.notify(f"Selected: {Path(path).name}", type="positive")
+                else:
+                    ui.notify("No file selected. You can also type/paste the file path.", type="info")
+
             async def _run_single_file():
-                try:
-                    result = await ui.run_javascript('''
-                        return await new Promise(resolve => {
-                            const input = document.createElement('input');
-                            input.type = 'file';
-                            input.accept = '.wav,.flac,.mp3,.m4a,.aiff,.aif';
-                            input.onchange = () => {
-                                const file = input.files[0];
-                                resolve(file ? file.path || file.name : null);
-                            };
-                            input.click();
-                        });
-                    ''')
-                except Exception:
-                    ui.notify("File picker not supported in this session.", type="warning")
+                path = (file_input.value or "").strip()
+                if not path:
+                    ui.notify("Please select a file using Browse or type the path.", type="warning")
                     return
-                if not result:
-                    ui.notify("No file selected.", type="info")
+
+                # Check if file exists
+                if not Path(path).exists():
+                    ui.notify(f"File not found: {path}", type="negative")
+                    ui.notify("Please check the path and try again.", type="info")
                     return
-                await _beatgrid_paths([str(result)])
+
+                single_path["path"] = path
+                await _beatgrid_paths([path])
 
             with ui.row().classes("gap-3 items-center"):
                 ui.button("Beatgrid music folders", icon="timeline", on_click=_run_music_folders).props("flat").classes(
@@ -220,6 +338,10 @@ def render() -> None:
                 ui.button("Beatgrid single file", icon="audiotrack", on_click=_run_single_file).props("flat").classes(
                     "bg-purple-600 hover:bg-purple-500 text-white"
                 )
+                ui.button("Browse", icon="folder", on_click=_browse_file).props("flat").classes(
+                    "bg-[#252525] hover:bg-[#333] text-gray-200"
+                )
+                file_input
                 ui.label("Mode").classes("text-gray-400")
                 mode_toggle
                 ui.label("Drift %").classes("text-gray-400")
@@ -284,6 +406,8 @@ def render() -> None:
                     or term in r["mytags"].lower()
                 ]
             table.update(filtered_rows)
+            count_label.text = f"Showing {len(filtered_rows)} of {len(all_rows)} tracks"
+            count_label.update()
 
         search_box.on_value_change(lambda e: apply_filter())
 
@@ -299,4 +423,5 @@ def render() -> None:
             table.build()
             table.update(filtered_rows)
 
-        ui.label(lambda: f"Showing {len(filtered_rows)} of {len(all_rows)} tracks").classes("text-gray-500 text-sm")
+        count_label = ui.label("").classes("text-gray-500 text-sm")
+        apply_filter()  # initialize count label and table

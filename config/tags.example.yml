@@ -1,0 +1,7 @@
+available:
+  - Warm-up
+  - Peak Hour
+  - Vocals
+library:
+  "D:\\Music\\Example\\Artist - Track.mp3":
+    - Warm-up

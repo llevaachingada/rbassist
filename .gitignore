@@ -55,3 +55,17 @@ archive_*/**
 *.bak
 *.bak_*
 *canvas*.txt
+
+# Local user/library data (do not commit)
+config/ui_settings.json
+config/tags.yml
+config/my_tags.yml
+config/ai_suggestions.json
+config/tag_corrections.json
+rbassist/config.yml
+
+# Large exports / backups / shortcuts
+cleanup_backup_*/
+hunters ibrary.xml
+hs collection 12.xml
+*.lnk

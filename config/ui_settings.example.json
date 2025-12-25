@@ -1,0 +1,34 @@
+{
+  "music_folders": [
+    "D:\\\\Music\\\\YourCrate"
+  ],
+  "music_folder": "D:\\\\Music\\\\YourCrate",
+  "device": "auto",
+  "duration_s": 120,
+  "workers": 4,
+  "batch_size": 4,
+  "auto_cues": true,
+  "skip_analyzed": true,
+  "use_timbre": false,
+  "embed_overwrite": false,
+  "beatgrid_enable": false,
+  "beatgrid_overwrite": false,
+  "weights": {
+    "ann": 0.6,
+    "samples": 0.1,
+    "bass": 0.1,
+    "rhythm": 0.1,
+    "bpm": 0.05,
+    "key": 0.05,
+    "tags": 0.0
+  },
+  "filters": {
+    "tempo_pct": 6.0,
+    "camelot": true,
+    "doubletime": true,
+    "bpm_max_diff": 0.0,
+    "allowed_key_relations": [],
+    "require_tags": [],
+    "prefer_tags": []
+  }
+}

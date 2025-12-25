@@ -1,19 +1,19 @@
-REK0RDB0X TOOLS that DJS need ~ compiled by DJ Dumpsterfire aka HUNTER S
+REK0RDB0X TOOLS that DJs need
 
 Can we build local repositories better and stronger than AlphaTheta's failing software platform?
 
 Pioneer hardware is the golden standard for a reason, but the software backend has been failing us working DJS in the field.
 Is there a world where open source players and hardware can be fed by locally customized software? 
 
-rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fast recommendations, and streamlined Rekordbox workflows without depending on cloud services. The repo bundles a Typer CLI, Streamlit GUI, and data pipelines that run locally on your GPU.
+rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fast recommendations, and streamlined Rekordbox workflows without depending on cloud services. The repo bundles a Typer CLI, NiceGUI UI, and data pipelines that run locally on your GPU.
 
 ### Highlights
 
 - Builds embeddings with `m-a-p/MERT-v1-330M` and caches them as `.npy` vectors.
 - Indexes embeddings via HNSWLIB for fast similarity lookups (`rbassist recommend`, GUI recommendations panel).
-- Imports Bandcamp CSV tags and Rekordbox My Tags, storing them in `config/tags.yml` + `data/meta.json`.
+- Imports Bandcamp CSV tags and Rekordbox My Tags, storing them in `config/tags.yml` (local, gitignored; see `config/tags.example.yml`) + `data/meta.json`.
 - Analyzes BPM, Camelot key, cues, RMS/sample heuristics, and bass contours.
-- Offers Typer commands for embed/analyze/index/tags-auto/export-xml plus GUI equivalents (Streamlit).
+- Offers Typer commands for embed/analyze/index/tags-auto/export-xml plus GUI equivalents (NiceGUI).
 
 ### Architecture Snapshot
 
@@ -22,7 +22,7 @@ rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fas
 | Embedding | PyTorch + Transformers | MERT-v1-330M, CUDA/ROCm optional. |
 | Index/Search | HNSWLIB | Cosine ANN queries for recommendations. |
 | CLI | Typer | Commands under `rbassist` entry point. |
-| GUI | Streamlit | `rbassist/webapp.py`. |
+| GUI | NiceGUI | `rbassist ui` |
 | Metadata | JSON/YAML | `data/meta.json`, `config/tags.yml`, `data/index`. |
 
 ### Typical Workflow
@@ -50,7 +50,7 @@ rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fas
 - **Pull requests**: follow existing Typer/Streamlit patterns, document new flags, add tests when touching analyze/embed/tagstore logic.
 - **Support**: share DJ workflow needs in discussions; the more context, the better the tuning advice.
 
-## Install (Windows 11, RTX 4060)
+## Install (Windows)
 
 1. **Create venv**
 ```powershell

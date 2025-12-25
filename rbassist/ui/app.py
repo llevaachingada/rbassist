@@ -18,19 +18,26 @@ def create_header() -> None:
             ui.label("rbassist").classes("text-xl font-bold text-indigo-400")
             ui.label("DJ Toolkit").classes("text-sm text-gray-500")
 
-        with ui.tabs().classes("text-gray-400") as tabs:
-            ui.tab("discover", label="Discover", icon="explore")
-            ui.tab("library", label="Library", icon="library_music")
-            ui.tab("tagging", label="Tags", icon="label")
-            ui.tab("tools", label="Tools", icon="build")
-            ui.tab("settings", label="Settings", icon="settings")
+    with ui.tabs().classes("text-gray-400") as tabs:
+        ui.tab("discover", label="Discover", icon="explore")
+        ui.tab("library", label="Library", icon="library_music")
+        ui.tab("tagging", label="Tags", icon="label")
+        ui.tab("ai_tagging", label="AI Tags", icon="psychology")
+        ui.tab("cues", label="Cues", icon="timeline")
+        ui.tab("tools", label="Tools", icon="build")
+        ui.tab("settings", label="Settings", icon="settings")
 
     return tabs
 
 
 def create_pages(tabs) -> None:
     """Create tab panels for each page."""
-    from .pages import discover, library, tagging, tools, settings
+    from .pages import discover, library, tagging, tools, settings, cues
+    try:
+        from .pages import ai_tagging
+        has_ai_tagging = True
+    except ImportError:
+        has_ai_tagging = False
 
     with ui.tab_panels(tabs, value="discover").classes(
         "w-full flex-1 bg-[#0f0f0f] p-4 pb-12"
@@ -43,6 +50,17 @@ def create_pages(tabs) -> None:
 
         with ui.tab_panel("tagging"):
             tagging.render()
+
+        if has_ai_tagging:
+            with ui.tab_panel("ai_tagging"):
+                ai_tagging.render()
+        else:
+            with ui.tab_panel("ai_tagging"):
+                ui.label("AI Tag Learning").classes("text-2xl font-bold text-white mb-4")
+                ui.label("Install scikit-learn to enable AI tag learning: pip install scikit-learn>=1.3.0").classes("text-gray-400")
+
+        with ui.tab_panel("cues"):
+            cues.render()
 
         with ui.tab_panel("tools"):
             tools.render()

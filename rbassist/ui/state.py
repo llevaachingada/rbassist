@@ -130,16 +130,16 @@ class AppState:
             if isinstance(folders, str):
                 folders = [folders] if folders else []
             self.music_folders = [str(Path(p)) for p in folders if p]
-            self.device = config.get("device", pick_device("cuda"))
-            self.duration_s = config.get("duration_s", 120)
-            self.workers = config.get("workers", 4)
-            self.batch_size = config.get("batch_size", 4)
-            self.auto_cues = config.get("auto_cues", True)
-            self.skip_analyzed = config.get("skip_analyzed", True)
-            self.use_timbre = config.get("use_timbre", False)
-            self.embed_overwrite = config.get("embed_overwrite", False)
-            self.beatgrid_enable = config.get("beatgrid_enable", False)
-            self.beatgrid_overwrite = config.get("beatgrid_overwrite", False)
+            self.device = config.get("device", self.device or pick_device("cuda"))
+            self.duration_s = config.get("duration_s", self.duration_s)
+            self.workers = config.get("workers", self.workers)
+            self.batch_size = config.get("batch_size", self.batch_size)
+            self.auto_cues = config.get("auto_cues", self.auto_cues)
+            self.skip_analyzed = config.get("skip_analyzed", self.skip_analyzed)
+            self.use_timbre = config.get("use_timbre", self.use_timbre)
+            self.embed_overwrite = config.get("embed_overwrite", self.embed_overwrite)
+            self.beatgrid_enable = config.get("beatgrid_enable", self.beatgrid_enable)
+            self.beatgrid_overwrite = config.get("beatgrid_overwrite", self.beatgrid_overwrite)
 
             # Load filter presets
             if "weights" in config:

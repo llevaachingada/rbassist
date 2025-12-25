@@ -167,15 +167,54 @@ def _confidence(onset_env: np.ndarray, beat_frames: np.ndarray) -> float:
     return float(np.clip(np.mean(vals) / peak, 0.0, 1.0))
 
 
-def analyze_file(path: str, cfg: BeatgridConfig) -> tuple[str, dict | None, str | None, list[str]]:
-    """Return (path, result, error, warnings). Result includes tempos list and confidence."""
+def analyze_file(
+    path: str,
+    cfg: BeatgridConfig,
+    fallback_threshold: float = 0.3,
+    enable_fallback: bool = True,
+) -> tuple[str, dict | None, str | None, list[str]]:
+    """Return (path, result, error, warnings). Result includes tempos list and confidence.
+
+    Args:
+        path: Audio file path
+        cfg: Beatgrid configuration
+        fallback_threshold: If confidence is below this, try fallback backend (default: 0.3)
+        enable_fallback: Enable automatic fallback to librosa on low confidence (default: True)
+    """
     warnings: list[str] = []
     try:
         backend, notes = _pick_backend(cfg)
         warnings.extend(notes)
         beat_times, downbeats, conf = backend.run(path, cfg)
+
+        # Check if we should try fallback due to low confidence
+        if (enable_fallback and
+            conf < fallback_threshold and
+            cfg.backend in {"beatnet", "auto"} and
+            isinstance(backend, BeatNetBackend)):
+            warnings.append(f"Low confidence ({conf:.2f}), retrying with librosa backend...")
+            fallback_cfg = BeatgridConfig(
+                mode=cfg.mode,
+                drift_pct=cfg.drift_pct,
+                bars_window=cfg.bars_window,
+                duration_s=cfg.duration_s,
+                hop_length=cfg.hop_length,
+                backend="librosa",
+                model_id=cfg.model_id,
+                device=cfg.device,
+            )
+            fallback_backend, fallback_notes = _pick_backend(fallback_cfg)
+            warnings.extend(fallback_notes)
+            fallback_times, fallback_downbeats, fallback_conf = fallback_backend.run(path, fallback_cfg)
+
+            # Use fallback result if it has higher confidence or original had no beats
+            if fallback_times.size > 0 and (beat_times.size == 0 or fallback_conf > conf):
+                warnings.append(f"Using librosa result (confidence: {fallback_conf:.2f})")
+                beat_times, downbeats, conf = fallback_times, fallback_downbeats, fallback_conf
+
         if beat_times.size == 0:
             return path, None, "no beats detected", warnings
+
         segments = _segment_beats(beat_times, cfg, downbeat_times=downbeats if downbeats.size else None)
         bpm_est = _bpm_from_intervals(np.diff(beat_times))
         return path, {
@@ -186,6 +225,25 @@ def analyze_file(path: str, cfg: BeatgridConfig) -> tuple[str, dict | None, str 
             "downbeats": downbeats.tolist() if downbeats.size else [],
         }, None, warnings
     except Exception as e:
+        # If BeatNet fails completely, try librosa as fallback
+        if enable_fallback and cfg.backend in {"beatnet", "auto"}:
+            try:
+                warnings.append(f"Primary backend failed ({str(e)}), trying librosa fallback...")
+                fallback_backend = LibrosaBackend()
+                beat_times, downbeats, conf = fallback_backend.run(path, cfg)
+                if beat_times.size > 0:
+                    segments = _segment_beats(beat_times, cfg, downbeat_times=downbeats if downbeats.size else None)
+                    bpm_est = _bpm_from_intervals(np.diff(beat_times))
+                    warnings.append("Using librosa fallback result")
+                    return path, {
+                        "tempos": segments,
+                        "confidence": conf,
+                        "bpm_est": bpm_est,
+                        "beats": beat_times.tolist(),
+                        "downbeats": downbeats.tolist() if downbeats.size else [],
+                    }, None, warnings
+            except Exception as fallback_error:
+                warnings.append(f"Fallback also failed: {str(fallback_error)}")
         return path, None, str(e), warnings
 
 

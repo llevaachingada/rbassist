@@ -550,5 +550,14 @@ def cmd_ui(
     run(port=port, reload=reload)
 
 
+# Add AI tag learning commands as a sub-command group
+try:
+    from .ai_tag_cli import app as ai_tag_app
+    app.add_typer(ai_tag_app, name="ai-tag")
+except ImportError:
+    # Dependencies not installed, skip
+    pass
+
+
 if __name__ == "__main__":
     main()
