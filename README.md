@@ -100,7 +100,13 @@ rbassist bandcamp-import .\bandcamp.csv rbassist\config.yml
 ```powershell
 rbassist import-mytags "D:\Exports\rekordbox.xml"
 ```
-6) Auto-suggest My Tags for new tracks
+6) Import Rekordbox 6+ My Tags directly from the encrypted database (no XML export)
+```powershell
+rbassist rekordbox-import-mytags-db
+```
+Make sure Rekordbox is closed first; this opens `master.db` in read-only mode via `pyrekordbox` and merges MyTags into `data/meta.json` keyed by file path.
+
+7) Auto-suggest My Tags for new tracks
 ```powershell
 rbassist tags-auto --margin 0.05
 # review suggestions, then apply:

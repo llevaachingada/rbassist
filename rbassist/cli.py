@@ -8,6 +8,7 @@ import typer
 from .analyze import analyze_bpm_key
 from .utils import load_meta, save_meta, console, walk_audio, pick_device
 from .sampling_profile import load_sampling_params
+from .beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 
 
 # ------------------------------
@@ -36,6 +37,34 @@ def cmd_analyze(
         force=force,
         workers=(workers if workers > 0 else None),
     )
+
+
+@app.command("beatgrid")
+def cmd_beatgrid(
+    paths: List[str] = typer.Argument(..., help="Files or folders to beatgrid"),
+    mode: str = typer.Option("fixed", help="fixed | dynamic"),
+    drift_pct: float = typer.Option(1.5, help="Tempo drift percent to trigger new segment (dynamic mode)"),
+    bars_window: int = typer.Option(16, help="Bars (4/4) per window for drift detection"),
+    duration_s: int = typer.Option(0, help="Max seconds per track (0 = full)"),
+    backend: str = typer.Option("auto", help="auto | beatnet | librosa"),
+    model: int = typer.Option(3, help="BeatNet model id (1..3)"),
+    device: str = typer.Option("auto", help="cuda|cpu|auto (for BeatNet backend)"),
+    overwrite: bool = typer.Option(True, help="Recompute beatgrid even if tempos already exist"),
+):
+    cfg = BeatgridConfig(
+        mode=mode.lower().strip(),
+        drift_pct=max(0.1, float(drift_pct)),
+        bars_window=max(4, int(bars_window)),
+        duration_s=max(0, int(duration_s)),
+        backend=backend.lower().strip(),
+        model_id=int(model),
+        device=None if device == "auto" else device,
+    )
+    files = walk_audio(paths)
+    if not files:
+        console.print("[yellow]No audio files found in given paths.")
+        raise typer.Exit(code=1)
+    analyze_beatgrid_paths(files, cfg=cfg, overwrite=overwrite)
 
 
 def main() -> None:
@@ -227,6 +256,34 @@ def cmd_import_mytags(
         console.print(f"[green]Total tracks updated: {total_imported}")
     if failures and not total_imported:
         raise typer.Exit(1)
+
+
+@app.command("rekordbox-import-mytags-db")
+def cmd_rekordbox_import_mytags_db() -> None:
+    """
+    Import Rekordbox 6+ MyTags directly from the encrypted master.db using
+    pyrekordbox (no XML export required).
+
+    Rekordbox should be closed while this runs to avoid database locks.
+    """
+    try:
+        from .rekordbox_import import import_rekordbox_mytags_from_db
+    except Exception as e:
+        console.print(
+            "[red]Rekordbox DB import requires the 'pyrekordbox' dependency and a compatible SQLCipher setup. "
+            f"Error: {e}[/red]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        added = import_rekordbox_mytags_from_db()
+    except Exception as e:
+        console.print(f"[red]Rekordbox MyTag DB import failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    if not added:
+        console.print("[yellow]No new MyTag assignments were imported from Rekordbox.[/yellow]")
+
 
 
 @app.command("tags-auto")

@@ -72,6 +72,8 @@ class AppState:
     skip_analyzed: bool = True
     use_timbre: bool = True
     embed_overwrite: bool = True
+    beatgrid_enable: bool = False
+    beatgrid_overwrite: bool = False
 
     @property
     def music_folder(self) -> str:
@@ -136,6 +138,8 @@ class AppState:
             self.skip_analyzed = config.get("skip_analyzed", True)
             self.use_timbre = config.get("use_timbre", False)
             self.embed_overwrite = config.get("embed_overwrite", False)
+            self.beatgrid_enable = config.get("beatgrid_enable", False)
+            self.beatgrid_overwrite = config.get("beatgrid_overwrite", False)
 
             # Load filter presets
             if "weights" in config:
@@ -157,6 +161,8 @@ class AppState:
             "skip_analyzed": self.skip_analyzed,
             "use_timbre": self.use_timbre,
             "embed_overwrite": self.embed_overwrite,
+            "beatgrid_enable": self.beatgrid_enable,
+            "beatgrid_overwrite": self.beatgrid_overwrite,
             "weights": self.weights,
             "filters": self.filters,
         }

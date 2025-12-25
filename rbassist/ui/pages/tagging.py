@@ -5,6 +5,7 @@ from __future__ import annotations
 from nicegui import ui
 
 from ..state import get_state
+from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 
 
 def render() -> None:
@@ -21,24 +22,50 @@ def render() -> None:
 
                 # Get tags from config
                 try:
-                    from rbassist.tagstore import available_tags
+                    from rbassist.tagstore import available_tags, set_available_tags
                     tags = available_tags()
                 except Exception:
                     tags = []
 
-                if tags:
-                    for tag in tags:
-                        with ui.row().classes("w-full items-center justify-between py-1"):
-                            ui.label(tag).classes("text-gray-300")
-                            ui.badge("0", color="gray").classes("text-xs")
-                else:
-                    ui.label("No tags defined").classes("text-gray-500 italic")
+                tag_list = ui.column().classes("w-full")
+
+                def _render_tags(current: list[str]) -> None:
+                    tag_list.clear()
+                    with tag_list:
+                        if current:
+                            for tag in current:
+                                with ui.row().classes("w-full items-center justify-between py-1"):
+                                    ui.label(tag).classes("text-gray-300")
+                                    ui.badge("✓", color="gray").classes("text-xs")
+                        else:
+                            ui.label("No tags defined").classes("text-gray-500 italic")
+
+                _render_tags(tags)
 
                 ui.separator().classes("my-3")
 
+                new_tag = ui.input(placeholder="New tag...").props("dark dense").classes("flex-1")
+
+                def _add_tag() -> None:
+                    val = (new_tag.value or "").strip()
+                    if not val:
+                        ui.notify("Enter a tag name first", type="warning")
+                        return
+                    try:
+                        set_available_tags([val])
+                        new_tag.value = ""
+                        try:
+                            from rbassist.tagstore import available_tags
+                            _render_tags(available_tags())
+                        except Exception:
+                            pass
+                        ui.notify(f"Added tag '{val}'", type="positive")
+                    except Exception as e:
+                        ui.notify(f"Failed to add tag: {e}", type="negative")
+
                 with ui.row().classes("gap-2"):
-                    new_tag = ui.input(placeholder="New tag...").props("dark dense").classes("flex-1")
-                    ui.button(icon="add", on_click=lambda: ui.notify("Add tag coming soon")).props("flat dense")
+                    new_tag
+                    ui.button(icon="add", on_click=_add_tag).props("flat dense")
 
             # Right: Auto-tag suggestions
             with ui.column().classes("flex-1 gap-4"):
@@ -73,10 +100,10 @@ def render() -> None:
                             return
                         tracks = [
                             p for p, info in meta.get("tracks", {}).items()
-                            if info.get("embedding") and info.get("mytags")
+                            if info.get("embedding") and not info.get("mytags")
                         ]
                         if not tracks:
-                            ui.notify("No tracks with embeddings/My Tags to score.", type="warning")
+                            ui.notify("No untagged tracks with embeddings to score.", type="warning")
                             return
                         suggestions = suggest_tags_for_tracks(
                             tracks,
@@ -207,6 +234,36 @@ def render() -> None:
                         ui.button("Import Rekordbox XML", icon="upload", on_click=_import_rekordbox).props("flat").classes(
                             "bg-[#252525] hover:bg-[#333] text-gray-300"
                         )
-                        ui.button("Export to Rekordbox", icon="download").props("flat").classes(
+                        async def _export_rekordbox():
+                            from rbassist.export_xml import write_rekordbox_xml
+                            meta = load_meta()
+                            out = "rbassist_mytags.xml"
+                            try:
+                                await ui.run_worker(lambda: write_rekordbox_xml(meta, out_path=out, playlist_name="rbassist export"))
+                                ui.notify(f"Exported -> {out}", type="positive")
+                            except Exception as ex:
+                                ui.notify(f"Export failed: {ex}", type="negative")
+
+                        ui.button("Export to Rekordbox", icon="download", on_click=_export_rekordbox).props("flat").classes(
+                            "bg-[#252525] hover:bg-[#333] text-gray-300"
+                        )
+                        async def _beatgrid_folder():
+                            try:
+                                from rbassist.utils import walk_audio
+                                folders = state.music_folders
+                                if not folders:
+                                    ui.notify("Set Music Folders in Settings first.", type="warning")
+                                    return
+                                files = walk_audio(folders)
+                                if not files:
+                                    ui.notify("No audio files found under Music Folders.", type="warning")
+                                    return
+                                cfg = BeatgridConfig(mode="fixed", backend="auto")
+                                await ui.run_worker(lambda: analyze_beatgrid_paths(files, cfg=cfg, overwrite=True))
+                                ui.notify(f"Beatgrid complete for {len(files)} track(s).", type="positive")
+                            except Exception as ex:
+                                ui.notify(f"Beatgrid failed: {ex}", type="negative")
+
+                        ui.button("Beatgrid music folders", icon="timeline", on_click=_beatgrid_folder).props("flat").classes(
                             "bg-[#252525] hover:bg-[#333] text-gray-300"
                         )

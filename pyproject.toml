@@ -18,7 +18,8 @@ dependencies = [
   "soundfile~=0.12",
   "tqdm~=4.66",
   "pandas~=2.2",
-  "pyyaml~=6.0.1"
+  "pyyaml~=6.0.1",
+  "pyrekordbox>=0.1.0"
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,7 @@ ml = ["transformers>=4.40", "accelerate>=0.28", "datasets>=2.18"]
 audio = ["mutagen>=1.47", "pyloudnorm>=0.1.1", "pydub>=0.25.1"]
 ann = ["hnswlib>=0.8"]
 ui = ["nicegui>=1.4", "pywebview>=4.0"]
+beatgrid = ["BeatNet>=1.1.1"]
 
 [project.scripts]
 rbassist = "rbassist.cli:app"

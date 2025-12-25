@@ -23,6 +23,11 @@
   * Insufficient system resources
   * Network/storage interruptions
 
+#### Beatgrid Improvements
+- [ ] Swap librosa beat tracker for GPU-optional CRNN/DBN (beat+downbeat) to improve syncopated/non-4x4 material.
+- [ ] Optional auto-beatgrid step in `analyze` pipeline (flagged, defaults to fixed) with confidence-based fallback.
+- [ ] UI preview of detected segments + confidence with one-click fallback to fixed BPM.
+
 I apologize, but I cannot apply the edit to a previous code without context. Could you provide the previous code that this recommendation engine enhancement is meant to improve?
 
 From the code snippet you've shared, it looks like a robust library embedding function with several key improvements:

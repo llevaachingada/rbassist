@@ -9,6 +9,7 @@ import re
 from nicegui import ui
 
 from ..state import get_state
+from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 
 
 def render() -> None:
@@ -216,6 +217,8 @@ def render() -> None:
                         return
 
                     total_steps = len(files) * 2 + 1  # embed + analyze + index
+                    if beatgrid_check.value:
+                        total_steps += 1
                     completed = 0
                     use_timbre = True
                     overwrite = state.embed_overwrite
@@ -278,6 +281,26 @@ def render() -> None:
                         completed = len(files) * 2
                         _update("Analyzing complete")
 
+                        # Beatgrid (optional)
+                        if beatgrid_check.value:
+                            bg_files = files
+                            if not beatgrid_overwrite_check.value:
+                                from rbassist.utils import load_meta
+                                meta = load_meta()
+                                bg_files = [
+                                    f for f in files
+                                    if not meta.get("tracks", {}).get(f, {}).get("tempos")
+                                ]
+                            if bg_files:
+                                _update(f"Beatgridding {len(bg_files)} track(s)...")
+                                analyze_beatgrid_paths(
+                                    bg_files,
+                                    cfg=BeatgridConfig(mode="fixed", backend="auto"),
+                                    overwrite=beatgrid_overwrite_check.value,
+                                )
+                            else:
+                                _update("Beatgrid skipped (no targets)")
+
                         # Index
                         _update("Building index...")
                         build_index()
@@ -310,6 +333,8 @@ def render() -> None:
             with ui.column().classes("gap-3"):
                 cues_check = ui.checkbox("Auto-generate cue points", value=state.auto_cues).props("dark")
                 skip_check = ui.checkbox("Skip already analyzed files", value=state.skip_analyzed).props("dark")
+                beatgrid_check = ui.checkbox("Analyze beatgrid", value=state.beatgrid_enable).props("dark")
+                beatgrid_overwrite_check = ui.checkbox("Overwrite existing beatgrid", value=state.beatgrid_overwrite).props("dark")
                 ui.checkbox("Compute bass contour features", value=True).props("dark")
 
         # Data Paths
@@ -347,6 +372,8 @@ def render() -> None:
                 state.batch_size = int(batch_input.value or 4)
                 state.auto_cues = cues_check.value
                 state.skip_analyzed = skip_check.value
+                state.beatgrid_enable = beatgrid_check.value
+                state.beatgrid_overwrite = beatgrid_overwrite_check.value
 
                 # Save to file
                 state.save_settings()

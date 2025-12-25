@@ -5,8 +5,8 @@
 - CLI: `rbassist embed` accepts `--timbre/--timbre-size`. Sampling mode unchanged.
 - UI: Streamlit webapp removed; NiceGUI (`rbassist ui`) is the sole GUI.
 - Docs: README/ABOUT updated to point to NiceGUI and note embedding changes.
-- UI settings: Added one-click “Embed + Analyze + Index” pipeline button (respects overwrite/timbre toggles) in Settings; new state flags `use_timbre` and `embed_overwrite` persisted.
-- UI pipeline: Added linear progress + status text for the pipeline button (embed → analyze → index) with per-stage updates and ETA-style counters based on completed steps.
+- UI settings: Added one-click "Embed + Analyze + Index" pipeline button (respects overwrite/timbre toggles) in Settings; new state flags `use_timbre` and `embed_overwrite` persisted.
+- UI pipeline: Added linear progress + status text for the pipeline button (embed + analyze + index) with per-stage updates and ETA-style counters based on completed steps.
 - Defaults: Duration cap now 90s; timbre and overwrite default to ON to keep embeddings consistent after rebuilds.
 - UX: Library shows current folder/index/timbre/overwrite flags; Discover blocks when index is missing. Settings shows read-only flags and clearer duration label.
 - Library: Single primary button now runs Embed + Analyze + Index; secondary buttons for Analyze + Index (recovery if embed already done) and Rebuild Index.
@@ -21,4 +21,11 @@
 - Tag suggestions (GUI): Tagging page "Learn Profiles" / "Preview Suggestions (CSV)" now call `tag_model.learn_tag_profiles` and `suggest_tags_for_tracks`, writing a review CSV to `data/tag_suggestions.csv`; an "Apply Suggestions" flow, guarded by an explicit checkbox, merges accepted suggestions into My Tags via `bulk_set_track_tags`.
 - Rekordbox tag import (GUI): Tagging page "Import Rekordbox XML" wired to `tagstore.import_rekordbox_tags` with browser file picker and success/error notifications.
 - Duplicate finder (GUI): Tools page "Scan for Duplicates" now calls `duplicates.find_duplicates` (exact/fuzzy) and `cdj_warnings`, showing KEEP/REMOVE pairs in a review table without touching files; users can act on the suggestions in their file manager.
-- UI honesty: Library "Analyze Library" button now nudges users to Settings → Embed + Analyze + Index instead of calling a stub pipeline; remaining "coming soon" buttons in Discover/Tools are explicitly marked as such instead of silently no-oping.
+- UI honesty: Library "Analyze Library" button now nudges users to Settings "Embed + Analyze + Index" instead of calling a stub pipeline; remaining "coming soon" buttons in Discover/Tools are explicitly marked as such instead of silently no-oping.
+
+### 2025-12-24
+- Beatgrid backend: Added `rbassist.beatgrid` with fixed (default) and dynamic modes. Dynamic splits tempo segments when drift exceeds a configurable percent over a bars window; writes `tempos`, `beatgrid_mode`, and a confidence score into `meta.json`.
+- CLI: New `rbassist beatgrid <files|folders>` command with `--mode fixed|dynamic`, `--drift-pct`, `--bars-window`, and optional `--duration-s` cap.
+- UI: Library page now exposes a Beatgrid card (mode toggle, drift %, bars, duration) with buttons to process music folders or a single picked file; runs in a background thread and refreshes meta on completion.
+- Beatgrid backend (GPU optional): Added BeatNet CRNN/DBN support when installed; `--backend auto|beatnet|librosa` and backend picker in the UI default to auto (tries BeatNet, falls back to librosa). Writes `beatgrid_backend` and confidence to meta.
+- Settings: added beatgrid toggles (enable/overwrite) in pipeline; pipeline now optionally runs beatgrid after analyze. Library shows Beatgrid status column and export-to-Rekordbox button.
