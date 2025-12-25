@@ -84,6 +84,7 @@
 #### Experimental Features
 - [ ] DJ-style intelligent playlist generation surfaced in the Discover/Tools pages (front-end for existing `int-pl` logic).
 - [ ] Advanced beat grid analysis and visual cue editing tools in the GUI.
+- [ ] Optional: history rewrite tool (git-filter-repo) to fully purge accidentally committed personal/library files from Git history (force-push workflow).
 - [ ] Automatic set preparation tools (end-to-end: seed → recommendations → ordered export with cues).
 - [ ] Cloud/distributed recommendation services (optional, opt-in only; keep local-first workflow primary).
 
