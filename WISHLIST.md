@@ -25,6 +25,7 @@
 
 #### UI/UX
 - [ ] Library table virtual scrolling / true pagination for 10k+ tracks (current plan: pagination; future: infinite scroll).
+- [ ] Settings: import/scan UX overhaul (import one folder at a time without reanalyzing whole library, clarify overwrite/skip behavior for already-analyzed tracks, add an in-page "How to use" tab).
 - [x] Beatgrid waveform preview: refine layout/controls and consider downbeat markers/zoom; current preview shows first ~16 bars on demand.
   - Completed 2025-12-25: Enhanced with beat/downbeat markers (pink dashed/yellow solid), dark theme, BPM/confidence/segments in title, legend.
 - [x] Tagging: implement safe_tagstore (user vs AI namespace), active_learning (uncertainty sampling), and optional user_model per docs/tagging_active_learning_plan.md.

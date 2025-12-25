@@ -42,6 +42,10 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Local AI assistant configs
+.claude/
+.continue/
+
 # Project data
 data/**
 !data/.gitkeep
