@@ -46,7 +46,7 @@ def cmd_beatgrid(
     drift_pct: float = typer.Option(1.5, help="Tempo drift percent to trigger new segment (dynamic mode)"),
     bars_window: int = typer.Option(16, help="Bars (4/4) per window for drift detection"),
     duration_s: int = typer.Option(0, help="Max seconds per track (0 = full)"),
-    backend: str = typer.Option("auto", help="auto | beatnet | librosa"),
+    backend: str = typer.Option("beatnet", help="beatnet | auto | librosa"),
     model: int = typer.Option(3, help="BeatNet model id (1..3)"),
     device: str = typer.Option("auto", help="cuda|cpu|auto (for BeatNet backend)"),
     overwrite: bool = typer.Option(True, help="Recompute beatgrid even if tempos already exist"),

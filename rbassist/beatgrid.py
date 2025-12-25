@@ -20,7 +20,7 @@ class BeatgridConfig:
     bars_window: int = 16  # bars to measure drift over (assume 4/4 -> bars*4 beats)
     duration_s: int = 0  # 0 = full track; otherwise truncate for speed
     hop_length: int = 512
-    backend: str = "auto"  # auto | beatnet | librosa
+    backend: str = "beatnet"  # beatnet (preferred GPU) | auto | librosa
     model_id: int = 3  # BeatNet model selector
     device: Optional[str] = None  # cuda|cpu|auto
 
@@ -178,7 +178,13 @@ def analyze_file(path: str, cfg: BeatgridConfig) -> tuple[str, dict | None, str 
             return path, None, "no beats detected", warnings
         segments = _segment_beats(beat_times, cfg, downbeat_times=downbeats if downbeats.size else None)
         bpm_est = _bpm_from_intervals(np.diff(beat_times))
-        return path, {"tempos": segments, "confidence": conf, "bpm_est": bpm_est}, None, warnings
+        return path, {
+            "tempos": segments,
+            "confidence": conf,
+            "bpm_est": bpm_est,
+            "beats": beat_times.tolist(),
+            "downbeats": downbeats.tolist() if downbeats.size else [],
+        }, None, warnings
     except Exception as e:
         return path, None, str(e), warnings
 

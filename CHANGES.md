@@ -29,3 +29,4 @@
 - UI: Library page now exposes a Beatgrid card (mode toggle, drift %, bars, duration) with buttons to process music folders or a single picked file; runs in a background thread and refreshes meta on completion.
 - Beatgrid backend (GPU optional): Added BeatNet CRNN/DBN support when installed; `--backend auto|beatnet|librosa` and backend picker in the UI default to auto (tries BeatNet, falls back to librosa). Writes `beatgrid_backend` and confidence to meta.
 - Settings: added beatgrid toggles (enable/overwrite) in pipeline; pipeline now optionally runs beatgrid after analyze. Library shows Beatgrid status column and export-to-Rekordbox button.
+- Library UI: Beatgrid card defaults to BeatNet, adds helper text, and includes a waveform preview (first ~16 bars) with beat markers. Library table now has pagination and search (artist/title/MyTags) without the old 500-row cap.

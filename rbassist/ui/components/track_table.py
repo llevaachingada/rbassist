@@ -87,7 +87,7 @@ class TrackTable:
             columns=self.columns,
             rows=self._tracks,
             row_key="path",
-            pagination={"rowsPerPage": 25},
+            pagination={"rowsPerPage": 25, "rowsPerPageOptions": [25, 50, 100, 200]},
         )
 
         props = "dark dense flat bordered"

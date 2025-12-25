@@ -295,7 +295,7 @@ def render() -> None:
                                 _update(f"Beatgridding {len(bg_files)} track(s)...")
                                 analyze_beatgrid_paths(
                                     bg_files,
-                                    cfg=BeatgridConfig(mode="fixed", backend="auto"),
+                                    cfg=BeatgridConfig(mode="fixed", backend="beatnet"),
                                     overwrite=beatgrid_overwrite_check.value,
                                 )
                             else:
