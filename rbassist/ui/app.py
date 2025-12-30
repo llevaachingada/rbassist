@@ -20,6 +20,7 @@ def create_header() -> None:
 
     with ui.tabs().classes("text-gray-400") as tabs:
         ui.tab("discover", label="Discover", icon="explore")
+        ui.tab("crate", label="Crate Expander", icon="playlist_play")
         ui.tab("library", label="Library", icon="library_music")
         ui.tab("tagging", label="Tags", icon="label")
         ui.tab("ai_tagging", label="AI Tags", icon="psychology")
@@ -32,7 +33,7 @@ def create_header() -> None:
 
 def create_pages(tabs) -> None:
     """Create tab panels for each page."""
-    from .pages import discover, library, tagging, tools, settings, cues
+    from .pages import discover, library, tagging, tools, settings, cues, crate_expander
     try:
         from .pages import ai_tagging
         has_ai_tagging = True
@@ -44,6 +45,9 @@ def create_pages(tabs) -> None:
     ):
         with ui.tab_panel("discover"):
             discover.render()
+
+        with ui.tab_panel("crate"):
+            crate_expander.render()
 
         with ui.tab_panel("library"):
             library.render()

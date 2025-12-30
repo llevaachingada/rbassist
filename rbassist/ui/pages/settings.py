@@ -45,7 +45,11 @@ def render() -> None:
                                     ui.label(path).classes("text-gray-200 text-sm truncate")
 
                                     async def _import_one(p: str = path) -> None:
-                                        await run_pipeline(roots=[p])
+                                        await run_pipeline(
+                                            roots=[p],
+                                            force_overwrite=False,
+                                            force_skip_analyzed=True,
+                                        )
 
                                     def _remove(p: str = path) -> None:
                                         state.music_folders = [f for f in state.music_folders if f != p]
@@ -81,19 +85,35 @@ def render() -> None:
                                         out.append(candidate)
                                 return out
 
+                            def _looks_like_path(line: str) -> bool:
+                                line = line.strip()
+                                return (
+                                    bool(re.match(r"^[A-Za-z]:[\\/]", line))
+                                    or line.startswith("\\\\")
+                                    or line.startswith("/")
+                                )
+
                             for line in raw.replace("\r", "\n").split("\n"):
                                 line = line.strip()
                                 if not line:
                                     continue
-                                try:
-                                    parts = shlex.split(line, posix=False)
-                                except ValueError:
+                                quoted = _extract_quoted(line)
+                                if quoted:
+                                    parts = quoted
+                                elif ";" in line:
+                                    parts = [p for p in line.split(";") if p.strip()]
+                                elif _looks_like_path(line):
                                     parts = [line]
-                                # Fallback: if shlex returned one long string but we had multiple quoted segments
-                                if len(parts) == 1:
-                                    quoted = _extract_quoted(line)
-                                    if len(quoted) > 1:
-                                        parts = quoted
+                                else:
+                                    try:
+                                        parts = shlex.split(line, posix=False)
+                                    except ValueError:
+                                        parts = [line]
+                                    # Fallback: if shlex returned one long string but we had multiple quoted segments
+                                    if len(parts) == 1:
+                                        extra_quoted = _extract_quoted(line)
+                                        if len(extra_quoted) > 1:
+                                            parts = extra_quoted
                                 for part in parts:
                                     for piece in part.split(";"):
                                         piece = _strip_quotes(piece)
@@ -133,20 +153,28 @@ def render() -> None:
                         if missing:
                             ui.notify(f"Folder does not exist: {', '.join(missing)}", type="warning")
 
-                    def pick_folder():
-                        try:
-                            import tkinter as tk
-                            from tkinter import filedialog
-                            root = tk.Tk()
-                            root.withdraw()
-                            folder = filedialog.askdirectory(title="Select Music Folder")
-                            root.destroy()
-                            if folder:
-                                _add_folder(folder)
-                            else:
-                                ui.notify("No folder selected. Paste a path instead.", type="info")
-                        except Exception as e:
-                            ui.notify(f"Folder picker error: {e}. Paste a path instead.", type="warning")
+                    async def pick_folder() -> None:
+                        def _pick() -> tuple[str | None, str | None]:
+                            try:
+                                import tkinter as tk
+                                from tkinter import filedialog
+                                root = tk.Tk()
+                                root.withdraw()
+                                root.attributes("-topmost", True)
+                                folder = filedialog.askdirectory(title="Select Music Folder")
+                                root.destroy()
+                                return folder or None, None
+                            except Exception as e:
+                                return None, str(e)
+
+                        folder, err = await asyncio.to_thread(_pick)
+                        if err:
+                            ui.notify(f"Folder picker error: {err}. Paste a path instead.", type="warning")
+                            return
+                        if folder:
+                            _add_folder(folder)
+                        else:
+                            ui.notify("No folder selected. Paste a path instead.", type="info")
 
                     async def add_and_import() -> None:
                         raw = (folder_input.value or "").strip()
@@ -156,7 +184,11 @@ def render() -> None:
                         _add_folder(raw)
                         added_paths = last_add_result.get("paths", [])
                         if len(added_paths) == 1:
-                            await run_pipeline(roots=[added_paths[0]])
+                            await run_pipeline(
+                                roots=[added_paths[0]],
+                                force_overwrite=False,
+                                force_skip_analyzed=True,
+                            )
                             return
                         if len(added_paths) > 1:
                             ui.notify("Added multiple folders; use the Import button next to the folder you want to process.", type="info")
@@ -167,17 +199,24 @@ def render() -> None:
                         except Exception:
                             resolved = ""
                         if resolved and resolved in state.music_folders:
-                            await run_pipeline(roots=[resolved])
+                            await run_pipeline(
+                                roots=[resolved],
+                                force_overwrite=False,
+                                force_skip_analyzed=True,
+                            )
                         else:
                             ui.notify("No folder to import (nothing new added).", type="info")
 
                     with ui.column().classes("flex-1 gap-2"):
                         _render_folder_list()
                         with ui.row().classes("w-full items-center gap-2"):
+                            def _add_from_input() -> None:
+                                _add_folder(folder_input.value)
+
                             ui.button(icon="folder", on_click=pick_folder).props("flat dense")
-                            ui.button("Add path", on_click=lambda: _add_folder(folder_input.value)).props("flat dense").classes("bg-[#252525] text-gray-200")
+                            ui.button("Add path", on_click=_add_from_input).props("flat dense").classes("bg-[#252525] text-gray-200")
                             ui.button("Add + Import", icon="play_arrow", on_click=add_and_import).props("flat dense").classes("bg-indigo-600 hover:bg-indigo-500 text-white")
-                        ui.label("Tip: use Import next to a folder to process one folder at a time.").classes("text-gray-500 text-xs")
+                        ui.label("Tip: use Import next to a folder to process one folder at a time (safe, no overwrite).").classes("text-gray-500 text-xs")
 
                 with ui.row().classes("w-full items-center gap-4"):
                     ui.label("Device:").classes("text-gray-400 w-32")
@@ -245,7 +284,12 @@ def render() -> None:
                 pipe_progress = ui.linear_progress(value=0).props("rounded color=indigo").classes("w-full")
                 pipe_label = ui.label("Idle").classes("text-gray-400 text-sm")
 
-                async def run_pipeline(roots: list[str] | None = None) -> None:
+                async def run_pipeline(
+                    roots: list[str] | None = None,
+                    *,
+                    force_overwrite: bool | None = None,
+                    force_skip_analyzed: bool | None = None,
+                ) -> None:
                     from rbassist.utils import walk_audio, load_meta
                     from rbassist.embed import build_embeddings
                     from rbassist.analyze import analyze_bpm_key
@@ -274,8 +318,8 @@ def render() -> None:
                         return
 
                     completed = 0
-                    overwrite = bool(overwrite_check.value)
-                    skip_analyzed = bool(skip_check.value)
+                    overwrite = bool(overwrite_check.value) if force_overwrite is None else bool(force_overwrite)
+                    skip_analyzed = bool(skip_check.value) if force_skip_analyzed is None else bool(force_skip_analyzed)
                     use_timbre = bool(timbre_check.value)
 
                     meta = load_meta()
@@ -352,7 +396,7 @@ def render() -> None:
                                 device=(device_select.value if device_select.value != "auto" else None),
                                 num_workers=int(workers_input.value or 0),
                                 batch_size=int(batch_input.value or 4),
-                                overwrite=True,
+                                overwrite=overwrite,
                                 timbre=use_timbre,
                                 progress_callback=_embed_cb,
                             )

@@ -36,11 +36,9 @@ def camelot_relation_score(seed: str, cand: str) -> float:
     except Exception:
         return 0.0
 
-    # Same number, different mode: relative major or minor
     if n1 == n2 and m1 != m2:
         return 0.8
 
-    # Neighbor on the circle (mod 12)
     if (n1 - n2) % 12 in (1, 11):
         return 0.7
 
@@ -53,7 +51,6 @@ def tag_similarity_score(seed_tags: set, cand_tags: set, prefer_tags: set = None
         return 0.0
 
     if prefer_tags:
-        # Use prefer_tags as the reference
         all_tags = seed_tags | prefer_tags
     else:
         all_tags = seed_tags
@@ -71,12 +68,13 @@ def tag_similarity_score(seed_tags: set, cand_tags: set, prefer_tags: set = None
 
 
 class DiscoverPage:
-    """Main recommendations page."""
+    """Main recommendations page with library browser."""
 
     def __init__(self):
         self.state = get_state()
         self.recommendations: list[dict] = []
         self.rec_table: TrackTable | None = None
+        self.browse_mode = False
 
     def render(self) -> None:
         """Render the discover page."""
@@ -91,29 +89,34 @@ class DiscoverPage:
         with ui.row().classes("w-full gap-6 items-start"):
             # Left sidebar - seed + filters (30%)
             with ui.column().classes("w-80 gap-4 flex-shrink-0"):
+                with ui.row().classes("w-full gap-2"):
+                    self.mode_btn = ui.button(
+                        "Browse Library",
+                        icon="library_music",
+                        on_click=self._toggle_browse,
+                    ).props("flat dense").classes("flex-1 bg-purple-600 hover:bg-purple-500 text-sm")
+
                 self.seed_card = SeedCard(on_change=self._on_seed_change)
                 self.filter_panel = FilterPanel(on_change=self._on_filter_change)
 
-                # Load track options
                 indexed = self.state.get_indexed_paths()
                 if indexed:
                     self.seed_card.set_track_options(indexed)
 
             # Right main area - recommendations (70%)
             with ui.column().classes("flex-1 gap-4"):
-                # Header row
                 with ui.row().classes("w-full items-center justify-between"):
-                    ui.label("Recommendations").classes("text-2xl font-bold text-white")
+                    self.page_title = ui.label("Recommendations").classes("text-2xl font-bold text-white")
                     with ui.row().classes("gap-2"):
                         self.refresh_btn = ui.button(
                             "Refresh", icon="refresh", on_click=self._refresh_recommendations
                         ).props("flat dense").classes("bg-indigo-600 hover:bg-indigo-500")
                         self.count_label = ui.label("0 results").classes("text-gray-400")
 
-                # Recommendations table
                 with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-0"):
                     self.rec_table = TrackTable(
                         on_select=self._on_rec_select,
+                        on_row_click=self._on_rec_click,
                         extra_columns=[
                             {"name": "dist", "label": "Distance", "field": "dist", "sortable": True, "align": "right"},
                             {"name": "key_rule", "label": "Key Rule", "field": "key_rule", "sortable": False, "align": "left"},
@@ -121,13 +124,12 @@ class DiscoverPage:
                     )
                     self.rec_table.build()
 
-                # Action buttons
                 with ui.row().classes("w-full gap-2"):
                     ui.button(
-                        "Select All",
-                        icon="select_all",
-                        on_click=lambda: ui.notify("Bulk selection coming soon", type="info"),
-                    ).props("flat dense").classes("bg-[#252525] hover:bg-[#333] text-gray-300")
+                        "Use as Seed",
+                        icon="psychology",
+                        on_click=self._use_selected_as_seed,
+                    ).props("flat dense").classes("bg-green-600 hover:bg-green-500 text-gray-200")
                     ui.button(
                         "Add to Playlist",
                         icon="playlist_add",
@@ -139,21 +141,114 @@ class DiscoverPage:
                         on_click=lambda: ui.notify("Selection export coming soon", type="info"),
                     ).props("flat dense").classes("bg-[#252525] hover:bg-[#333] text-gray-300")
 
+    def _toggle_browse(self) -> None:
+        """Toggle between recommendations and library browse mode."""
+        self.browse_mode = not self.browse_mode
+
+        if self.browse_mode:
+            self.page_title.text = "Library Browser"
+            self.mode_btn.text = "Back to Recommendations"
+            self.mode_btn.props("icon=recommend color=indigo")
+            self.refresh_btn.text = "Load All"
+            self._show_library()
+        else:
+            self.page_title.text = "Recommendations"
+            self.mode_btn.text = "Browse Library"
+            self.mode_btn.props("icon=library_music color=purple")
+            self.refresh_btn.text = "Refresh"
+            if self.state.seed_track:
+                self._refresh_recommendations()
+
+        self.mode_btn.update()
+        self.refresh_btn.update()
+
+    def _show_library(self) -> None:
+        """Show full library in browse mode."""
+        tracks = self.state.meta.get("tracks", {})
+
+        rows = []
+        for path, info in tracks.items():
+            bpm = info.get("bpm")
+            key = info.get("key")
+
+            rows.append({
+                "path": path,
+                "artist": info.get("artist", ""),
+                "title": info.get("title", path.split("\\")[-1].split("/")[-1]),
+                "bpm": f"{bpm:.0f}" if bpm else "-",
+                "key": key or "-",
+                "dist": "-",
+                "key_rule": "-",
+            })
+
+        rows.sort(key=lambda r: (r["artist"].lower(), r["title"].lower()))
+
+        if self.rec_table:
+            self.rec_table.update(rows[:500])
+        self.count_label.text = f"{len(rows)} tracks (showing {min(len(rows), 500)})"
+        self.count_label.update()
+
     def _on_seed_change(self) -> None:
         """Handle seed track change."""
-        self._refresh_recommendations()
+        if not self.browse_mode:
+            self._refresh_recommendations()
 
     def _on_filter_change(self) -> None:
         """Handle filter change."""
-        self._refresh_recommendations()
+        if self.browse_mode:
+            self._show_library()
+        else:
+            self._refresh_recommendations()
 
     def _on_rec_select(self, track: dict | None) -> None:
         """Handle recommendation selection."""
         if track:
             ui.notify(f"Selected: {track.get('artist', '')} - {track.get('title', '')}")
 
+    def _on_rec_click(self, track: dict | None) -> None:
+        """Handle recommendation row click - quick preview."""
+        if not track:
+            return
+        path = track.get("path")
+        if not path:
+            return
+        info = self.state.meta.get("tracks", {}).get(path, {})
+        bpm = info.get("bpm")
+        key = info.get("key")
+        tags = ", ".join(info.get("mytags", []) or []) or "No tags"
+        bpm_text = f"{bpm:.0f} BPM" if isinstance(bpm, (int, float)) and bpm else "-- BPM"
+        key_text = key or "-"
+
+        ui.notify(
+            f"{track.get('artist', '')} - {track.get('title', '')}\n{bpm_text} | {key_text} | {tags}",
+            type="info",
+            position="top-right",
+        )
+
+    def _use_selected_as_seed(self) -> None:
+        """Use selected track as new seed."""
+        if not self.rec_table or not self.rec_table.table:
+            return
+        selected = self.rec_table.table.selected
+        if selected and len(selected) > 0:
+            track = selected[0]
+            if isinstance(track, dict):
+                path = track.get("path")
+            else:
+                path = track
+            if path:
+                self.seed_card.set_seed(path)
+                self._refresh_recommendations()
+                ui.notify("Updated seed track", type="positive")
+        else:
+            ui.notify("Select a track first", type="warning")
+
     def _refresh_recommendations(self) -> None:
         """Fetch and display recommendations."""
+        if self.browse_mode:
+            self._show_library()
+            return
+
         seed = self.state.seed_track
         if not seed:
             ui.notify("Select a seed track first", type="warning")
@@ -169,6 +264,7 @@ class DiscoverPage:
             if self.rec_table:
                 self.rec_table.update(recs)
             self.count_label.text = f"{len(recs)} results"
+            self.count_label.update()
         except Exception as e:
             ui.notify(f"Error: {e}", type="negative")
 
@@ -189,7 +285,6 @@ class DiscoverPage:
         tracks = meta.get("tracks", {})
         seed_info = tracks.get(seed_path, {})
 
-        # Load seed embedding
         emb_path = seed_info.get("embedding")
         if not emb_path:
             raise ValueError("Seed track has no embedding")
@@ -198,7 +293,6 @@ class DiscoverPage:
         if seed_vec is None:
             raise ValueError("Could not load seed embedding")
 
-        # Load index
         paths_file = IDX / "paths.json"
         paths_map = json.loads(paths_file.read_text(encoding="utf-8"))
 
@@ -206,11 +300,9 @@ class DiscoverPage:
         index.load_index(str(IDX / "hnsw.idx"))
         index.set_ef(64)
 
-        # Query - get more candidates for scoring
         labels, dists = index.knn_query(seed_vec, k=min(top * 4, len(paths_map)))
         labels, dists = labels[0].tolist(), dists[0].tolist()
 
-        # Extract seed features
         filters = self.state.filters
         weights = self.state.weights
 
@@ -220,7 +312,6 @@ class DiscoverPage:
         seed_features = seed_info.get("features", {})
         seed_tags = set(seed_info.get("tags", []) + seed_info.get("mytags", []))
 
-        # Load seed contours
         seed_bass_contour = np.array(
             seed_features.get("bass_contour", {}).get("contour", []),
             dtype=float,
@@ -230,13 +321,11 @@ class DiscoverPage:
             dtype=float,
         )
 
-        # Hard filter settings
         bpm_max_diff = float(filters.get("bpm_max_diff", 0.0))
         allowed_key_rel = set(filters.get("allowed_key_relations", []))
         require_tags = set(filters.get("require_tags", []))
         prefer_tags = set(filters.get("prefer_tags", []))
 
-        # Calculate total weight for normalization
         weight_sum = sum(weights.values())
         if weight_sum <= 0:
             weight_sum = 1.0
@@ -254,12 +343,10 @@ class DiscoverPage:
             cand_features = info.get("features", {})
             cand_tags = set(info.get("tags", []) + info.get("mytags", []))
 
-            # Hard BPM filter
             if bpm_max_diff > 0 and seed_bpm > 0 and cand_bpm > 0:
                 if abs(seed_bpm - cand_bpm) > bpm_max_diff:
                     continue
 
-            # Apply legacy tempo filter (soft or hard based on tempo_pct)
             if not tempo_match(
                 seed_bpm, cand_bpm,
                 pct=filters.get("tempo_pct", 6.0),
@@ -267,14 +354,11 @@ class DiscoverPage:
             ):
                 continue
 
-            # Hard tag filter
             if require_tags and not require_tags.issubset(cand_tags):
                 continue
 
-            # Calculate key relation
             key_score = camelot_relation_score(seed_camelot or seed_key, cand_camelot or cand_key)
 
-            # Hard key relation filter
             if allowed_key_rel:
                 if key_score >= 0.99:
                     rel = "same"
@@ -288,7 +372,6 @@ class DiscoverPage:
                 if rel not in allowed_key_rel:
                     continue
             else:
-                # For display purposes
                 if key_score >= 0.99:
                     rel = "same"
                 elif key_score >= 0.79:
@@ -302,20 +385,16 @@ class DiscoverPage:
                     if not ok:
                         rel = "-"
 
-            # Calculate all feature scores
             score = 0.0
 
-            # ANN similarity
             if weights.get("ann", 0.0):
                 ann_score = 1.0 - float(dist)
                 score += weights["ann"] * ann_score
 
-            # Samples score
             if weights.get("samples", 0.0):
                 samples_val = float(cand_features.get("samples", 0.0))
                 score += weights["samples"] * samples_val
 
-            # Bass similarity
             if weights.get("bass", 0.0) and bass_similarity is not None:
                 cand_bass_contour = np.array(
                     cand_features.get("bass_contour", {}).get("contour", []),
@@ -325,7 +404,6 @@ class DiscoverPage:
                     bass_score = float(bass_similarity(seed_bass_contour, cand_bass_contour))
                     score += weights["bass"] * bass_score
 
-            # Rhythm similarity
             if weights.get("rhythm", 0.0) and rhythm_similarity is not None:
                 cand_rhythm_contour = np.array(
                     cand_features.get("rhythm_contour", {}).get("contour", []),
@@ -335,21 +413,17 @@ class DiscoverPage:
                     rhythm_score = float(rhythm_similarity(seed_rhythm_contour, cand_rhythm_contour))
                     score += weights["rhythm"] * rhythm_score
 
-            # BPM similarity (soft weight)
             if weights.get("bpm", 0.0) and seed_bpm > 0 and cand_bpm > 0:
                 bpm_score = tempo_score(seed_bpm, cand_bpm, bpm_max_diff or filters.get("tempo_pct", 6.0))
                 score += weights["bpm"] * bpm_score
 
-            # Key similarity (soft weight)
             if weights.get("key", 0.0):
                 score += weights["key"] * key_score
 
-            # Tag similarity (soft weight)
             if weights.get("tags", 0.0):
                 tag_score = tag_similarity_score(seed_tags, cand_tags, prefer_tags)
                 score += weights["tags"] * tag_score
 
-            # Normalize by total weight
             score /= weight_sum
 
             results.append({
@@ -363,14 +437,11 @@ class DiscoverPage:
                 "score": score,
             })
 
-        # Sort by combined score
         results.sort(key=lambda r: r["score"], reverse=True)
 
-        # Return top N
         return results[:top]
 
 
-# Page instance
 _page: DiscoverPage | None = None
 
 

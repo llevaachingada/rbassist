@@ -62,10 +62,12 @@ class TrackTable:
     def __init__(
         self,
         on_select: Callable[[dict], None] | None = None,
+        on_row_click: Callable[[dict], None] | None = None,
         selectable: bool = True,
         extra_columns: list[dict] | None = None,
     ):
         self.on_select = on_select
+        self.on_row_click = on_row_click
         self.selectable = selectable
         self._tracks: list[dict] = []
 
@@ -98,6 +100,9 @@ class TrackTable:
 
         if self.on_select and self.selectable:
             self.table.on("selection", lambda e: self.on_select(e.args[1] if e.args else None))
+
+        if self.on_row_click:
+            self.table.on("row-click", lambda e: self.on_row_click(e.args[1] if len(e.args) > 1 else None))
 
         return self.table
 
