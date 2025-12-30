@@ -73,3 +73,6 @@ cleanup_backup_*/
 hunters ibrary.xml
 hs collection 12.xml
 *.lnk
+
+# Review archives
+review/archives/archive_20251209/meta.json
