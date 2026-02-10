@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-import os, pathlib, numpy as np
+import json
+import os
+import pathlib
+from datetime import datetime, timezone
+import numpy as np
 import librosa, soundfile as sf
 import warnings
 from typing import Callable, List, Optional
@@ -9,7 +13,7 @@ import torch
 from rich.progress import Progress
 from .utils import console, EMB, load_meta, save_meta
 from .prefs import mode_for_path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from .sampling_profile import SamplingParams, pick_windows
 try:
     import openl3  # type: ignore
@@ -63,10 +67,33 @@ def _resolve_device(requested: str | None) -> str:
     raise ValueError(f"Unsupported device '{requested}'. Use 'cuda', 'rocm', 'mps', or 'cpu'.")
 
 
+def _configure_torch_runtime(device: str) -> None:
+    """Apply safe runtime tuning for CUDA inference."""
+    if device != "cuda":
+        return
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = True
+    except Exception:
+        pass
+    try:
+        torch.backends.cudnn.allow_tf32 = True
+    except Exception:
+        pass
+    try:
+        torch.backends.cudnn.benchmark = True
+    except Exception:
+        pass
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
+
+
 class MertEmbedder:
     def __init__(self, model_name: str = DEFAULT_MODEL, device: str | None = None):
         req = _resolve_device(device)
         self.device = req
+        _configure_torch_runtime(self.device)
         self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(self.device)
         self.processor = Wav2Vec2FeatureExtractor.from_pretrained(model_name, trust_remote_code=True)
 
@@ -75,7 +102,7 @@ class MertEmbedder:
             y = librosa.resample(y, orig_sr=sr, target_sr=SAMPLE_RATE)
             sr = SAMPLE_RATE
         inputs = self.processor(y, sampling_rate=sr, return_tensors="pt")
-        with torch.no_grad():
+        with torch.inference_mode():
             out = self.model(**{k: v.to(self.device) for k, v in inputs.items()}, output_hidden_states=True)
         feats = out.hidden_states[-1].squeeze(0)  # [T, 1024]
         vec = feats.mean(dim=0).cpu().numpy().astype(np.float32)
@@ -91,7 +118,7 @@ class MertEmbedder:
                 y = librosa.resample(y, orig_sr=sr, target_sr=SAMPLE_RATE)
             arrays.append(y)
         inputs = self.processor(arrays, sampling_rate=SAMPLE_RATE, return_tensors="pt", padding=True)
-        with torch.no_grad():
+        with torch.inference_mode():
             out = self.model(**{k: v.to(self.device) for k, v in inputs.items()}, output_hidden_states=True)
         feats = out.hidden_states[-1]  # [B, T, 1024]
         vecs = feats.mean(dim=1).cpu().numpy().astype(np.float32)
@@ -311,10 +338,43 @@ def embed_with_default_windows(
     slices = _window_slices(y, sr, windows)
     if not slices:
         return embedder.encode_array(y, sr)
-    embs: list[np.ndarray] = []
-    for seg in slices:
-        embs.append(embedder.encode_array(seg, sr))
+    try:
+        embs = embedder.encode_batch([(seg, sr) for seg in slices])
+    except Exception:
+        # Fallback keeps behavior stable if batched encode fails on edge inputs.
+        embs = [embedder.encode_array(seg, sr) for seg in slices]
     return np.mean(np.stack(embs, axis=0), axis=0)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_runtime_path(path_ref: str | None, default_path: pathlib.Path) -> pathlib.Path:
+    if path_ref is None:
+        return default_path
+    p = pathlib.Path(path_ref)
+    if p.is_absolute():
+        return p
+    return (pathlib.Path.cwd() / p).resolve()
+
+
+def _load_checkpoint_state(path: pathlib.Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        console.print(f"[yellow]Checkpoint unreadable ({path}): {e}")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _write_checkpoint_state(path: pathlib.Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def build_embeddings(
@@ -329,6 +389,9 @@ def build_embeddings(
     batch_size: Optional[int] = None,
     timbre: bool = False,
     timbre_size: int = 512,
+    resume: bool = False,
+    checkpoint_file: Optional[str] = None,
+    checkpoint_every: int = 100,
 ) -> None:
     meta = load_meta()
     emb = MertEmbedder(model_name=model_name, device=device)
@@ -340,7 +403,32 @@ def build_embeddings(
             console.print(f"[yellow]Timbre embedding disabled: {e}")
             timbre_emb = None
     EMB.mkdir(parents=True, exist_ok=True)
-    total = len(paths)
+    checkpoint_every = max(1, int(checkpoint_every))
+    checkpoint_path = _resolve_runtime_path(checkpoint_file, EMB.parent / "embed_checkpoint.json")
+    failed_log_path = checkpoint_path.with_name(f"{checkpoint_path.stem}_failed.jsonl")
+
+    checkpoint_seed = _load_checkpoint_state(checkpoint_path) if resume else {}
+    completed_paths: set[str] = set()
+    failed_paths: set[str] = set()
+    if isinstance(checkpoint_seed.get("completed_paths"), list):
+        completed_paths = {str(p) for p in checkpoint_seed["completed_paths"]}
+    if isinstance(checkpoint_seed.get("failed_paths"), list):
+        failed_paths = {str(p) for p in checkpoint_seed["failed_paths"]}
+
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    started_at = _utc_now_iso()
+    counters = {
+        "requested": len(paths),
+        "queued": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "skipped_checkpoint": 0,
+        "skipped_existing": 0,
+    }
+    checkpoint_mutations = 0
+    # Persist meta periodically so crash/abort does not lose an entire chunk.
+    meta_mutations = 0
+    meta_flush_every = max(25, checkpoint_every * 5)
 
     if sampling is not None and num_workers > 0:
         # Keep sampling runs serial to avoid repeated disk reads per segment per worker.
@@ -349,10 +437,18 @@ def build_embeddings(
     # Resolve source paths (respect folder mode/stems) before optional parallel load
     jobs: list[tuple[str, str, str]] = []  # (original_path, src_for_embed, used_label)
     for p in paths:
-        if not overwrite:
-            info = meta.get("tracks", {}).get(p)
-            if info and info.get("embedding") and pathlib.Path(info["embedding"]).exists():
-                continue
+        if resume and p in completed_paths:
+            counters["skipped_checkpoint"] += 1
+            continue
+        info = meta.get("tracks", {}).get(p)
+        existing_embedding = bool(
+            info and info.get("embedding") and pathlib.Path(info["embedding"]).exists()
+        )
+        if existing_embedding and (resume or not overwrite):
+            counters["skipped_existing"] += 1
+            if resume:
+                completed_paths.add(p)
+            continue
         src_path = p
         used = "baseline"
         try:
@@ -369,6 +465,8 @@ def build_embeddings(
         except Exception as e:
             console.print(f"[yellow]Mode check failed for {p}: {e}")
         jobs.append((p, src_path, used))
+    counters["queued"] = len(jobs)
+    total = len(jobs)
 
     def _load(audio_path: str) -> tuple[np.ndarray, int]:
         y, sr = librosa.load(audio_path, sr=None, mono=True)
@@ -376,8 +474,86 @@ def build_embeddings(
             y = y[: sr * duration_s]
         return y, sr
 
+    def _checkpoint_payload(status: str) -> dict:
+        return {
+            "version": 1,
+            "status": status,
+            "run_id": run_id,
+            "started_at": started_at,
+            "updated_at": _utc_now_iso(),
+            "model_name": model_name,
+            "duration_s": duration_s,
+            "device": emb.device,
+            "resume": bool(resume),
+            "overwrite": bool(overwrite),
+            "checkpoint_every": checkpoint_every,
+            "paths_total": counters["requested"],
+            "paths_queued": counters["queued"],
+            "paths_completed": len(completed_paths),
+            "paths_failed": len(failed_paths),
+            "counters": counters,
+            "completed_paths": sorted(completed_paths),
+            "failed_paths": sorted(failed_paths),
+            "failed_log": str(failed_log_path),
+        }
+
+    def _flush_checkpoint(force: bool = False, status: str = "running") -> None:
+        nonlocal checkpoint_mutations, meta_mutations
+        write_checkpoint = force or checkpoint_mutations >= checkpoint_every
+        write_meta = force or meta_mutations >= meta_flush_every
+        if not write_checkpoint and not write_meta:
+            return
+        if write_checkpoint:
+            _write_checkpoint_state(checkpoint_path, _checkpoint_payload(status=status))
+            checkpoint_mutations = 0
+        if write_meta:
+            save_meta(meta)
+            meta_mutations = 0
+
+    def _log_failure(path: str, src_path: str, phase: str, err: Exception | str) -> None:
+        nonlocal checkpoint_mutations, meta_mutations
+        counters["failed"] += 1
+        failed_paths.add(path)
+        event = {
+            "timestamp": _utc_now_iso(),
+            "run_id": run_id,
+            "path": path,
+            "source_path": src_path,
+            "phase": phase,
+            "error": repr(err),
+        }
+        try:
+            failed_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with failed_log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except Exception as log_err:
+            console.print(f"[yellow]Failed to append failure log ({failed_log_path}): {log_err}")
+        try:
+            console.print(f"[red]Embedding failed for {path}: {err!r}")
+        except Exception:
+            safe_path = repr(str(path))
+            console.print(f"[red]Embedding failed for {safe_path}: {err!r}")
+        checkpoint_mutations += 1
+        meta_mutations += 1
+        _flush_checkpoint()
+
+    def _mark_completed(path: str) -> None:
+        nonlocal checkpoint_mutations, meta_mutations
+        counters["succeeded"] += 1
+        completed_paths.add(path)
+        failed_paths.discard(path)
+        checkpoint_mutations += 1
+        meta_mutations += 1
+        _flush_checkpoint()
+
+    if total == 0:
+        console.print("[green]No embedding work to do.")
+        _flush_checkpoint(force=True, status="completed")
+        return
+
     progress: Progress | None = None
     task_id: int | None = None
+    run_status = "running"
     try:
         effective_batch = 1
         if sampling is not None:
@@ -445,15 +621,10 @@ def build_embeddings(
 
                 if combined is not None:
                     _save_embedding(orig, combined, source_label, kind="embedding")
+                _mark_completed(orig)
             except Exception as e:
-                # Per-file failures should never crash the whole job; some file
-                # paths may also contain characters that the Windows console
-                # cannot encode. Fall back to a safe representation.
-                try:
-                    console.print(f"[red]Embedding failed for {orig}: {e!r}")
-                except Exception:
-                    safe_path = repr(str(orig))
-                    console.print(f"[red]Embedding failed for {safe_path}: {e!r}")
+                # Per-file failures should never crash the whole run.
+                _log_failure(orig, src_path, "embed", e)
             finally:
                 done += 1
                 if progress_callback is not None:
@@ -462,30 +633,45 @@ def build_embeddings(
                     _tick()
 
         if workers > 0:
+            # Bound in-flight decode futures to prevent very large RAM spikes on
+            # long chunk files while keeping the GPU fed.
             with ThreadPoolExecutor(max_workers=workers) as ex:
-                future_map = {ex.submit(_load, src): (orig, src, used) for (orig, src, used) in jobs}
-                for fut in as_completed(future_map):
-                    orig, src_path, used = future_map[fut]
-                    try:
-                        y, sr = fut.result()
-                        _process_one(orig, src_path, y, sr, used)
-                    except Exception as e:
+                max_in_flight = max(workers, int(batch_size or 1) * workers)
+                jobs_iter = iter(jobs)
+                in_flight: dict = {}
+
+                def _submit_more() -> None:
+                    while len(in_flight) < max_in_flight:
                         try:
-                            console.print(f"[red]Embedding failed for {orig}: {e!r}")
-                        except Exception:
-                            safe_path = repr(str(orig))
-                            console.print(f"[red]Embedding failed for {safe_path}: {e!r}")
-                        done += 1
-                        if progress_callback is not None:
-                            progress_callback(done, total, orig)
-                        else:
-                            _tick()
+                            orig, src_path, used = next(jobs_iter)
+                        except StopIteration:
+                            break
+                        fut = ex.submit(_load, src_path)
+                        in_flight[fut] = (orig, src_path, used)
+
+                _submit_more()
+                while in_flight:
+                    completed, _ = wait(tuple(in_flight.keys()), return_when=FIRST_COMPLETED)
+                    for fut in completed:
+                        orig, src_path, used = in_flight.pop(fut)
+                        try:
+                            y, sr = fut.result()
+                            _process_one(orig, src_path, y, sr, used)
+                        except Exception as e:
+                            _log_failure(orig, src_path, "decode", e)
+                            done += 1
+                            if progress_callback is not None:
+                                progress_callback(done, total, orig)
+                            else:
+                                _tick()
+                    _submit_more()
         else:
             for orig, src, used in jobs:
                 try:
                     if sampling is not None:
                         vec = embed_with_sampling(src, emb, sampling)
                         _save_embedding(orig, vec, used)
+                        _mark_completed(orig)
                         done += 1
                         if progress_callback is not None:
                             progress_callback(done, total, orig)
@@ -495,11 +681,7 @@ def build_embeddings(
                     y, sr = _load(src)
                     _process_one(orig, src, y, sr, used)
                 except Exception as e:
-                    try:
-                        console.print(f"[red]Embedding failed for {orig}: {e!r}")
-                    except Exception:
-                        safe_path = repr(str(orig))
-                        console.print(f"[red]Embedding failed for {safe_path}: {e!r}")
+                    _log_failure(orig, src, "serial", e)
                     done += 1
                     if progress_callback is not None:
                         progress_callback(done, total, orig)
@@ -507,6 +689,19 @@ def build_embeddings(
                         _tick()
 
         save_meta(meta)
+        run_status = "completed"
+        console.print(
+            "[cyan]Embedding summary: "
+            f"queued={counters['queued']}, "
+            f"succeeded={counters['succeeded']}, "
+            f"failed={counters['failed']}, "
+            f"skipped(checkpoint)={counters['skipped_checkpoint']}, "
+            f"skipped(existing)={counters['skipped_existing']}"
+        )
+        console.print(f"[cyan]Checkpoint: {checkpoint_path}")
+        if counters["failed"] > 0:
+            console.print(f"[yellow]Failed-track log: {failed_log_path}")
     finally:
+        _flush_checkpoint(force=True, status=run_status)
         if progress is not None:
             progress.stop()

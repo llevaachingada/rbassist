@@ -111,6 +111,9 @@ class DiscoverPage:
                         self.refresh_btn = ui.button(
                             "Refresh", icon="refresh", on_click=self._refresh_recommendations
                         ).props("flat dense").classes("bg-indigo-600 hover:bg-indigo-500")
+                        self.reset_sort_btn = ui.button(
+                            "Reset Sort", icon="sort", on_click=self._reset_sort
+                        ).props("flat dense").classes("bg-[#252525] hover:bg-[#333] text-gray-300")
                         self.count_label = ui.label("0 results").classes("text-gray-400")
 
                 with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-0"):
@@ -118,6 +121,7 @@ class DiscoverPage:
                         on_select=self._on_rec_select,
                         on_row_click=self._on_rec_click,
                         extra_columns=[
+                            {"name": "score", "label": "Match", "field": "score", "sortable": True, "align": "right"},
                             {"name": "dist", "label": "Distance", "field": "dist", "sortable": True, "align": "right"},
                             {"name": "key_rule", "label": "Key Rule", "field": "key_rule", "sortable": False, "align": "left"},
                         ],
@@ -242,6 +246,11 @@ class DiscoverPage:
                 ui.notify("Updated seed track", type="positive")
         else:
             ui.notify("Select a track first", type="warning")
+
+    def _reset_sort(self) -> None:
+        """Reset table sorting to default match score."""
+        if self.rec_table:
+            self.rec_table.set_sort("score", True)
 
     def _refresh_recommendations(self) -> None:
         """Fetch and display recommendations."""
@@ -432,9 +441,9 @@ class DiscoverPage:
                 "title": info.get("title", path.split("\\")[-1].split("/")[-1]),
                 "bpm": f"{cand_bpm:.0f}" if cand_bpm else "-",
                 "key": cand_key or "-",
-                "dist": f"{dist:.3f}",
+                "dist": round(float(dist), 3),
                 "key_rule": rel,
-                "score": score,
+                "score": round(float(score), 3),
             })
 
         results.sort(key=lambda r: r["score"], reverse=True)

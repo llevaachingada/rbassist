@@ -280,6 +280,35 @@ def render() -> None:
                 ).props("dark")
                 ui.label("Tip: turn overwrite OFF to import a new folder without reprocessing your whole library.").classes("text-gray-500 text-xs")
 
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Paths file:").classes("text-gray-400 w-32")
+                    paths_file_input = ui.input(
+                        value=state.embed_paths_file,
+                        placeholder="Optional .txt with one path per line (used by Process all)",
+                    ).props("dark dense clearable").classes("flex-1")
+
+                resume_check = ui.checkbox(
+                    "Resume embedding from checkpoint",
+                    value=bool(state.embed_resume),
+                ).props("dark")
+
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Checkpoint file:").classes("text-gray-400 w-32")
+                    checkpoint_file_input = ui.input(
+                        value=state.embed_checkpoint_file,
+                        placeholder="Optional path (default: data/embed_checkpoint.json)",
+                    ).props("dark dense clearable").classes("flex-1")
+
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Checkpoint every:").classes("text-gray-400 w-32")
+                    checkpoint_every_input = ui.number(
+                        value=max(1, int(state.embed_checkpoint_every or 100)),
+                        min=1,
+                        max=100000,
+                        step=1,
+                    ).props("dark dense").classes("w-32")
+                    ui.label("Persist progress every N processed tracks").classes("text-gray-500 text-sm")
+
                 # Pipeline progress UI
                 pipe_progress = ui.linear_progress(value=0).props("rounded color=indigo").classes("w-full")
                 pipe_label = ui.label("Idle").classes("text-gray-400 text-sm")
@@ -290,37 +319,66 @@ def render() -> None:
                     force_overwrite: bool | None = None,
                     force_skip_analyzed: bool | None = None,
                 ) -> None:
-                    from rbassist.utils import walk_audio, load_meta
+                    from rbassist.utils import walk_audio, load_meta, read_paths_file
                     from rbassist.embed import build_embeddings
                     from rbassist.analyze import analyze_bpm_key
                     from rbassist.recommend import build_index
 
                     # If user pasted paths but didn't click "Add path", ingest them now (default scope only)
                     default_scope = roots is None
+                    scope_label = "all folders"
                     if roots is None:
                         if folder_input.value:
                             _add_folder(folder_input.value)
                         roots = list(state.music_folders)
 
                     roots = [str(p) for p in (roots or []) if str(p).strip()]
+                    files: list[str] = []
+                    music_roots: list[str] = []
 
-                    # Filter out missing paths but warn the user
-                    music_roots = [p for p in roots if Path(p).exists()]
-                    missing = [p for p in roots if p not in music_roots]
-                    if missing:
-                        ui.notify(f"Skipping missing folder(s): {', '.join(missing)}", type="warning")
-                    if not music_roots:
-                        ui.notify("Set at least one Music Folder first", type="warning")
-                        return
-                    files = walk_audio(music_roots)
-                    if not files:
-                        ui.notify("No audio files found under the selected folder(s)", type="warning")
-                        return
+                    paths_file_value = str(paths_file_input.value or "").strip()
+                    if default_scope and paths_file_value:
+                        pfile = Path(paths_file_value).expanduser()
+                        if not pfile.exists():
+                            ui.notify(f"Paths file not found: {pfile}", type="warning")
+                            return
+                        try:
+                            listed_paths = read_paths_file(pfile)
+                        except Exception as e:
+                            ui.notify(f"Failed to read paths file: {e}", type="negative")
+                            return
+                        if not listed_paths:
+                            ui.notify(f"Paths file has no usable entries: {pfile}", type="warning")
+                            return
+                        files = walk_audio(listed_paths)
+                        if not files:
+                            ui.notify("No audio files found from paths file entries.", type="warning")
+                            return
+                        scope_label = f"paths file ({len(listed_paths)} entries)"
+                    else:
+                        # Filter out missing paths but warn the user
+                        music_roots = [p for p in roots if Path(p).exists()]
+                        missing = [p for p in roots if p not in music_roots]
+                        if missing:
+                            ui.notify(f"Skipping missing folder(s): {', '.join(missing)}", type="warning")
+                        if not music_roots:
+                            ui.notify("Set at least one Music Folder first", type="warning")
+                            return
+                        files = walk_audio(music_roots)
+                        if not files:
+                            ui.notify("No audio files found under the selected folder(s)", type="warning")
+                            return
+                        scope_label = "all folders" if default_scope else f"{len(music_roots)} folder(s)"
+                        if not default_scope and len(music_roots) == 1:
+                            scope_label = Path(music_roots[0]).name
 
                     completed = 0
                     overwrite = bool(overwrite_check.value) if force_overwrite is None else bool(force_overwrite)
                     skip_analyzed = bool(skip_check.value) if force_skip_analyzed is None else bool(force_skip_analyzed)
                     use_timbre = bool(timbre_check.value)
+                    resume_embed = bool(resume_check.value)
+                    checkpoint_value = str(checkpoint_file_input.value or "").strip()
+                    checkpoint_every = max(1, int(checkpoint_every_input.value or 100))
 
                     meta = load_meta()
 
@@ -368,9 +426,6 @@ def render() -> None:
                             pass
 
                     try:
-                        scope_label = "all folders" if default_scope else f"{len(music_roots)} folder(s)"
-                        if not default_scope and len(music_roots) == 1:
-                            scope_label = Path(music_roots[0]).name
                         ui.notify(
                             f"Running pipeline on {scope_label}: {len(files)} track(s) "
                             f"({len(embed_files)} embed, {len(analysis_files)} analyze)...",
@@ -398,6 +453,9 @@ def render() -> None:
                                 batch_size=int(batch_input.value or 4),
                                 overwrite=overwrite,
                                 timbre=use_timbre,
+                                resume=resume_embed,
+                                checkpoint_file=(checkpoint_value or None),
+                                checkpoint_every=checkpoint_every,
                                 progress_callback=_embed_cb,
                             )
                             completed = len(embed_files)
@@ -458,6 +516,9 @@ def render() -> None:
                         await asyncio.to_thread(_work)
                         try:
                             ui.notify("Embed + Analyze + Index complete", type="positive")
+                            if resume_embed:
+                                cpath = checkpoint_value or "data/embed_checkpoint.json"
+                                ui.notify(f"Checkpoint updated: {cpath}", type="info")
                         except RuntimeError:
                             # Client may have gone away; pipeline still finished.
                             pass
@@ -548,10 +609,12 @@ def render() -> None:
                         1. Add Music Folders (folder icon or paste a path).
                         2. Click the **play** icon next to the folder you want to import (or use **Add + Import**).
                         3. Keep **Overwrite** OFF to only process new tracks (recommended).
-                        4. Click **Save Settings** if you want these choices to persist.
+                        4. Optional: turn **Resume embedding from checkpoint** ON for interruption-safe runs.
+                        5. Click **Save Settings** if you want these choices to persist.
 
                         **Full rebuild**
                         - Turn **Overwrite** ON, then click **Process all folders**.
+                        - Optional: set **Paths file** to process a curated list (one path per line).
                         """
                     ).classes("text-gray-300")
 
@@ -561,6 +624,7 @@ def render() -> None:
                         - **Overwrite vs Skip analyzed:** these are linked; turning Overwrite ON turns Skip analyzed OFF (and vice-versa).
                         - **Why is Discover empty?** Discover needs an index; run the pipeline (folder Import or Process all folders).
                         - **What does Timbre do?** Adds extra texture features; it is slower and requires `openl3` installed.
+                        - **What does Resume do?** Embedding progress is checkpointed and completed tracks are skipped on rerun.
                         """
                     ).classes("text-gray-300")
 
@@ -579,6 +643,10 @@ def render() -> None:
                 state.skip_analyzed = skip_check.value
                 state.use_timbre = bool(timbre_check.value)
                 state.embed_overwrite = bool(overwrite_check.value)
+                state.embed_resume = bool(resume_check.value)
+                state.embed_checkpoint_file = str(checkpoint_file_input.value or "").strip()
+                state.embed_checkpoint_every = max(1, int(checkpoint_every_input.value or 100))
+                state.embed_paths_file = str(paths_file_input.value or "").strip()
                 state.beatgrid_enable = beatgrid_check.value
                 state.beatgrid_overwrite = beatgrid_overwrite_check.value
 

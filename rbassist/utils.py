@@ -31,6 +31,31 @@ def walk_audio(paths: Iterable[str]) -> list[str]:
     return sorted(files)
 
 
+def read_paths_file(paths_file: str | pathlib.Path) -> list[str]:
+    """Read one path per line from a text file.
+
+    - Ignores blank lines and '#' comments
+    - Resolves relative paths against the paths file directory
+    """
+    pfile = pathlib.Path(paths_file).expanduser()
+    raw = pfile.read_text(encoding="utf-8")
+    out: list[str] = []
+    base = pfile.parent
+    for line in raw.splitlines():
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        if (entry.startswith('"') and entry.endswith('"')) or (entry.startswith("'") and entry.endswith("'")):
+            entry = entry[1:-1].strip()
+        if not entry:
+            continue
+        p = pathlib.Path(entry)
+        if not p.is_absolute():
+            p = (base / p).resolve()
+        out.append(str(p))
+    return out
+
+
 def load_meta() -> dict:
     """Load meta.json; if corrupt/empty, back it up and reset to defaults."""
     if not META.exists():

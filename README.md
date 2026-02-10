@@ -84,6 +84,20 @@ rbassist embed "D:\Music\YourCrate" --device cuda --num-workers 6 --duration-s 1
 - `--num-workers` parallelizes audio decoding (4-8 typical). Model inference stays serialized for stability.
 - `--duration-s` caps per-track analysis while testing.
 - Model cache: Hugging Face assets download to `%USERPROFILE%\.cache\huggingface` by default (set via `HF_HOME`). The MERT model is ~1.3 GB; make sure you have space on the download drive.
+
+Resumable embedding for long runs:
+```powershell
+# Use a prepared path list and checkpoint every 50 tracks
+rbassist embed --paths-file .\.tmp\pending_embedding_paths.part001.txt --checkpoint-every 50
+
+# Resume after interruption (default checkpoint: data/embed_checkpoint.json)
+rbassist embed --paths-file .\.tmp\pending_embedding_paths.part001.txt --resume --checkpoint-every 50
+```
+
+Notes:
+- `--paths-file` accepts one file/folder path per line (`# comments` and blank lines allowed).
+- `--checkpoint-file` lets you override the checkpoint location.
+- Failed tracks are written to a structured JSONL log next to the checkpoint file.
 2) Build the HNSW index
 ```powershell
 rbassist index

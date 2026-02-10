@@ -72,6 +72,10 @@ class AppState:
     skip_analyzed: bool = True
     use_timbre: bool = True
     embed_overwrite: bool = True
+    embed_resume: bool = False
+    embed_checkpoint_file: str = ""
+    embed_checkpoint_every: int = 100
+    embed_paths_file: str = ""
     beatgrid_enable: bool = False
     beatgrid_overwrite: bool = False
 
@@ -138,6 +142,13 @@ class AppState:
             self.skip_analyzed = config.get("skip_analyzed", self.skip_analyzed)
             self.use_timbre = config.get("use_timbre", self.use_timbre)
             self.embed_overwrite = config.get("embed_overwrite", self.embed_overwrite)
+            self.embed_resume = bool(config.get("embed_resume", self.embed_resume))
+            self.embed_checkpoint_file = str(config.get("embed_checkpoint_file", self.embed_checkpoint_file or ""))
+            try:
+                self.embed_checkpoint_every = max(1, int(config.get("embed_checkpoint_every", self.embed_checkpoint_every)))
+            except Exception:
+                self.embed_checkpoint_every = max(1, int(self.embed_checkpoint_every or 100))
+            self.embed_paths_file = str(config.get("embed_paths_file", self.embed_paths_file or ""))
             self.beatgrid_enable = config.get("beatgrid_enable", self.beatgrid_enable)
             self.beatgrid_overwrite = config.get("beatgrid_overwrite", self.beatgrid_overwrite)
 
@@ -161,6 +172,10 @@ class AppState:
             "skip_analyzed": self.skip_analyzed,
             "use_timbre": self.use_timbre,
             "embed_overwrite": self.embed_overwrite,
+            "embed_resume": self.embed_resume,
+            "embed_checkpoint_file": self.embed_checkpoint_file,
+            "embed_checkpoint_every": self.embed_checkpoint_every,
+            "embed_paths_file": self.embed_paths_file,
             "beatgrid_enable": self.beatgrid_enable,
             "beatgrid_overwrite": self.beatgrid_overwrite,
             "weights": self.weights,

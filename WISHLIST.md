@@ -60,6 +60,15 @@
 - [ ] Advanced tag inference UI: expose `tags-auto` parameters in the Tagging page (min_samples, margin, prune_margin, apply) beyond the current CSV-only GUI flow.
 - [ ] Comprehensive library health checks (counts of missing embeddings/BPM/key/cues, corrupt files, inconsistent tags).
 
+#### BPM & Rekordbox Integration
+- [ ] **Separate BPM storage from Rekordbox sync** - Implementation plan: `C:\Users\hunte\.claude\plans\shimmering-stirring-barto.md`
+  * BPM data in separate `data/bpm.json` file (never syncs to Rekordbox by default)
+  * Config-based export control (`export_bpm_to_rekordbox: false` default)
+  * Conflict resolution UI when importing BPM from Rekordbox
+  * One-click migration tool with automatic backup
+  * Estimated effort: 5-6 days
+  * Status: Design complete, awaiting implementation
+
 #### User Preferences
 - [ ] Machine learning-based preference learning
 - [ ] Adaptive recommendation refinement
@@ -95,7 +104,7 @@ Interested in helping? Check the current roadmap and open issues.
 Pull requests welcome!
 
 ---
-Last Updated: 2025-12-25
+Last Updated: 2025-12-30
 Curator: Claude (AI Assistant) + rbassist contributors
 
 ## Completion Summary (2025-12-25)

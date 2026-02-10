@@ -118,3 +118,17 @@ class TrackTable:
         if self.table:
             self.table.selected = []
             self.table.update()
+
+    def set_sort(self, sort_by: str, descending: bool = True) -> None:
+        """Set table sort order programmatically."""
+        if not self.table:
+            return
+        pagination = self.table.pagination or {}
+        if not isinstance(pagination, dict):
+            pagination = {}
+        pagination = dict(pagination)
+        pagination["sortBy"] = sort_by
+        pagination["descending"] = descending
+        pagination.setdefault("page", 1)
+        self.table.pagination = pagination
+        self.table.update()

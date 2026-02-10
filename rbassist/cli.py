@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Tuple
 import typer
 from .analyze import analyze_bpm_key
-from .utils import load_meta, save_meta, console, walk_audio, pick_device
+from .utils import load_meta, save_meta, console, walk_audio, pick_device, read_paths_file
 from .sampling_profile import load_sampling_params
 from .beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 
@@ -16,6 +16,11 @@ from .beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 # ------------------------------
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="RBassist command line tools")
+
+
+def _read_paths_file(paths_file: pathlib.Path) -> list[str]:
+    """Backward-compatible wrapper around shared paths-file parsing."""
+    return read_paths_file(paths_file)
 
 
 @app.command("analyze")
@@ -73,7 +78,7 @@ def main() -> None:
 
 @app.command("embed")
 def cmd_embed(
-    paths: List[str] = typer.Argument(..., help="Files or folders to embed"),
+    paths: Optional[List[str]] = typer.Argument(None, help="Files or folders to embed"),
     duration_s: int = typer.Option(120, help="Seconds per track (0=full)"),
     model: str = typer.Option("m-a-p/MERT-v1-330M", help="HF model name for MERT"),
     device: str = typer.Option(
@@ -86,6 +91,31 @@ def cmd_embed(
     ),
     timbre: bool = typer.Option(False, help="Also write a timbre-only embedding using OpenL3"),
     timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
+    paths_file: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--paths-file",
+        file_okay=True,
+        dir_okay=False,
+        exists=True,
+        readable=True,
+        help="Optional text file with one file/folder path per line.",
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume from checkpoint and skip already completed tracks.",
+    ),
+    checkpoint_file: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--checkpoint-file",
+        help="Checkpoint JSON path (default: data/embed_checkpoint.json).",
+    ),
+    checkpoint_every: int = typer.Option(
+        100,
+        "--checkpoint-every",
+        min=1,
+        help="Persist checkpoint state every N processed tracks.",
+    ),
 ):
     # Enforce canonical embedding defaults to keep library consistent.
     if duration_s != 120:
@@ -99,10 +129,30 @@ def cmd_embed(
     except Exception as e:
         console.print(f"[red]Embed deps missing: install .[ml] and torch. Error: {e}")
         raise typer.Exit(1)
-    files = walk_audio(paths)
+    input_paths: list[str] = []
+    if paths:
+        input_paths.extend(paths)
+    if paths_file is not None:
+        try:
+            from_file = _read_paths_file(paths_file)
+        except Exception as e:
+            console.print(f"[red]Failed to read --paths-file {paths_file}: {e}")
+            raise typer.Exit(1)
+        if not from_file:
+            console.print(f"[yellow]No usable entries found in {paths_file}.")
+        else:
+            console.print(f"[cyan]Loaded {len(from_file)} path entries from {paths_file}")
+            input_paths.extend(from_file)
+    if not input_paths:
+        console.print("[red]Provide at least one path argument or --paths-file.")
+        raise typer.Exit(1)
+    files = walk_audio(input_paths)
     if not files:
         console.print("[yellow]No audio files found.")
         raise typer.Exit(1)
+    # Keep deterministic order and remove duplicates when both positional paths
+    # and --paths-file overlap.
+    files = list(dict.fromkeys(files))
     build_embeddings(
         files,
         model_name=model or DEFAULT_MODEL,
@@ -112,6 +162,9 @@ def cmd_embed(
         batch_size=batch_size,
         timbre=timbre,
         timbre_size=timbre_size,
+        resume=resume,
+        checkpoint_file=(str(checkpoint_file) if checkpoint_file else None),
+        checkpoint_every=checkpoint_every,
     )
 
 
