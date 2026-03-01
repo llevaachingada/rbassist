@@ -129,7 +129,7 @@ def _is_cuda_error_text(text: str) -> bool:
 def _read_chunk_paths(chunk_path: Path) -> list[str]:
     paths: list[str] = []
     for line in chunk_path.read_text(encoding='utf-8').splitlines():
-        entry = line.strip()
+        entry = line.strip().lstrip('\ufeff')
         if not entry or entry.startswith('#'):
             continue
         if (entry.startswith('"') and entry.endswith('"')) or (entry.startswith("'") and entry.endswith("'")):
@@ -176,6 +176,26 @@ def _count_failed_errors(path: Path) -> dict[str, int]:
         error = str(record.get('error', 'unknown'))
         counts[error] = counts.get(error, 0) + 1
     return counts
+
+
+def _read_failed_paths(path: Path | None) -> list[str]:
+    if path is None or not path.exists():
+        return []
+    seen: set[str] = set()
+    failed_paths: list[str] = []
+    for line in path.read_text(encoding='utf-8', errors='ignore').splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        failed_path = str(record.get('path', '')).strip()
+        if not failed_path or failed_path in seen:
+            continue
+        seen.add(failed_path)
+        failed_paths.append(failed_path)
+    return failed_paths
 
 
 def _checkpoint_path_for_chunk(checkpoint_dir: Path, chunk_path: Path, *, suffix: str = '') -> Path:
@@ -233,12 +253,15 @@ def _classify_attempt(
     has_cuda = _is_cuda_error_text(output) or any(_is_cuda_error_text(err) for err in error_counts)
     if any(int(recovery.get(key, 0) or 0) > 0 for key in ('cuda_retries', 'cuda_retry_failures', 'cuda_rebuild_failures')):
         has_cuda = True
-    fatal_cuda = has_cuda and failed > 0 and succeeded == 0
-
     if returncode != 0:
-        status = 'cuda_fault' if has_cuda else 'crash'
+        if has_cuda and failed > 0 and succeeded > 0:
+            status = 'cuda_fault_partial'
+        else:
+            status = 'cuda_fault' if has_cuda else 'crash'
     elif checkpoint.get('status') == 'completed':
-        if fatal_cuda:
+        if has_cuda and failed > 0 and succeeded > 0:
+            status = 'cuda_fault_partial'
+        elif has_cuda and failed > 0 and succeeded == 0:
             status = 'cuda_fault'
         elif failed > 0:
             status = 'completed_with_failures'
@@ -327,6 +350,12 @@ def _split_chunk_file(chunk_path: Path, paths: list[str], *, checkpoint_dir: Pat
     return _write_chunk_paths(left_path, left), _write_chunk_paths(right_path, right)
 
 
+def _failed_subset_chunk_path(chunk_path: Path, paths: list[str], *, checkpoint_dir: Path, depth: int) -> Path:
+    retry_dir = checkpoint_dir / 'retry_chunks'
+    subset_path = retry_dir / f'{chunk_path.stem}.failed.d{depth}.txt'
+    return _write_chunk_paths(subset_path, paths)
+
+
 def _process_chunk(
     *,
     repo: Path,
@@ -368,13 +397,42 @@ def _process_chunk(
         return 0
 
     chunk_paths = _read_chunk_paths(chunk_path)
-    if result.status == 'cuda_fault' and device != 'cpu':
+    retry_chunk_path = chunk_path
+    retry_paths = chunk_paths
+    if result.status == 'cuda_fault_partial':
+        stats['partial_cuda_chunks'] = stats.get('partial_cuda_chunks', 0) + 1
+        failed_subset = _read_failed_paths(result.failed_log_path)
+        if failed_subset:
+            retry_paths = failed_subset
+            retry_chunk_path = _failed_subset_chunk_path(
+                chunk_path,
+                retry_paths,
+                checkpoint_dir=checkpoint_dir,
+                depth=depth,
+            )
+            stats['failed_subset_retries'] = stats.get('failed_subset_retries', 0) + 1
+            print(
+                f"Chunk {chunk_path.name} had partial CUDA failures; "
+                f"retrying failed subset only ({len(retry_paths)} paths)."
+            )
+        else:
+            print(
+                f"Chunk {chunk_path.name} had partial CUDA failures but no failed-path log; "
+                f"falling back to full chunk retry."
+            )
+
+    if result.status in {'cuda_fault', 'cuda_fault_partial'} and device != 'cpu':
         stats['cuda_fault_chunks'] = stats.get('cuda_fault_chunks', 0) + 1
-        if depth < max_split_depth and len(chunk_paths) > max(1, int(min_chunk_size)):
-            left_path, right_path = _split_chunk_file(chunk_path, chunk_paths, checkpoint_dir=checkpoint_dir, depth=depth)
+        if depth < max_split_depth and len(retry_paths) > max(1, int(min_chunk_size)):
+            left_path, right_path = _split_chunk_file(
+                retry_chunk_path,
+                retry_paths,
+                checkpoint_dir=checkpoint_dir,
+                depth=depth,
+            )
             stats['split_retries'] = stats.get('split_retries', 0) + 1
             print(
-                f"CUDA fault in {chunk_path.name}; retrying smaller chunks "
+                f"CUDA fault in {retry_chunk_path.name}; retrying smaller chunks "
                 f"({left_path.name}, {right_path.name})."
             )
             left_rc = _process_chunk(
@@ -411,10 +469,10 @@ def _process_chunk(
 
         if not disable_cpu_fallback:
             stats['cpu_fallback_attempts'] = stats.get('cpu_fallback_attempts', 0) + 1
-            print(f"CUDA fault in {chunk_path.name}; retrying same chunk on CPU.")
+            print(f"CUDA fault in {retry_chunk_path.name}; retrying same chunk on CPU.")
             cpu_rc = _process_chunk(
                 repo=repo,
-                chunk_path=chunk_path,
+                chunk_path=retry_chunk_path,
                 checkpoint_dir=checkpoint_dir,
                 checkpoint_every=checkpoint_every,
                 num_workers=0,
@@ -470,7 +528,9 @@ def main() -> int:
     stats: dict[str, int] = {
         'ok_chunks': 0,
         'partial_chunks': 0,
+        'partial_cuda_chunks': 0,
         'cuda_fault_chunks': 0,
+        'failed_subset_retries': 0,
         'split_retries': 0,
         'cpu_fallback_attempts': 0,
         'cpu_fallback_recovered': 0,

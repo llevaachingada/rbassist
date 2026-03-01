@@ -101,3 +101,13 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   - result: completed successfully using chunked subprocess embed (`3` chunk files)
   - quarantine update: `3` failed logs discovered, `3` processed, `18` new quarantined records written to `data/quarantine_embed_smoke_20260301.jsonl`
   - note: this smoke run exercised real chunked embed + automatic quarantine updates on live files, but it did not hit a live CUDA chunk fault, so the split/CPU-fallback branch remains validated by unit coverage rather than this specific smoke run.
+
+- 2026-03-01: Closed the mixed-success CUDA gap in `scripts/run_embed_chunks.py`.
+  - Partial-success CUDA chunks are no longer treated like ordinary `completed_with_failures`; they now build a retry file from just the failed paths and re-enter the split/CPU-fallback flow.
+  - `_read_chunk_paths` now strips UTF-8 BOM markers so ad hoc retry files generated from PowerShell do not poison the first path.
+  - Added focused regression coverage in `tests/test_run_embed_chunks.py` for partial CUDA classification, failed-subset retries, and BOM-safe path parsing.
+
+- 2026-03-01: Ran a targeted retry against the `313` failed leftovers from `music_root_embed_only_20260301T152329Z` part002.
+  - retry run folder: `data/runlogs/embed_retry_part002_20260301T100939Z`
+  - result: `296` skipped as already embedded, `2` newly embedded, `15` still failing as true `FileNotFoundError` path issues
+  - outcome: root-scoped pending embeddings dropped to `15` on the next maintenance baseline (`music_root_analyze_index_20260301T171048Z`)
