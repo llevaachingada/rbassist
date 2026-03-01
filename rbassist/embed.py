@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import os
 import pathlib
@@ -87,6 +88,14 @@ def _configure_torch_runtime(device: str) -> None:
         torch.set_float32_matmul_precision("high")
     except Exception:
         pass
+
+
+def _is_cuda_runtime_error(err: Exception | str) -> bool:
+    accelerator_error = getattr(torch, "AcceleratorError", None)
+    if accelerator_error is not None and isinstance(err, accelerator_error):
+        return True
+    text = repr(err).lower()
+    return "cuda error" in text or "cudnn" in text or "cublas" in text
 
 
 class MertEmbedder:
@@ -340,7 +349,9 @@ def embed_with_default_windows(
         return embedder.encode_array(y, sr)
     try:
         embs = embedder.encode_batch([(seg, sr) for seg in slices])
-    except Exception:
+    except Exception as e:
+        if _is_cuda_runtime_error(e):
+            raise
         # Fallback keeps behavior stable if batched encode fails on edge inputs.
         embs = [embedder.encode_array(seg, sr) for seg in slices]
     return np.mean(np.stack(embs, axis=0), axis=0)
@@ -425,6 +436,12 @@ def build_embeddings(
         "skipped_checkpoint": 0,
         "skipped_existing": 0,
     }
+    recovery = {
+        "cuda_retries": 0,
+        "cuda_retry_successes": 0,
+        "cuda_retry_failures": 0,
+        "cuda_rebuild_failures": 0,
+    }
     checkpoint_mutations = 0
     # Persist meta periodically so crash/abort does not lose an entire chunk.
     meta_mutations = 0
@@ -492,6 +509,7 @@ def build_embeddings(
             "paths_completed": len(completed_paths),
             "paths_failed": len(failed_paths),
             "counters": counters,
+            "recovery": recovery,
             "completed_paths": sorted(completed_paths),
             "failed_paths": sorted(failed_paths),
             "failed_log": str(failed_log_path),
@@ -546,6 +564,29 @@ def build_embeddings(
         meta_mutations += 1
         _flush_checkpoint()
 
+    def _rebuild_cuda_embedder() -> None:
+        nonlocal emb
+        old_emb = emb
+        try:
+            del old_emb
+        except Exception:
+            pass
+        gc.collect()
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+        emb = MertEmbedder(model_name=model_name, device="cuda")
+
     if total == 0:
         console.print("[green]No embedding work to do.")
         _flush_checkpoint(force=True, status="completed")
@@ -589,15 +630,15 @@ def build_embeddings(
         done = 0
         def _process_one(orig: str, src_path: str, y: np.ndarray, sr: int, used: str) -> None:
             nonlocal done
-            try:
+            def _run_once(active_emb: MertEmbedder) -> None:
                 windows: list[tuple[float, float]] = _default_windows(y, sr)
                 mert_vec: np.ndarray | None = None
                 timbre_vec: np.ndarray | None = None
                 if sampling is not None:
-                    vec = embed_with_sampling(src_path, emb, sampling)
+                    vec = embed_with_sampling(src_path, active_emb, sampling)
                     mert_vec = vec
                 else:
-                    vec = embed_with_default_windows(y, sr, emb, windows=windows)
+                    vec = embed_with_default_windows(y, sr, active_emb, windows=windows)
                     mert_vec = vec
                 _save_embedding(orig, vec, used, kind="embedding_mert")
 
@@ -621,10 +662,41 @@ def build_embeddings(
 
                 if combined is not None:
                     _save_embedding(orig, combined, source_label, kind="embedding")
+
+            try:
+                _run_once(emb)
                 _mark_completed(orig)
             except Exception as e:
-                # Per-file failures should never crash the whole run.
-                _log_failure(orig, src_path, "embed", e)
+                if emb.device == "cuda" and _is_cuda_runtime_error(e):
+                    recovery["cuda_retries"] += 1
+                    try:
+                        _rebuild_cuda_embedder()
+                    except Exception as rebuild_err:
+                        recovery["cuda_rebuild_failures"] += 1
+                        _log_failure(
+                            orig,
+                            src_path,
+                            "embed_cuda_rebuild",
+                            f"initial={e!r}; rebuild={rebuild_err!r}",
+                        )
+                    else:
+                        try:
+                            _run_once(emb)
+                            recovery["cuda_retry_successes"] += 1
+                            console.print(f"[yellow]Recovered CUDA embedder and retried {orig}")
+                            _mark_completed(orig)
+                            return
+                        except Exception as retry_err:
+                            recovery["cuda_retry_failures"] += 1
+                            _log_failure(
+                                orig,
+                                src_path,
+                                "embed_retry",
+                                f"initial={e!r}; retry={retry_err!r}",
+                            )
+                else:
+                    # Per-file failures should never crash the whole run.
+                    _log_failure(orig, src_path, "embed", e)
             finally:
                 done += 1
                 if progress_callback is not None:
@@ -698,6 +770,14 @@ def build_embeddings(
             f"skipped(checkpoint)={counters['skipped_checkpoint']}, "
             f"skipped(existing)={counters['skipped_existing']}"
         )
+        if recovery["cuda_retries"] > 0:
+            console.print(
+                "[cyan]CUDA recovery: "
+                f"retries={recovery['cuda_retries']}, "
+                f"retry_successes={recovery['cuda_retry_successes']}, "
+                f"retry_failures={recovery['cuda_retry_failures']}, "
+                f"rebuild_failures={recovery['cuda_rebuild_failures']}"
+            )
         console.print(f"[cyan]Checkpoint: {checkpoint_path}")
         if counters["failed"] > 0:
             console.print(f"[yellow]Failed-track log: {failed_log_path}")

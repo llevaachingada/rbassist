@@ -284,6 +284,8 @@ def list_embedding_gaps(
     if exclude_file:
         for path in read_paths_file(exclude_file):
             excludes.add(normalize_path_string(path))
+    counts = Counter()
+    counts["exclude_entries_total"] = len(excludes)
 
     meta_lookup: dict[str, dict] = {}
     for path, info in tracks.items():
@@ -294,11 +296,13 @@ def list_embedding_gaps(
     missing_meta: list[str] = []
     missing_embedding_ref: list[str] = []
     stale_meta_paths: list[str] = []
-    counts = Counter()
 
     for audio in scanned:
         normalized = normalize_path_string(audio)
-        if normalized in excludes or is_junk_path(audio):
+        if normalized in excludes:
+            counts["excluded_audio_files_total"] += 1
+            continue
+        if is_junk_path(audio):
             continue
         counts["audio_files_scanned"] += 1
         info = meta_lookup.get(normalized)

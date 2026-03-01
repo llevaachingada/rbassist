@@ -21,6 +21,23 @@ class _FakeEmbedder:
         return [np.ones(8, dtype=np.float32) for _ in items]
 
 
+class _RecoveringCudaEmbedder:
+    instance_count = 0
+
+    def __init__(self, model_name: str = "", device: str | None = None):
+        type(self).instance_count += 1
+        self.instance_id = type(self).instance_count
+        self.device = "cuda"
+
+    def encode_array(self, y: np.ndarray, sr: int) -> np.ndarray:
+        return np.ones(8, dtype=np.float32)
+
+    def encode_batch(self, items):
+        if self.instance_id == 1:
+            raise embed_mod.torch.AcceleratorError("CUDA error: invalid program counter")
+        return [np.ones(8, dtype=np.float32) for _ in items]
+
+
 class EmbedResumeTests(unittest.TestCase):
     def test_read_paths_file_supports_comments_quotes_and_relative(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -104,6 +121,45 @@ class EmbedResumeTests(unittest.TestCase):
                     resume=True,
                 )
                 self.assertEqual(load_calls, [bad])
+
+    def test_build_embeddings_recovers_from_cuda_accelerator_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            emb_dir = base / "embeddings"
+            checkpoint = base / "embed_checkpoint.json"
+            good = str(base / "good.wav")
+            meta_store: dict = {"tracks": {}}
+
+            def fake_load_meta() -> dict:
+                return meta_store
+
+            def fake_save_meta(meta: dict) -> None:
+                meta_store.clear()
+                meta_store.update(meta)
+
+            def fake_librosa_load(path: str, sr=None, mono=True):
+                return np.ones(24000, dtype=np.float32), 24000
+
+            _RecoveringCudaEmbedder.instance_count = 0
+            with mock.patch.object(embed_mod, "MertEmbedder", _RecoveringCudaEmbedder), \
+                mock.patch.object(embed_mod, "load_meta", side_effect=fake_load_meta), \
+                mock.patch.object(embed_mod, "save_meta", side_effect=fake_save_meta), \
+                mock.patch.object(embed_mod, "mode_for_path", return_value="baseline"), \
+                mock.patch.object(embed_mod, "EMB", emb_dir), \
+                mock.patch.object(embed_mod.librosa, "load", side_effect=fake_librosa_load), \
+                mock.patch.object(embed_mod.torch.cuda, "is_available", return_value=False):
+                embed_mod.build_embeddings(
+                    [good],
+                    num_workers=0,
+                    checkpoint_file=str(checkpoint),
+                    checkpoint_every=1,
+                )
+
+            checkpoint_data = json.loads(checkpoint.read_text(encoding="utf-8"))
+            self.assertIn(good, checkpoint_data.get("completed_paths", []))
+            self.assertEqual(checkpoint_data.get("failed_paths", []), [])
+            self.assertEqual(checkpoint_data.get("recovery", {}).get("cuda_retries"), 1)
+            self.assertEqual(checkpoint_data.get("recovery", {}).get("cuda_retry_successes"), 1)
 
 
 if __name__ == "__main__":

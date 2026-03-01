@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import pathlib
 import sys
+import time
 import traceback
 from typing import Any
 
@@ -41,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda", help="Embed device: cuda|rocm|mps|cpu.")
     parser.add_argument("--embed-workers", type=int, default=8, help="Embed audio decode workers.")
     parser.add_argument("--batch-size", type=int, default=4, help="Embed batch size.")
+    parser.add_argument(
+        "--embed-exclude-file",
+        default="",
+        help="Optional text file with one audio path per line to exclude from the embed queue.",
+    )
     parser.add_argument("--resume", action="store_true", help="Resume embedding from checkpoint.")
     parser.add_argument("--checkpoint-every", type=int, default=100, help="Embed checkpoint cadence.")
     parser.add_argument(
@@ -158,6 +164,77 @@ class MaintenanceRun:
         self.payload["generated_at"] = _utc_now()
         self._flush()
 
+    def phase_progress(
+        self,
+        name: str,
+        *,
+        done: int,
+        total: int,
+        current_path: str = "",
+        note_prefix: str = "",
+    ) -> None:
+        pct = 100.0 if total <= 0 else round((done / total) * 100.0, 1)
+        note = f"{note_prefix} Progress {done}/{total} ({pct}%).".strip()
+        if current_path:
+            note += f" Current: {current_path}"
+        for phase in reversed(self.payload.get("phases", [])):
+            if phase.get("name") == name and phase.get("status") == "running":
+                phase["note"] = note
+                phase["progress"] = {
+                    "done": done,
+                    "total": total,
+                    "pct": pct,
+                    "current_path": current_path,
+                }
+                break
+        summary = self.payload.setdefault("summary", {})
+        summary[f"{name}_done"] = done
+        summary[f"{name}_total"] = total
+        summary[f"{name}_pct"] = pct
+        if current_path:
+            summary[f"{name}_current_path"] = current_path
+        self._flush()
+
+
+class PhaseProgressReporter:
+    def __init__(
+        self,
+        run: MaintenanceRun,
+        *,
+        phase: str,
+        note_prefix: str,
+        every_items: int = 25,
+        every_seconds: float = 20.0,
+    ):
+        self.run = run
+        self.phase = phase
+        self.note_prefix = note_prefix
+        self.every_items = max(1, int(every_items))
+        self.every_seconds = max(1.0, float(every_seconds))
+        self.last_done = 0
+        self.last_emit = 0.0
+
+    def __call__(self, done: int, total: int, path: str) -> None:
+        now = time.monotonic()
+        should_emit = (
+            done >= total
+            or done == 1
+            or (done - self.last_done) >= self.every_items
+            or (now - self.last_emit) >= self.every_seconds
+        )
+        if not should_emit:
+            return
+        current_path = pathlib.Path(path).name if path else ""
+        self.run.phase_progress(
+            self.phase,
+            done=done,
+            total=total,
+            current_path=current_path,
+            note_prefix=self.note_prefix,
+        )
+        self.last_done = done
+        self.last_emit = now
+
 
 def _checkpoint_path(repo: pathlib.Path, run_dir: pathlib.Path, path_ref: str) -> pathlib.Path:
     if path_ref:
@@ -222,6 +299,7 @@ def main() -> int:
         gap_report = list_embedding_gaps(
             repo=repo,
             roots=[str(music_root)],
+            exclude_file=args.embed_exclude_file,
             out_prefix=gap_prefix,
             chunk_size=max(1, int(args.chunk_size)),
         )
@@ -229,8 +307,14 @@ def main() -> int:
         run.set_summary(
             pending_embedding_total=gap_report.get("counts", {}).get("pending_embedding_total", 0),
             scanned_audio_files=gap_report.get("counts", {}).get("audio_files_scanned", 0),
+            excluded_audio_files_total=gap_report.get("counts", {}).get("excluded_audio_files_total", 0),
         )
-        run.phase_done("embedding_gap_scan", f"Pending embeddings: {gap_report.get('counts', {}).get('pending_embedding_total', 0)}")
+        scan_note = f"Pending embeddings: {gap_report.get('counts', {}).get('pending_embedding_total', 0)}"
+        if args.embed_exclude_file:
+            scan_note += (
+                f" | Excluded files: {gap_report.get('counts', {}).get('excluded_audio_files_total', 0)}"
+            )
+        run.phase_done("embedding_gap_scan", scan_note)
 
         run.phase_start("rekordbox_audit", "Auditing live Rekordbox master.db against the canonical music root.")
         rb_report = audit_rekordbox_library(
@@ -262,8 +346,16 @@ def main() -> int:
                 run.phase_done("embed", "No pending embeddings for this music root.")
             else:
                 checkpoint_path = _checkpoint_path(repo, run_dir, args.checkpoint_file)
+                embed_progress = PhaseProgressReporter(
+                    run,
+                    phase="embed",
+                    note_prefix="Embedding pending files inside the canonical music root.",
+                    every_items=25,
+                    every_seconds=20.0,
+                )
                 build_embeddings(
                     pending_paths,
+                    progress_callback=embed_progress,
                     device=args.device,
                     num_workers=max(0, int(args.embed_workers)),
                     batch_size=max(1, int(args.batch_size)),
@@ -277,11 +369,19 @@ def main() -> int:
             run.phase_start("analyze", "Running incremental BPM/key analysis under the canonical music root.")
             music_files = walk_audio([str(music_root)])
             analyze_bpm_key = _load_analyzer()
+            analyze_progress = PhaseProgressReporter(
+                run,
+                phase="analyze",
+                note_prefix="Running incremental BPM/key analysis under the canonical music root.",
+                every_items=50,
+                every_seconds=20.0,
+            )
             analyze_bpm_key(
                 music_files,
                 duration_s=90,
                 only_new=True,
                 force=False,
+                progress_callback=analyze_progress,
                 workers=max(0, int(args.analyze_workers)) or None,
             )
             run.phase_done("analyze", f"Analyzed {len(music_files)} files incrementally.")
