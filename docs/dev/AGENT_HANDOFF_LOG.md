@@ -89,3 +89,15 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   - high-confidence Rekordbox relinks: `126`
   - ambiguous relinks: `203`
   - same-name/different-type duplicate groups: `36`
+
+- 2026-03-01: Hardened unattended ingest recovery further:
+  - `scripts/run_embed_chunks.py` now classifies chunk outcomes, recursively splits CUDA-faulted GPU chunks into smaller retry files, and falls back to CPU for the smallest retry set instead of aborting the whole maintenance pass.
+  - `scripts/run_music_root_background_maintenance.py` now auto-runs `scripts/update_embed_quarantine.py` at the end of a maintenance run, even if a later phase fails, and records `quarantine_update_report.json` plus summary counters in `status.json`.
+  - Added focused regression coverage in `tests/test_run_embed_chunks.py` and `tests/test_run_music_root_background_maintenance.py`.
+
+- 2026-03-01: Verified the new maintenance/quarantine flow with a live smoke run:
+  - command target: `C:\Users\hunte\Music\rbassist`
+  - run folder: `data/runlogs/smoke_maintenance_20260301T145658Z`
+  - result: completed successfully using chunked subprocess embed (`3` chunk files)
+  - quarantine update: `3` failed logs discovered, `3` processed, `18` new quarantined records written to `data/quarantine_embed_smoke_20260301.jsonl`
+  - note: this smoke run exercised real chunked embed + automatic quarantine updates on live files, but it did not hit a live CUDA chunk fault, so the split/CPU-fallback branch remains validated by unit coverage rather than this specific smoke run.

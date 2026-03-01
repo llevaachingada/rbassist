@@ -274,6 +274,10 @@ def _repo_relative_path(repo: pathlib.Path, path: pathlib.Path) -> str:
         return str(path.resolve())
 
 
+def _failed_log_path_from_checkpoint(checkpoint_path: pathlib.Path) -> pathlib.Path:
+    return checkpoint_path.with_name(f"{checkpoint_path.stem}_failed.jsonl")
+
+
 def _combined_embed_exclude_file(repo: pathlib.Path, run_dir: pathlib.Path, *, explicit_exclude_file: str, quarantine_file: str) -> str:
     entries: list[str] = []
     if explicit_exclude_file:
@@ -297,6 +301,99 @@ def _combined_embed_exclude_file(repo: pathlib.Path, run_dir: pathlib.Path, *, e
     out = run_dir / "embed_excludes_combined.txt"
     out.write_text("\n".join(unique) + "\n", encoding="utf-8")
     return str(out)
+
+
+def _discover_failed_logs(run_dir: pathlib.Path, extra_logs: list[pathlib.Path] | None = None) -> list[pathlib.Path]:
+    found: dict[str, pathlib.Path] = {}
+    for path in run_dir.rglob("*_failed.jsonl"):
+        if path.is_file():
+            found[str(path.resolve())] = path.resolve()
+    for path in extra_logs or []:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved.exists() and resolved.is_file():
+            found[str(resolved)] = resolved
+    return [found[key] for key in sorted(found)]
+
+
+def _run_quarantine_update(
+    *,
+    repo: pathlib.Path,
+    failed_log: pathlib.Path,
+    quarantine_file: str,
+) -> dict[str, Any]:
+    cmd = [
+        sys.executable,
+        "scripts/update_embed_quarantine.py",
+        "--repo",
+        str(repo),
+        "--failed-log",
+        str(failed_log),
+        "--quarantine-file",
+        quarantine_file,
+    ]
+    result = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True)
+    payload: dict[str, Any] = {
+        "failed_log": str(failed_log),
+        "command": cmd,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+    if result.returncode == 0:
+        try:
+            parsed = json.loads(result.stdout or "{}")
+        except Exception:
+            payload["status"] = "unparsed"
+        else:
+            if isinstance(parsed, dict):
+                payload.update(parsed)
+            payload["status"] = "ok"
+    else:
+        payload["status"] = "failed"
+    return payload
+
+
+def _update_quarantine_from_failed_logs(
+    *,
+    repo: pathlib.Path,
+    run_dir: pathlib.Path,
+    quarantine_file: str,
+    extra_logs: list[pathlib.Path] | None = None,
+) -> dict[str, Any]:
+    failed_logs = _discover_failed_logs(run_dir, extra_logs=extra_logs)
+    updates: list[dict[str, Any]] = []
+    processed = 0
+    new_records = 0
+    merged_records = 0
+    failures = 0
+    for failed_log in failed_logs:
+        try:
+            payload = _run_quarantine_update(repo=repo, failed_log=failed_log, quarantine_file=quarantine_file)
+        except Exception as exc:
+            payload = {
+                "failed_log": str(failed_log),
+                "status": "failed",
+                "error": repr(exc),
+            }
+        updates.append(payload)
+        if payload.get("status") == "ok":
+            processed += 1
+            new_records += int(payload.get("new_records", 0) or 0)
+            merged_records = max(merged_records, int(payload.get("merged_records", 0) or 0))
+        else:
+            failures += 1
+    return {
+        "quarantine_file": str(_resolve_repo_path(repo, quarantine_file)),
+        "failed_logs_found": len(failed_logs),
+        "failed_logs_processed": processed,
+        "failed_logs_failed": failures,
+        "new_records_added": new_records,
+        "merged_records_total": merged_records,
+        "updates": updates,
+    }
 
 
 def _load_embed_builder():
@@ -337,158 +434,176 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     run = MaintenanceRun(repo=repo, music_root=music_root, run_dir=run_dir)
+    extra_failed_logs: list[pathlib.Path] = []
 
     try:
-        run.phase_start("health_audit", "Auditing current rbassist metadata health.")
-        baseline = audit_meta_health(repo=repo)
-        _write_json(run_dir / "health_audit_before.json", baseline)
-        run.set_summary(
-            tracks_total=baseline.get("counts", {}).get("tracks_total", 0),
-            bare_path_total=baseline.get("counts", {}).get("bare_path_total", 0),
-            stale_track_path_total=baseline.get("counts", {}).get("stale_track_path_total", 0),
-            embedding_gap_total=baseline.get("counts", {}).get("embedding_gap_total", 0),
-        )
-        run.phase_done("health_audit", f"Wrote {run_dir / 'health_audit_before.json'}")
-
-        run.phase_start("embedding_gap_scan", "Scanning only the canonical music root for real embedding gaps.")
-        gap_prefix = run_dir / "pending_embedding_paths"
-        combined_exclude_file = _combined_embed_exclude_file(
-            repo,
-            run_dir,
-            explicit_exclude_file=args.embed_exclude_file,
-            quarantine_file=args.embed_quarantine_file,
-        )
-        gap_report = list_embedding_gaps(
-            repo=repo,
-            roots=[str(music_root)],
-            exclude_file=combined_exclude_file,
-            out_prefix=gap_prefix,
-            chunk_size=max(1, int(args.chunk_size)),
-        )
-        _write_json(run_dir / "embedding_gap_report.json", gap_report)
-        run.set_summary(
-            pending_embedding_total=gap_report.get("counts", {}).get("pending_embedding_total", 0),
-            scanned_audio_files=gap_report.get("counts", {}).get("audio_files_scanned", 0),
-            excluded_audio_files_total=gap_report.get("counts", {}).get("excluded_audio_files_total", 0),
-        )
-        scan_note = f"Pending embeddings: {gap_report.get('counts', {}).get('pending_embedding_total', 0)}"
-        if combined_exclude_file:
-            scan_note += (
-                f" | Excluded files: {gap_report.get('counts', {}).get('excluded_audio_files_total', 0)}"
+        try:
+            run.phase_start("health_audit", "Auditing current rbassist metadata health.")
+            baseline = audit_meta_health(repo=repo)
+            _write_json(run_dir / "health_audit_before.json", baseline)
+            run.set_summary(
+                tracks_total=baseline.get("counts", {}).get("tracks_total", 0),
+                bare_path_total=baseline.get("counts", {}).get("bare_path_total", 0),
+                stale_track_path_total=baseline.get("counts", {}).get("stale_track_path_total", 0),
+                embedding_gap_total=baseline.get("counts", {}).get("embedding_gap_total", 0),
             )
-        run.phase_done("embedding_gap_scan", scan_note)
+            run.phase_done("health_audit", f"Wrote {run_dir / 'health_audit_before.json'}")
 
-        run.phase_start("rekordbox_audit", "Auditing live Rekordbox master.db against the canonical music root.")
-        rb_report = audit_rekordbox_library(
-            music_root=music_root,
-            duration_tolerance_s=max(0.1, float(args.duration_tolerance_s)),
-            top_candidates=max(1, int(args.top_candidates)),
-            catalog_workers=max(1, int(args.catalog_workers)),
-        )
-        _write_json(run_dir / "rekordbox_audit.json", rb_report)
-        queues = build_review_queues(rb_report)
-        queue_outputs = write_review_queues(queues, out_dir=run_dir / "rekordbox_review_queues", prefix="rekordbox_music_root")
-        run.set_summary(
-            rekordbox_tracks_total=rb_report.get("rekordbox_tracks_total", 0),
-            inside_root_existing_total=rb_report.get("rekordbox_audit", {}).get("counts", {}).get("inside_root_existing_total", 0),
-            high_confidence_relinks_total=queues.get("counts", {}).get("high_confidence_relinks_total", 0),
-            ambiguous_relinks_total=queues.get("counts", {}).get("ambiguous_relinks_total", 0),
-            same_name_different_type_groups_total=queues.get("counts", {}).get("same_name_different_type_groups_total", 0),
-        )
-        _write_json(run_dir / "rekordbox_review_queue_outputs.json", queue_outputs)
-        run.phase_done("rekordbox_audit", f"High-confidence relinks: {queues.get('counts', {}).get('high_confidence_relinks_total', 0)}")
+            run.phase_start("embedding_gap_scan", "Scanning only the canonical music root for real embedding gaps.")
+            gap_prefix = run_dir / "pending_embedding_paths"
+            combined_exclude_file = _combined_embed_exclude_file(
+                repo,
+                run_dir,
+                explicit_exclude_file=args.embed_exclude_file,
+                quarantine_file=args.embed_quarantine_file,
+            )
+            gap_report = list_embedding_gaps(
+                repo=repo,
+                roots=[str(music_root)],
+                exclude_file=combined_exclude_file,
+                out_prefix=gap_prefix,
+                chunk_size=max(1, int(args.chunk_size)),
+            )
+            _write_json(run_dir / "embedding_gap_report.json", gap_report)
+            run.set_summary(
+                pending_embedding_total=gap_report.get("counts", {}).get("pending_embedding_total", 0),
+                scanned_audio_files=gap_report.get("counts", {}).get("audio_files_scanned", 0),
+                excluded_audio_files_total=gap_report.get("counts", {}).get("excluded_audio_files_total", 0),
+            )
+            scan_note = f"Pending embeddings: {gap_report.get('counts', {}).get('pending_embedding_total', 0)}"
+            if combined_exclude_file:
+                scan_note += (
+                    f" | Excluded files: {gap_report.get('counts', {}).get('excluded_audio_files_total', 0)}"
+                )
+            run.phase_done("embedding_gap_scan", scan_note)
 
-        pending_paths_file = pathlib.Path(gap_report.get("output_paths_file", "")) if gap_report.get("output_paths_file") else None
+            run.phase_start("rekordbox_audit", "Auditing live Rekordbox master.db against the canonical music root.")
+            rb_report = audit_rekordbox_library(
+                music_root=music_root,
+                duration_tolerance_s=max(0.1, float(args.duration_tolerance_s)),
+                top_candidates=max(1, int(args.top_candidates)),
+                catalog_workers=max(1, int(args.catalog_workers)),
+            )
+            _write_json(run_dir / "rekordbox_audit.json", rb_report)
+            queues = build_review_queues(rb_report)
+            queue_outputs = write_review_queues(queues, out_dir=run_dir / "rekordbox_review_queues", prefix="rekordbox_music_root")
+            run.set_summary(
+                rekordbox_tracks_total=rb_report.get("rekordbox_tracks_total", 0),
+                inside_root_existing_total=rb_report.get("rekordbox_audit", {}).get("counts", {}).get("inside_root_existing_total", 0),
+                high_confidence_relinks_total=queues.get("counts", {}).get("high_confidence_relinks_total", 0),
+                ambiguous_relinks_total=queues.get("counts", {}).get("ambiguous_relinks_total", 0),
+                same_name_different_type_groups_total=queues.get("counts", {}).get("same_name_different_type_groups_total", 0),
+            )
+            _write_json(run_dir / "rekordbox_review_queue_outputs.json", queue_outputs)
+            run.phase_done("rekordbox_audit", f"High-confidence relinks: {queues.get('counts', {}).get('high_confidence_relinks_total', 0)}")
 
-        if args.include_embed:
-            run.phase_start("embed", "Running resumable embedding on pending files inside the canonical music root.")
-            build_embeddings = _load_embed_builder()
-            pending_paths = read_paths_file(pending_paths_file) if pending_paths_file and pending_paths_file.exists() else []
-            if not pending_paths:
-                run.phase_done("embed", "No pending embeddings for this music root.")
-            else:
-                checkpoint_path = _checkpoint_path(repo, run_dir, args.checkpoint_file)
-                if args.embed_via_subprocess_chunks:
-                    chunk_glob = _repo_relative_path(repo, gap_prefix.with_name(f"{gap_prefix.name}.part*.txt"))
-                    checkpoint_dir = _repo_relative_path(repo, run_dir / "chunk_checkpoints")
-                    cmd = [
-                        sys.executable,
-                        "scripts/run_embed_chunks.py",
-                        "--repo",
-                        str(repo),
-                        "--chunk-glob",
-                        chunk_glob,
-                        "--checkpoint-dir",
-                        checkpoint_dir,
-                        "--checkpoint-every",
-                        str(max(1, int(args.checkpoint_every))),
-                        "--num-workers",
-                        str(max(0, int(args.embed_workers))),
-                        "--device",
-                        args.device,
-                    ]
-                    if int(args.batch_size) > 0:
-                        cmd.extend(["--batch-size", str(int(args.batch_size))])
-                    result = subprocess.run(cmd, cwd=str(repo))
-                    if result.returncode != 0:
-                        raise RuntimeError(f"Chunked embed runner failed with exit code {result.returncode}")
-                    run.phase_done("embed", f"Embedded chunked paths using checkpoint dir {checkpoint_dir}")
+            pending_paths_file = pathlib.Path(gap_report.get("output_paths_file", "")) if gap_report.get("output_paths_file") else None
+
+            if args.include_embed:
+                run.phase_start("embed", "Running resumable embedding on pending files inside the canonical music root.")
+                build_embeddings = _load_embed_builder()
+                pending_paths = read_paths_file(pending_paths_file) if pending_paths_file and pending_paths_file.exists() else []
+                if not pending_paths:
+                    run.phase_done("embed", "No pending embeddings for this music root.")
                 else:
-                    embed_progress = PhaseProgressReporter(
-                        run,
-                        phase="embed",
-                        note_prefix="Embedding pending files inside the canonical music root.",
-                        every_items=25,
-                        every_seconds=20.0,
-                    )
-                    build_embeddings(
-                        pending_paths,
-                        progress_callback=embed_progress,
-                        device=args.device,
-                        num_workers=max(0, int(args.embed_workers)),
-                        batch_size=max(1, int(args.batch_size)),
-                        resume=bool(args.resume),
-                        checkpoint_file=str(checkpoint_path),
-                        checkpoint_every=max(1, int(args.checkpoint_every)),
-                    )
-                    run.phase_done("embed", f"Embedded pending paths using checkpoint {checkpoint_path}")
+                    checkpoint_path = _checkpoint_path(repo, run_dir, args.checkpoint_file)
+                    if args.embed_via_subprocess_chunks:
+                        chunk_glob = _repo_relative_path(repo, gap_prefix.with_name(f"{gap_prefix.name}.part*.txt"))
+                        checkpoint_dir = _repo_relative_path(repo, run_dir / "chunk_checkpoints")
+                        cmd = [
+                            sys.executable,
+                            "scripts/run_embed_chunks.py",
+                            "--repo",
+                            str(repo),
+                            "--chunk-glob",
+                            chunk_glob,
+                            "--checkpoint-dir",
+                            checkpoint_dir,
+                            "--checkpoint-every",
+                            str(max(1, int(args.checkpoint_every))),
+                            "--num-workers",
+                            str(max(0, int(args.embed_workers))),
+                            "--device",
+                            args.device,
+                        ]
+                        if int(args.batch_size) > 0:
+                            cmd.extend(["--batch-size", str(int(args.batch_size))])
+                        result = subprocess.run(cmd, cwd=str(repo))
+                        if result.returncode != 0:
+                            raise RuntimeError(f"Chunked embed runner failed with exit code {result.returncode}")
+                        run.phase_done("embed", f"Embedded chunked paths using checkpoint dir {checkpoint_dir}")
+                    else:
+                        extra_failed_logs.append(_failed_log_path_from_checkpoint(checkpoint_path))
+                        embed_progress = PhaseProgressReporter(
+                            run,
+                            phase="embed",
+                            note_prefix="Embedding pending files inside the canonical music root.",
+                            every_items=25,
+                            every_seconds=20.0,
+                        )
+                        build_embeddings(
+                            pending_paths,
+                            progress_callback=embed_progress,
+                            device=args.device,
+                            num_workers=max(0, int(args.embed_workers)),
+                            batch_size=max(1, int(args.batch_size)),
+                            resume=bool(args.resume),
+                            checkpoint_file=str(checkpoint_path),
+                            checkpoint_every=max(1, int(args.checkpoint_every)),
+                        )
+                        run.phase_done("embed", f"Embedded pending paths using checkpoint {checkpoint_path}")
 
-        if args.include_analyze:
-            run.phase_start("analyze", "Running incremental BPM/key analysis under the canonical music root.")
-            music_files = walk_audio([str(music_root)])
-            analyze_bpm_key = _load_analyzer()
-            analyze_progress = PhaseProgressReporter(
-                run,
-                phase="analyze",
-                note_prefix="Running incremental BPM/key analysis under the canonical music root.",
-                every_items=50,
-                every_seconds=20.0,
+            if args.include_analyze:
+                run.phase_start("analyze", "Running incremental BPM/key analysis under the canonical music root.")
+                music_files = walk_audio([str(music_root)])
+                analyze_bpm_key = _load_analyzer()
+                analyze_progress = PhaseProgressReporter(
+                    run,
+                    phase="analyze",
+                    note_prefix="Running incremental BPM/key analysis under the canonical music root.",
+                    every_items=50,
+                    every_seconds=20.0,
+                )
+                analyze_bpm_key(
+                    music_files,
+                    duration_s=90,
+                    only_new=True,
+                    force=False,
+                    progress_callback=analyze_progress,
+                    workers=max(0, int(args.analyze_workers)) or None,
+                )
+                run.phase_done("analyze", f"Analyzed {len(music_files)} files incrementally.")
+
+            if args.include_index:
+                run.phase_start("index", "Rebuilding the recommendation index.")
+                build_index = _load_index_builder()
+                build_index(incremental=True)
+                run.phase_done("index", "Incremental index rebuild completed.")
+
+            run.phase_start("final_health_audit", "Refreshing the final health summary after maintenance.")
+            final_report = audit_meta_health(repo=repo)
+            _write_json(run_dir / "health_audit_after.json", final_report)
+            run.set_summary(
+                final_tracks_total=final_report.get("counts", {}).get("tracks_total", 0),
+                final_embedding_gap_total=final_report.get("counts", {}).get("embedding_gap_total", 0),
+                final_stale_track_path_total=final_report.get("counts", {}).get("stale_track_path_total", 0),
             )
-            analyze_bpm_key(
-                music_files,
-                duration_s=90,
-                only_new=True,
-                force=False,
-                progress_callback=analyze_progress,
-                workers=max(0, int(args.analyze_workers)) or None,
+            run.phase_done("final_health_audit", f"Wrote {run_dir / 'health_audit_after.json'}")
+        finally:
+            quarantine_report = _update_quarantine_from_failed_logs(
+                repo=repo,
+                run_dir=run_dir,
+                quarantine_file=args.embed_quarantine_file,
+                extra_logs=extra_failed_logs,
             )
-            run.phase_done("analyze", f"Analyzed {len(music_files)} files incrementally.")
-
-        if args.include_index:
-            run.phase_start("index", "Rebuilding the recommendation index.")
-            build_index = _load_index_builder()
-            build_index(incremental=True)
-            run.phase_done("index", "Incremental index rebuild completed.")
-
-        run.phase_start("final_health_audit", "Refreshing the final health summary after maintenance.")
-        final_report = audit_meta_health(repo=repo)
-        _write_json(run_dir / "health_audit_after.json", final_report)
-        run.set_summary(
-            final_tracks_total=final_report.get("counts", {}).get("tracks_total", 0),
-            final_embedding_gap_total=final_report.get("counts", {}).get("embedding_gap_total", 0),
-            final_stale_track_path_total=final_report.get("counts", {}).get("stale_track_path_total", 0),
-        )
-        run.phase_done("final_health_audit", f"Wrote {run_dir / 'health_audit_after.json'}")
+            _write_json(run_dir / "quarantine_update_report.json", quarantine_report)
+            run.set_summary(
+                quarantine_failed_logs_found=quarantine_report.get("failed_logs_found", 0),
+                quarantine_failed_logs_processed=quarantine_report.get("failed_logs_processed", 0),
+                quarantine_failed_logs_failed=quarantine_report.get("failed_logs_failed", 0),
+                quarantine_new_records_added=quarantine_report.get("new_records_added", 0),
+                quarantine_merged_records_total=quarantine_report.get("merged_records_total", 0),
+            )
 
     except Exception as exc:
         error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
