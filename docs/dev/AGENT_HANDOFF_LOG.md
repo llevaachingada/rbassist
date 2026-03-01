@@ -61,3 +61,31 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   - stale paths: `3,634 -> 2,509`
   - embedding gaps: `3,649 -> 2,525`
   Remaining orphan rows are the ambiguous or missing filename matches and should not be auto-applied without a second-pass review flow.
+
+- 2026-02-28: Added a read-only Rekordbox library audit in `rbassist/rekordbox_audit.py` plus `scripts/rekordbox_audit_library.py`. It audits Rekordbox DB paths against a canonical music root, suggests safe relinks into that root, generates a consolidation plan for outside-root files, and reports same-name-plus-duration duplicate groups across the root.
+
+- 2026-02-28: Ran the live Rekordbox audit against `C:\Users\hunte\Music` using the repo `.venv` and wrote the local report to `data/runlogs/rekordbox_audit_music_root_2026-02-28.json` (gitignored). Key results:
+  - Rekordbox rows: `6,171`
+  - Existing inside root: `5,366`
+  - Missing inside root: `577`
+  - Existing outside root: `12`
+  - Missing outside root: `216`
+  - High-confidence relinks into root: `126`
+  - Ambiguous relinks: `203`
+  - Not found/manual review: `476`
+  - Duplicate dry-run groups inside root: `2,076` (`36` same-name/different-type groups)
+
+- 2026-02-28: Added `rbassist/rekordbox_review.py` plus `scripts/prepare_rekordbox_review_queues.py` to split the large read-only Rekordbox audit into smaller review files. Current local queue outputs (gitignored) under `data/runlogs/rekordbox_review_queues_2026-02-28/`:
+  - high-confidence relinks: `126`
+  - ambiguous relinks: `203`
+  - same-name/different-type duplicate groups: `36`
+
+- 2026-03-01: Added `scripts/run_music_root_background_maintenance.py` to orchestrate unattended maintenance for a single canonical music root. The runner logs phase-by-phase progress to `status.json` / `status.md`, always performs read-only health + Rekordbox audit work, and can optionally add resumable embed/analyze/index phases.
+
+- 2026-03-01: Ran the safe background maintenance pass for `C:\Users\hunte\Music` and wrote the local run folder `data/runlogs/music_root_background_safe_20260301T030716Z/`. Key summary:
+  - files scanned under root: `10,812`
+  - pending embedding workload under root: `4,521`
+  - current meta embedding gap count: `2,525`
+  - high-confidence Rekordbox relinks: `126`
+  - ambiguous relinks: `203`
+  - same-name/different-type duplicate groups: `36`

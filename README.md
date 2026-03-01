@@ -112,12 +112,24 @@ python scripts/normalize_meta_paths.py --repo . --rewrite-from "C:/Users/OldUser
 
 # Resolve bare filename/orphan entries that have exactly one match under your music roots
 python scripts/resolve_bare_meta_paths.py --repo . --music-root "C:\Users\you\Music"
+
+# Audit Rekordbox's current library against your canonical music root (read-only)
+python scripts/rekordbox_audit_library.py --music-root "C:\Users\you\Music" --out data/runlogs/rekordbox_audit.json
+
+# Split that audit into smaller human-review queues
+python scripts/prepare_rekordbox_review_queues.py --audit-report data/runlogs/rekordbox_audit.json --out-dir data/runlogs/rekordbox_review_queues --prefix rekordbox_music_root
+
+# Run a background maintenance pass for one canonical music root
+python scripts/run_music_root_background_maintenance.py --music-root "C:\Users\you\Music"
 ```
 
 Notes:
 - Use the dry run first; it reports stale paths, bare filename entries, junk AppleDouble files, and collision-safe merge groups.
 - `--resolve-collisions` safely merges slash-style and moved-root duplicates before apply.
 - `resolve_bare_meta_paths.py` only auto-repairs uniquely matched bare filenames; ambiguous and missing filenames stay untouched for manual follow-up.
+- `rekordbox_audit_library.py` is read-only: it audits broken/outside-root Rekordbox paths, suggests relinks into your canonical music root, builds a consolidation move plan, and reports same-name-plus-duration duplicate groups.
+- `prepare_rekordbox_review_queues.py` turns the large Rekordbox audit into smaller review files for high-confidence relinks, ambiguous relinks, and same-name/different-type duplicate groups.
+- `run_music_root_background_maintenance.py` writes a self-contained run folder with `status.json`, `status.md`, audit outputs, gap scan results, and Rekordbox review queues. Add `--include-embed --include-analyze --include-index --resume` when you want a longer unattended maintenance pass.
 - Add `--apply` only after reviewing the JSON report.
 2) Build the HNSW index
 ```powershell
