@@ -11,15 +11,47 @@ except Exception:
     rhythm_similarity = None  # type: ignore
 
 DIM = 1024
+INDEX_ADD_CHUNK = 2000
+
+
+def _capacity_with_slack(total: int) -> int:
+    total = max(1, int(total))
+    return total + max(256, total // 10)
+
+
+def _add_vectors_in_chunks(index: hnswlib.Index, vectors: List[np.ndarray], labels: List[int], *, add_chunk_size: int) -> None:
+    chunk = max(1, int(add_chunk_size))
+    for start in range(0, len(vectors), chunk):
+        batch_vectors = np.stack(vectors[start:start + chunk], axis=0).astype(np.float32, copy=False)
+        batch_labels = np.asarray(labels[start:start + chunk], dtype=np.int64)
+        index.add_items(batch_vectors, batch_labels)
+
+
+def _ensure_index_capacity(index: hnswlib.Index, required_total: int) -> None:
+    target = max(1, int(required_total))
+    current_max = int(index.get_max_elements()) if hasattr(index, 'get_max_elements') else 0
+    if target <= current_max:
+        return
+    if not hasattr(index, 'resize_index'):
+        raise RuntimeError(f'Index cannot grow from {current_max} to {target}; resize_index unavailable')
+    index.resize_index(_capacity_with_slack(target))
+
 
 class HnswIndex:
     def __init__(self, dim: int = DIM, space: str = "cosine"):
         self.index = hnswlib.Index(space=space, dim=dim)
         self._built = False
 
-    def build(self, vectors: List[np.ndarray], labels: List[int], M: int = 32, efC: int = 200):
-        self.index.init_index(max_elements=len(vectors), ef_construction=efC, M=M)
-        self.index.add_items(np.vstack(vectors), np.array(labels))
+    def build(
+        self,
+        vectors: List[np.ndarray],
+        labels: List[int],
+        M: int = 32,
+        efC: int = 200,
+        add_chunk_size: int = INDEX_ADD_CHUNK,
+    ):
+        self.index.init_index(max_elements=_capacity_with_slack(len(vectors)), ef_construction=efC, M=M)
+        _add_vectors_in_chunks(self.index, vectors, labels, add_chunk_size=add_chunk_size)
         self.index.set_ef(64)
         self._built = True
 
@@ -45,17 +77,19 @@ def load_embedding_safe(path: str, expected_dim: int | None = None) -> np.ndarra
     return vec.astype(np.float32, copy=False)
 
 
-def build_index(incremental: bool = False) -> None:
+def build_index(incremental: bool = False, add_chunk_size: int = INDEX_ADD_CHUNK) -> None:
     meta = load_meta()
     idxfile = IDX / "hnsw.idx"
     mapfile = IDX / "paths.json"
     paths_map: list[str] = []
     index: hnswlib.Index | None = None
     expected_dim: int | None = None
+    add_chunk_size = max(1, int(add_chunk_size))
 
     if incremental and idxfile.exists() and mapfile.exists():
         try:
-            paths_map = json.load(open(mapfile, "r", encoding="utf-8"))
+            with mapfile.open("r", encoding="utf-8") as fh:
+                paths_map = json.load(fh)
             index = hnswlib.Index(space="cosine", dim=DIM)
             index.load_index(str(idxfile))
             index.set_ef(64)
@@ -91,14 +125,14 @@ def build_index(incremental: bool = False) -> None:
             return
         dim = expected_dim or DIM
         idx = HnswIndex(dim=dim)
-        idx.build(vectors, labels)
-        (IDX / "hnsw.idx").parent.mkdir(parents=True, exist_ok=True)
+        idx.build(vectors, labels, add_chunk_size=add_chunk_size)
+        idxfile.parent.mkdir(parents=True, exist_ok=True)
         idx.save(str(idxfile))
-        json.dump(paths, open(mapfile, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        with mapfile.open("w", encoding="utf-8") as fh:
+            json.dump(paths, fh, ensure_ascii=False, indent=2)
         console.print(f"[green]Indexed {len(paths)} tracks -> {idxfile}")
         return
 
-    # Incremental: add new embeddings to existing index
     label_lookup = {p: i for i, p in enumerate(paths_map)}
     new_vectors: list[np.ndarray] = []
     new_labels: list[int] = []
@@ -122,12 +156,22 @@ def build_index(incremental: bool = False) -> None:
         console.print(f"[green]Index up to date; {len(paths_map)} track(s).")
         return
 
-    index.add_items(np.vstack(new_vectors), np.array(new_labels))
+    existing_total = len(paths_map)
+    if hasattr(index, "get_current_count"):
+        try:
+            existing_total = max(existing_total, int(index.get_current_count()))
+        except Exception:
+            pass
+    _ensure_index_capacity(index, existing_total + len(new_vectors))
+    _add_vectors_in_chunks(index, new_vectors, new_labels, add_chunk_size=add_chunk_size)
     paths_map.extend(new_paths)
-    (IDX / "hnsw.idx").parent.mkdir(parents=True, exist_ok=True)
+    idxfile.parent.mkdir(parents=True, exist_ok=True)
     index.save_index(str(idxfile))
-    json.dump(paths_map, open(mapfile, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    console.print(f"[green]Added {len(new_vectors)} new embedding(s); total {len(paths_map)} track(s).")
+    with mapfile.open("w", encoding="utf-8") as fh:
+        json.dump(paths_map, fh, ensure_ascii=False, indent=2)
+    console.print(
+        f"[green]Added {len(new_vectors)} new embedding(s) in chunks of {add_chunk_size}; total {len(paths_map)} track(s)."
+    )
 
 
 def _tempo_note(seed_bpm: float | None, cand_bpm: float | None, pct: float, allow_doubletime: bool) -> str:

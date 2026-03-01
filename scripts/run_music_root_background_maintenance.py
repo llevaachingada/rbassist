@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import json
 import pathlib
+import subprocess
 import sys
 import time
 import traceback
@@ -12,8 +13,9 @@ from typing import Any
 
 from rbassist.health import audit_meta_health, list_embedding_gaps
 from rbassist.rekordbox_audit import audit_rekordbox_library
+from rbassist.quarantine import load_quarantine_paths
 from rbassist.rekordbox_review import build_review_queues, write_review_queues
-from rbassist.utils import read_paths_file, walk_audio
+from rbassist.utils import normalize_path_string, read_paths_file, walk_audio
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +48,23 @@ def parse_args() -> argparse.Namespace:
         "--embed-exclude-file",
         default="",
         help="Optional text file with one audio path per line to exclude from the embed queue.",
+    )
+    parser.add_argument(
+        "--embed-quarantine-file",
+        default="data/quarantine_embed.jsonl",
+        help="Durable JSONL quarantine file whose paths should be excluded from embed runs.",
+    )
+    parser.add_argument(
+        "--embed-via-subprocess-chunks",
+        action="store_true",
+        default=True,
+        help="Run embedding through per-chunk subprocesses instead of a single long-lived Python process.",
+    )
+    parser.add_argument(
+        "--embed-in-process",
+        dest="embed_via_subprocess_chunks",
+        action="store_false",
+        help="Use the legacy single-process embed path instead of chunked subprocess workers.",
     )
     parser.add_argument("--resume", action="store_true", help="Resume embedding from checkpoint.")
     parser.add_argument("--checkpoint-every", type=int, default=100, help="Embed checkpoint cadence.")
@@ -243,6 +262,43 @@ def _checkpoint_path(repo: pathlib.Path, run_dir: pathlib.Path, path_ref: str) -
     return (run_dir / "embed_checkpoint.json").resolve()
 
 
+def _resolve_repo_path(repo: pathlib.Path, path_ref: str) -> pathlib.Path:
+    p = pathlib.Path(path_ref)
+    return p if p.is_absolute() else (repo / p).resolve()
+
+
+def _repo_relative_path(repo: pathlib.Path, path: pathlib.Path) -> str:
+    try:
+        return path.resolve().relative_to(repo.resolve()).as_posix()
+    except Exception:
+        return str(path.resolve())
+
+
+def _combined_embed_exclude_file(repo: pathlib.Path, run_dir: pathlib.Path, *, explicit_exclude_file: str, quarantine_file: str) -> str:
+    entries: list[str] = []
+    if explicit_exclude_file:
+        explicit_path = _resolve_repo_path(repo, explicit_exclude_file)
+        if explicit_path.exists():
+            entries.extend(read_paths_file(explicit_path))
+    if quarantine_file:
+        quarantine_path = _resolve_repo_path(repo, quarantine_file)
+        if quarantine_path.exists():
+            entries.extend(load_quarantine_paths(quarantine_path))
+    unique: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        normalized = normalize_path_string(entry)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(entry)
+    if not unique:
+        return ""
+    out = run_dir / "embed_excludes_combined.txt"
+    out.write_text("\n".join(unique) + "\n", encoding="utf-8")
+    return str(out)
+
+
 def _load_embed_builder():
     from rbassist.embed import build_embeddings
 
@@ -296,10 +352,16 @@ def main() -> int:
 
         run.phase_start("embedding_gap_scan", "Scanning only the canonical music root for real embedding gaps.")
         gap_prefix = run_dir / "pending_embedding_paths"
+        combined_exclude_file = _combined_embed_exclude_file(
+            repo,
+            run_dir,
+            explicit_exclude_file=args.embed_exclude_file,
+            quarantine_file=args.embed_quarantine_file,
+        )
         gap_report = list_embedding_gaps(
             repo=repo,
             roots=[str(music_root)],
-            exclude_file=args.embed_exclude_file,
+            exclude_file=combined_exclude_file,
             out_prefix=gap_prefix,
             chunk_size=max(1, int(args.chunk_size)),
         )
@@ -310,7 +372,7 @@ def main() -> int:
             excluded_audio_files_total=gap_report.get("counts", {}).get("excluded_audio_files_total", 0),
         )
         scan_note = f"Pending embeddings: {gap_report.get('counts', {}).get('pending_embedding_total', 0)}"
-        if args.embed_exclude_file:
+        if combined_exclude_file:
             scan_note += (
                 f" | Excluded files: {gap_report.get('counts', {}).get('excluded_audio_files_total', 0)}"
             )
@@ -346,24 +408,50 @@ def main() -> int:
                 run.phase_done("embed", "No pending embeddings for this music root.")
             else:
                 checkpoint_path = _checkpoint_path(repo, run_dir, args.checkpoint_file)
-                embed_progress = PhaseProgressReporter(
-                    run,
-                    phase="embed",
-                    note_prefix="Embedding pending files inside the canonical music root.",
-                    every_items=25,
-                    every_seconds=20.0,
-                )
-                build_embeddings(
-                    pending_paths,
-                    progress_callback=embed_progress,
-                    device=args.device,
-                    num_workers=max(0, int(args.embed_workers)),
-                    batch_size=max(1, int(args.batch_size)),
-                    resume=bool(args.resume),
-                    checkpoint_file=str(checkpoint_path),
-                    checkpoint_every=max(1, int(args.checkpoint_every)),
-                )
-                run.phase_done("embed", f"Embedded pending paths using checkpoint {checkpoint_path}")
+                if args.embed_via_subprocess_chunks:
+                    chunk_glob = _repo_relative_path(repo, gap_prefix.with_name(f"{gap_prefix.name}.part*.txt"))
+                    checkpoint_dir = _repo_relative_path(repo, run_dir / "chunk_checkpoints")
+                    cmd = [
+                        sys.executable,
+                        "scripts/run_embed_chunks.py",
+                        "--repo",
+                        str(repo),
+                        "--chunk-glob",
+                        chunk_glob,
+                        "--checkpoint-dir",
+                        checkpoint_dir,
+                        "--checkpoint-every",
+                        str(max(1, int(args.checkpoint_every))),
+                        "--num-workers",
+                        str(max(0, int(args.embed_workers))),
+                        "--device",
+                        args.device,
+                    ]
+                    if int(args.batch_size) > 0:
+                        cmd.extend(["--batch-size", str(int(args.batch_size))])
+                    result = subprocess.run(cmd, cwd=str(repo))
+                    if result.returncode != 0:
+                        raise RuntimeError(f"Chunked embed runner failed with exit code {result.returncode}")
+                    run.phase_done("embed", f"Embedded chunked paths using checkpoint dir {checkpoint_dir}")
+                else:
+                    embed_progress = PhaseProgressReporter(
+                        run,
+                        phase="embed",
+                        note_prefix="Embedding pending files inside the canonical music root.",
+                        every_items=25,
+                        every_seconds=20.0,
+                    )
+                    build_embeddings(
+                        pending_paths,
+                        progress_callback=embed_progress,
+                        device=args.device,
+                        num_workers=max(0, int(args.embed_workers)),
+                        batch_size=max(1, int(args.batch_size)),
+                        resume=bool(args.resume),
+                        checkpoint_file=str(checkpoint_path),
+                        checkpoint_every=max(1, int(args.checkpoint_every)),
+                    )
+                    run.phase_done("embed", f"Embedded pending paths using checkpoint {checkpoint_path}")
 
         if args.include_analyze:
             run.phase_start("analyze", "Running incremental BPM/key analysis under the canonical music root.")
