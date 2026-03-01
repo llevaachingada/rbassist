@@ -61,10 +61,10 @@
 - [x] Intelligent track deduplication UI: wire Tools → Duplicate Finder to `duplicates.find_duplicates` and show KEEP/REMOVE pairs with CDJ warnings.
   - Completed 2025-12-09: Tools page now has working duplicate scanner with exact/fuzzy matching and CDJ warnings.
 - [ ] Automated metadata cleanup helpers (artist/title normalization, missing BPM/key reports).
-  - Partial 2026-02-28: library health audit, embedding gap scan, path normalization, and collision-safe path repair dry runs now exist.
+  - Partial 2026-03-01: library health audit, embedding gap scan, collision-safe path repair, and safe bare-path/orphan resolution now exist; artist/title cleanup and manual review tools for ambiguous leftovers still need work.
 - [ ] Advanced tag inference UI: expose `tags-auto` parameters in the Tagging page (min_samples, margin, prune_margin, apply) beyond the current CSV-only GUI flow.
 - [ ] Comprehensive library health checks (counts of missing embeddings/BPM/key/cues, corrupt files, inconsistent tags).
-  - Partial 2026-02-28: counts for missing embeddings/BPM/key/cues plus stale, bare, junk, and broken-path issues are now surfaced in scripts and UI; corrupt-file and inconsistent-tag reporting still need finishing.
+  - Partial 2026-03-01: counts for missing embeddings/BPM/key/cues plus stale, bare, junk, broken-path, and post-repair orphan issues are now surfaced in scripts and UI; corrupt-file and inconsistent-tag reporting still need finishing.
 
 #### BPM & Rekordbox Integration
 - [ ] **Separate BPM storage from Rekordbox sync** - Implementation plan: `C:\Users\hunte\.claude\plans\shimmering-stirring-barto.md`
@@ -110,7 +110,7 @@ Interested in helping? Check the current roadmap and open issues.
 Pull requests welcome!
 
 ---
-Last Updated: 2026-02-28
+Last Updated: 2026-03-01
 Curator: Claude (AI Assistant) + rbassist contributors
 
 ## Completion Summary (2026-02-28)

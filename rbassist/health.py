@@ -55,6 +55,13 @@ def _music_root_prefix(path: str | pathlib.Path) -> str | None:
     return normalize_path_string(match.group(1))
 
 
+def default_music_roots() -> list[str]:
+    home_music = pathlib.Path.home() / "Music"
+    if home_music.exists():
+        return [str(home_music)]
+    return []
+
+
 def _classify_collision_group(source_paths: list[str]) -> str:
     normalized = {normalize_path_string(path) for path in source_paths}
     if len(normalized) == 1:
@@ -552,3 +559,102 @@ def normalize_meta_paths(
 
 def default_gap_output_prefix() -> pathlib.Path:
     return DATA / "pending_embedding_paths.health"
+
+
+def resolve_bare_meta_paths(
+    *,
+    repo: pathlib.Path | None = None,
+    roots: list[str] | None = None,
+    apply_changes: bool = False,
+    meta: dict | None = None,
+) -> dict:
+    repo = (repo or ROOT).resolve()
+    meta = meta if meta is not None else load_meta()
+    tracks = meta.get("tracks", {})
+    roots = [str(pathlib.Path(root).expanduser()) for root in (roots or default_music_roots())]
+    if not roots:
+        raise ValueError("Provide at least one music root for bare-path resolution")
+
+    scanned_files = walk_audio(roots)
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for path in scanned_files:
+        by_name[pathlib.Path(path).name.lower()].append(path)
+
+    counts = Counter()
+    bare_samples_unique: list[dict] = []
+    bare_samples_ambiguous: list[dict] = []
+    bare_samples_missing: list[dict] = []
+    grouped_tracks: dict[str, list[dict]] = defaultdict(list)
+
+    for path, info in tracks.items():
+        if not _is_bare_path(path):
+            grouped_tracks[str(path)].append({"source_path": str(path), "info": copy.deepcopy(info)})
+
+    for path, info in tracks.items():
+        if not _is_bare_path(path):
+            continue
+        counts["bare_total"] += 1
+        filename = pathlib.Path(str(path)).name.lower()
+        matches = sorted(dict.fromkeys(by_name.get(filename, [])))
+        if len(matches) == 1:
+            target = matches[0]
+            counts["unique_matches_total"] += 1
+            if target in tracks:
+                counts["matched_existing_absolute_total"] += 1
+            else:
+                counts["matched_new_absolute_total"] += 1
+            grouped_tracks[target].append({"source_path": str(path), "info": copy.deepcopy(info)})
+            if len(bare_samples_unique) < 100:
+                bare_samples_unique.append({"from": str(path), "to": target})
+        elif len(matches) > 1:
+            counts["ambiguous_matches_total"] += 1
+            if len(bare_samples_ambiguous) < 100:
+                bare_samples_ambiguous.append({"from": str(path), "candidates": matches[:10]})
+            grouped_tracks[str(path)].append({"source_path": str(path), "info": copy.deepcopy(info)})
+        else:
+            counts["missing_matches_total"] += 1
+            if len(bare_samples_missing) < 100:
+                bare_samples_missing.append({"from": str(path)})
+            grouped_tracks[str(path)].append({"source_path": str(path), "info": copy.deepcopy(info)})
+
+    merged_tracks: dict[str, dict] = {}
+    merged_groups: list[dict] = []
+    conflicting_groups: list[dict] = []
+    group_kinds = Counter()
+    for canonical_path, entries in grouped_tracks.items():
+        if len(entries) == 1:
+            merged_tracks[canonical_path] = copy.deepcopy(entries[0]["info"])
+            continue
+        merged_info, group_report = _merge_track_group(canonical_path, entries, repo=repo)
+        merged_tracks[canonical_path] = merged_info
+        counts["resolved_groups_total"] += 1
+        counts["merged_entries_total"] += len(entries) - 1
+        group_kinds[group_report["group_kind"]] += 1
+        if group_report["conflict_fields"]:
+            counts["conflicting_groups_total"] += 1
+            counts["conflicting_fields_total"] += len(group_report["conflict_fields"])
+            if len(conflicting_groups) < 100:
+                conflicting_groups.append(group_report)
+        if len(merged_groups) < 100:
+            merged_groups.append(group_report)
+
+    counts["unresolved_bare_total"] = counts["ambiguous_matches_total"] + counts["missing_matches_total"]
+    report = {
+        "repo": str(repo),
+        "music_roots": roots,
+        "counts": dict(counts),
+        "samples": {
+            "unique_matches": bare_samples_unique,
+            "ambiguous_matches": bare_samples_ambiguous,
+            "missing_matches": bare_samples_missing,
+            "merged_groups": merged_groups,
+            "conflicting_groups": conflicting_groups,
+        },
+        "group_kinds": dict(group_kinds),
+        "applied": False,
+    }
+    if apply_changes:
+        meta["tracks"] = merged_tracks
+        save_meta(meta)
+        report["applied"] = True
+    return report

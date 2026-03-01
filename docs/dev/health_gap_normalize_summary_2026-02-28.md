@@ -63,3 +63,22 @@ Interpretation:
 - The safe repair removed duplicate path variants and merged metadata into canonical Windows paths.
 - Remaining stale entries are now dominated by true bare-path/orphan records rather than slash-style duplicates.
 - The next cleanup target should be resolving or quarantining the remaining bare-path entries.
+
+## Post-Bare-Path Apply Result (2026-03-01)
+- Apply report: `docs/dev/resolve_bare_meta_paths_apply_2026-03-01.json`
+- Post-repair audit: `docs/dev/health_audit_after_bare_path_repair_2026-03-01.json`
+- Backup: `data/backups/meta_before_bare_path_repair_20260228_174117.json`
+
+Delta from the post-path-repair state:
+- Tracks total: `9,949 -> 8,825`
+- Bare path entries: `2,582 -> 1,457`
+- Stale track paths: `3,634 -> 2,509`
+- Embedding gap total: `3,649 -> 2,525`
+- Missing BPM total: `8,213 -> 7,089`
+- Missing key total: `8,248 -> 7,124`
+- Missing cues total: `8,214 -> 7,090`
+
+Interpretation:
+- The new bare-path resolver safely merged `1,124` orphan filename rows into existing absolute-path records and promoted `1` uniquely matched orphan into a new absolute-path record.
+- The remaining `1,457` orphan rows are intentionally unresolved because their filenames were ambiguous across multiple folders or no current file could be found under the scanned music roots.
+- The next cleanup target should be an ambiguity review flow plus expanded root coverage for paths outside `C:\Users\hunte\Music` such as legacy external folders.

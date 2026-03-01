@@ -11,8 +11,9 @@ Generated: 2026-02-28
 - Add `scripts/audit_meta_health.py`
 - Add `scripts/list_embedding_gaps.py`
 - Add `scripts/normalize_meta_paths.py`
+- Add `scripts/resolve_bare_meta_paths.py`
 - Add tests for audit/gap/normalize flows
-- Current status: implemented, validated, and baseline artifacts generated. Collision-aware path remediation is now built into the normalization flow and validated in dry-run mode.
+- Current status: implemented, validated, and baseline artifacts generated. Collision-aware path remediation is live, and a first safe bare-path/orphan apply pass has already reduced `data/meta.json` from `9,949` rows to `8,825` canonical rows.
 
 ## Phase 2: UI Health Dashboard + Import UX Cleanup
 - Add health summary component for UI
@@ -31,3 +32,4 @@ Generated: 2026-02-28
 ## Handoff Notes
 - Keep this file updated after each implementation chunk
 - Record blockers, changed files, and next steps in `docs/dev/AGENT_HANDOFF_LOG.md`
+- Remaining Phase 1 cleanup target: review the unresolved `1,457` bare-path/orphan rows, which are now limited to ambiguous filename matches or tracks no longer found under the scanned music roots.

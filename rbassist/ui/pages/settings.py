@@ -9,7 +9,7 @@ import shlex
 import re
 from nicegui import ui
 
-from rbassist.health import list_embedding_gaps, normalize_meta_paths
+from rbassist.health import default_music_roots, list_embedding_gaps, normalize_meta_paths, resolve_bare_meta_paths
 from ..state import get_state
 from ..components.health_summary import render_health_summary
 from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
@@ -156,6 +156,47 @@ def render() -> None:
                     type="positive",
                 )
 
+            def _run_bare_path_dry() -> None:
+                state.refresh_meta()
+                roots = default_music_roots()
+                report = resolve_bare_meta_paths(
+                    repo=ROOT,
+                    roots=roots,
+                    apply_changes=False,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                action_status.text = (
+                    f"Status: bare-path dry run found {report['counts'].get('unique_matches_total', 0)} unique matches, "
+                    f"{report['counts'].get('ambiguous_matches_total', 0)} ambiguous, "
+                    f"{report['counts'].get('missing_matches_total', 0)} missing."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Bare-path dry run complete: {report['counts'].get('unique_matches_total', 0)} unique match(es).",
+                    type="positive",
+                )
+
+            def _apply_bare_path_fix() -> None:
+                state.refresh_meta()
+                roots = default_music_roots()
+                report = resolve_bare_meta_paths(
+                    repo=ROOT,
+                    roots=roots,
+                    apply_changes=True,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                _refresh_health_cards()
+                action_status.text = (
+                    f"Status: applied bare-path repair for {report['counts'].get('unique_matches_total', 0)} uniquely matched orphan entry(ies)."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Applied bare-path repair: {report['counts'].get('unique_matches_total', 0)} unique match(es) merged.",
+                    type="positive",
+                )
+
             _refresh_health_cards(state.health)
 
             with ui.row().classes("gap-2 flex-wrap"):
@@ -163,6 +204,8 @@ def render() -> None:
                 ui.button("Scan configured folders", on_click=_run_gap_scan).props("flat").classes("bg-teal-600 hover:bg-teal-500 text-white")
                 ui.button("Dry run path repair", on_click=_run_normalize_dry).props("flat").classes("bg-[#252525] text-gray-200")
                 ui.button("Apply safe path repair", on_click=_apply_normalize).props("flat").classes("bg-amber-600 hover:bg-amber-500 text-white")
+                ui.button("Dry run bare-path repair", on_click=_run_bare_path_dry).props("flat").classes("bg-[#252525] text-gray-200")
+                ui.button("Apply bare-path repair", on_click=_apply_bare_path_fix).props("flat").classes("bg-emerald-600 hover:bg-emerald-500 text-white")
                 ui.button("Refresh cards only", on_click=_refresh_health_cards).props("flat").classes("bg-[#252525] text-gray-200")
 
         # Workspace
@@ -799,6 +842,7 @@ def render() -> None:
                         **Full rebuild**
                         - Turn **Overwrite** ON before running a large rebuild.
                         - Run **Dry run path repair** first if health shows stale or duplicate path variants.
+                        - Run **Dry run bare-path repair** if health still shows orphan filename-only records after path repair.
                         """
                     ).classes("text-gray-300")
 

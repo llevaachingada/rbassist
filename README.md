@@ -109,11 +109,15 @@ python scripts/list_embedding_gaps.py --repo . --music-root "C:\Users\you\Music\
 
 # Dry-run path repair and collision-safe dedupe
 python scripts/normalize_meta_paths.py --repo . --rewrite-from "C:/Users/OldUser/Music" --rewrite-to "C:/Users/you/Music" --drop-junk --resolve-collisions
+
+# Resolve bare filename/orphan entries that have exactly one match under your music roots
+python scripts/resolve_bare_meta_paths.py --repo . --music-root "C:\Users\you\Music"
 ```
 
 Notes:
 - Use the dry run first; it reports stale paths, bare filename entries, junk AppleDouble files, and collision-safe merge groups.
 - `--resolve-collisions` safely merges slash-style and moved-root duplicates before apply.
+- `resolve_bare_meta_paths.py` only auto-repairs uniquely matched bare filenames; ambiguous and missing filenames stay untouched for manual follow-up.
 - Add `--apply` only after reviewing the JSON report.
 2) Build the HNSW index
 ```powershell
