@@ -13,7 +13,8 @@ from nicegui import ui
 
 from ..state import get_state
 from ..components.track_table import TrackTable
-from rbassist.utils import walk_audio
+from ..components.health_summary import render_health_summary
+from rbassist.utils import ROOT, is_junk_path, resolve_track_path, walk_audio
 from rbassist.embed import build_embeddings
 from rbassist.analyze import analyze_bpm_key
 from rbassist.recommend import build_index
@@ -24,6 +25,7 @@ def render() -> None:
     """Render the library page."""
     state = get_state()
     state.refresh_meta()
+    state.refresh_health()
 
     with ui.column().classes("w-full gap-4"):
         # Header with stats
@@ -34,18 +36,24 @@ def render() -> None:
                 ui.badge(f"{state.get_embedded_count()} embedded", color="indigo")
                 ui.badge(f"{state.get_analyzed_count()} analyzed", color="purple")
 
+        render_health_summary(state.health)
+
         # Folder selection
         folder_list = ui.label(f"Folders: {', '.join(state.music_folders) or 'No folders selected'}").classes("text-lg")
 
         with ui.row().classes("w-full gap-4"):
             ui.button(
-                "Analyze Library",
+                "Run Ingest From Settings",
                 icon="music_note",
                 on_click=lambda: ui.notify(
-                    "Use Settings ƒ+' Embed + Analyze + Index to run the full pipeline.",
+                    "Use Settings -> Process configured folders or Process paths file for ingest and repair.",
                     type="info",
                 ),
             ).classes("w-1/2 bg-blue-600 text-white")
+            if any(state.health.get("counts", {}).get(key, 0) for key in ("stale_track_path_total", "bare_path_total", "junk_path_total")):
+                ui.label("Tip: use Settings -> Library Health -> Dry run path repair to clean up stale and duplicate path variants.").classes(
+                    "text-amber-400 text-sm self-center"
+                )
 
         # Beatgrid controls (fixed vs dynamic)
         with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):
@@ -217,7 +225,7 @@ def render() -> None:
                     conf = result.get('confidence', 0)
                     beats_count = len(result.get('beats', []))
                     downbeats_count = len(result.get('downbeats', []))
-                    preview_label.text = f"✓ {Path(path).name}: {bpm:.1f} BPM, {beats_count} beats, {downbeats_count} downbeats (confidence: {conf:.2f})"
+                    preview_label.text = f"OK: {Path(path).name} | {bpm:.1f} BPM | {beats_count} beats | {downbeats_count} downbeats | confidence {conf:.2f}"
                     preview_label.update()
                     ui.notify("Preview generated successfully!", type="positive")
 
@@ -376,6 +384,35 @@ def render() -> None:
                 tags_str = ", ".join(str(t) for t in tags)
             else:
                 tags_str = str(tags)
+            try:
+                stale_path = not resolve_track_path(path, base_dir=ROOT).exists()
+            except Exception:
+                stale_path = True
+            bare_path = not Path(str(path)).drive and not Path(str(path)).is_absolute()
+            junk_path = is_junk_path(path)
+            embedding_path = info.get("embedding")
+            embedding_ok = False
+            if embedding_path:
+                emb_candidate = Path(str(embedding_path))
+                if not emb_candidate.is_absolute():
+                    emb_candidate = (ROOT / emb_candidate).resolve()
+                embedding_ok = emb_candidate.exists()
+            missing_embedding = not embedding_ok
+            missing_analysis = not (info.get("bpm") and info.get("key"))
+            missing_cues = not info.get("cues")
+            issues: list[str] = []
+            if stale_path:
+                issues.append("stale path")
+            if bare_path:
+                issues.append("bare path")
+            if junk_path:
+                issues.append("junk path")
+            if missing_embedding:
+                issues.append("missing embedding")
+            if missing_analysis:
+                issues.append("missing analysis")
+            if missing_cues:
+                issues.append("missing cues")
 
             all_rows.append({
                 "path": path,
@@ -383,33 +420,67 @@ def render() -> None:
                 "title": info.get("title", path.split("\\")[-1].split("/")[-1]),
                 "bpm": f"{info.get('bpm', 0):.0f}" if info.get("bpm") else "-",
                 "key": info.get("key", "-"),
-                "embedded": "Yes" if info.get("embedding") else "No",
-                "analyzed": "Yes" if info.get("bpm") and info.get("key") else "No",
+                "embedded": "Yes" if embedding_ok else "No",
+                "analyzed": "Yes" if not missing_analysis else "No",
                 "beatgrid": "Yes" if info.get("tempos") else "No",
                 "mytags": tags_str,
+                "issues": ", ".join(issues) if issues else "-",
+                "_health": {
+                    "missing_embedding": missing_embedding,
+                    "missing_analysis": missing_analysis,
+                    "missing_cues": missing_cues,
+                    "stale_path": stale_path,
+                    "bare_path": bare_path,
+                    "junk_path": junk_path,
+                },
             })
 
-        search_box = ui.input(placeholder="Search artist / title / MyTags").props("dark dense clearable").classes("w-96")
+        with ui.row().classes("w-full items-center gap-3"):
+            search_box = ui.input(placeholder="Search artist / title / MyTags / issues").props("dark dense clearable").classes("w-96")
+            filter_select = ui.select(
+                {
+                    "all": "All tracks",
+                    "missing_embedding": "Missing embedding",
+                    "missing_analysis": "Missing analysis",
+                    "missing_cues": "Missing cues",
+                    "stale_path": "Stale path",
+                    "bare_path": "Bare path",
+                    "junk_path": "Junk path",
+                },
+                value="all",
+                label="Health filter",
+            ).props("dark dense").classes("w-56")
+            ui.label("Filter the table by current metadata issues without changing your library data.").classes("text-gray-500 text-sm")
 
         filtered_rows = all_rows
+
+        def _matches_health_filter(row: dict) -> bool:
+            mode = filter_select.value or "all"
+            if mode == "all":
+                return True
+            return bool(row.get("_health", {}).get(mode))
 
         def apply_filter() -> None:
             term = (search_box.value or "").strip().lower()
             nonlocal filtered_rows
-            if not term:
-                filtered_rows = all_rows
-            else:
-                filtered_rows = [
-                    r for r in all_rows
-                    if term in r["artist"].lower()
-                    or term in r["title"].lower()
-                    or term in r["mytags"].lower()
-                ]
+            filtered_rows = []
+            for row in all_rows:
+                if not _matches_health_filter(row):
+                    continue
+                if term and not (
+                    term in row["artist"].lower()
+                    or term in row["title"].lower()
+                    or term in row["mytags"].lower()
+                    or term in row["issues"].lower()
+                ):
+                    continue
+                filtered_rows.append(row)
             table.update(filtered_rows)
             count_label.text = f"Showing {len(filtered_rows)} of {len(all_rows)} tracks"
             count_label.update()
 
         search_box.on_value_change(lambda e: apply_filter())
+        filter_select.on_value_change(lambda e: apply_filter())
 
         with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-0"):
             table = TrackTable(
@@ -418,6 +489,7 @@ def render() -> None:
                     {"name": "analyzed", "label": "Analyzed", "field": "analyzed", "sortable": True, "align": "center"},
                     {"name": "beatgrid", "label": "Beatgrid", "field": "beatgrid", "sortable": True, "align": "center"},
                     {"name": "mytags", "label": "MyTags", "field": "mytags", "sortable": False, "align": "left"},
+                    {"name": "issues", "label": "Issues", "field": "issues", "sortable": False, "align": "left"},
                 ],
             )
             table.build()

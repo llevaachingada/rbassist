@@ -47,7 +47,7 @@ rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fas
 ### Getting Involved
 
 - **Issues/ideas**: file them on GitHub with hardware + command logs.
-- **Pull requests**: follow existing Typer/Streamlit patterns, document new flags, add tests when touching analyze/embed/tagstore logic.
+- **Pull requests**: follow existing Typer/NiceGUI patterns, document new flags, and add tests when touching analyze/embed/tagstore logic.
 - **Support**: share DJ workflow needs in discussions; the more context, the better the tuning advice.
 
 ## Install (Windows)
@@ -98,6 +98,23 @@ Notes:
 - `--paths-file` accepts one file/folder path per line (`# comments` and blank lines allowed).
 - `--checkpoint-file` lets you override the checkpoint location.
 - Failed tracks are written to a structured JSONL log next to the checkpoint file.
+
+Library health and path repair workflow:
+```powershell
+# Audit current metadata health
+python scripts/audit_meta_health.py --repo .
+
+# Scan your configured music roots for actual embedding gaps
+python scripts/list_embedding_gaps.py --repo . --music-root "C:\Users\you\Music\BREAKS"
+
+# Dry-run path repair and collision-safe dedupe
+python scripts/normalize_meta_paths.py --repo . --rewrite-from "C:/Users/OldUser/Music" --rewrite-to "C:/Users/you/Music" --drop-junk --resolve-collisions
+```
+
+Notes:
+- Use the dry run first; it reports stale paths, bare filename entries, junk AppleDouble files, and collision-safe merge groups.
+- `--resolve-collisions` safely merges slash-style and moved-root duplicates before apply.
+- Add `--apply` only after reviewing the JSON report.
 2) Build the HNSW index
 ```powershell
 rbassist index
@@ -127,11 +144,14 @@ rbassist tags-auto --margin 0.05
 rbassist tags-auto --margin 0.05 --apply
 ```
 
-Want a browser UI instead of the old Tk window? Install the web extras and launch Streamlit directly:
+Want the GUI?
 ```powershell
-pip install "rbassist[web]"
-rbassist-gui  # launches the Streamlit app (same as `rbassist web`)
+rbassist ui
+# or on Windows:
+.\start.ps1
 ```
+
+NiceGUI is the only maintained GUI path in this repo.
 
 Data lives under `data/` (embeddings, index, meta.json). This repo is safe to sync to GitHub; keep your audio outside the repo.
 

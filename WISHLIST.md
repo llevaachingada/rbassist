@@ -6,9 +6,12 @@
 
 #### Embedding Reliability
 - [ ] Implement comprehensive error recovery during large library embedding
-- [ ] Add detailed logging for failed/skipped track embeddings
-- [ ] Create resumable embedding process
-- [ ] Support checkpointing for multi-day/interrupted embedding runs
+- [x] Add detailed logging for failed/skipped track embeddings
+  - Completed 2026-02-07: failed track output now writes structured JSONL logs instead of console-only errors.
+- [x] Create resumable embedding process
+  - Completed 2026-02-07: CLI and UI now support resumable embedding runs.
+- [x] Support checkpointing for multi-day/interrupted embedding runs
+  - Completed 2026-02-07: `--resume`, `--checkpoint-file`, and `--checkpoint-every` are wired through the active embedding workflow.
 
 #### Performance Optimizations
 - [ ] Optimize memory usage for large libraries (100k+ tracks)
@@ -25,7 +28,8 @@
 
 #### UI/UX
 - [ ] Library table virtual scrolling / true pagination for 10k+ tracks (current plan: pagination; future: infinite scroll).
-- [ ] Settings: import/scan UX overhaul (import one folder at a time without reanalyzing whole library, clarify overwrite/skip behavior for already-analyzed tracks, add an in-page "How to use" tab).
+- [x] Settings: import/scan UX overhaul (import one folder at a time without reanalyzing whole library, clarify overwrite/skip behavior for already-analyzed tracks, add an in-page "How to use" tab).
+  - Completed 2026-02-28: one-folder import, configured-folder vs paths-file runs, preflight summaries, health actions, and in-page guidance are now in Settings.
 - [x] Beatgrid waveform preview: refine layout/controls and consider downbeat markers/zoom; current preview shows first ~16 bars on demand.
   - Completed 2025-12-25: Enhanced with beat/downbeat markers (pink dashed/yellow solid), dark theme, BPM/confidence/segments in title, legend.
 - [x] Tagging: implement safe_tagstore (user vs AI namespace), active_learning (uncertainty sampling), and optional user_model per docs/tagging_active_learning_plan.md.
@@ -57,8 +61,10 @@
 - [x] Intelligent track deduplication UI: wire Tools → Duplicate Finder to `duplicates.find_duplicates` and show KEEP/REMOVE pairs with CDJ warnings.
   - Completed 2025-12-09: Tools page now has working duplicate scanner with exact/fuzzy matching and CDJ warnings.
 - [ ] Automated metadata cleanup helpers (artist/title normalization, missing BPM/key reports).
+  - Partial 2026-02-28: library health audit, embedding gap scan, path normalization, and collision-safe path repair dry runs now exist.
 - [ ] Advanced tag inference UI: expose `tags-auto` parameters in the Tagging page (min_samples, margin, prune_margin, apply) beyond the current CSV-only GUI flow.
 - [ ] Comprehensive library health checks (counts of missing embeddings/BPM/key/cues, corrupt files, inconsistent tags).
+  - Partial 2026-02-28: counts for missing embeddings/BPM/key/cues plus stale, bare, junk, and broken-path issues are now surfaced in scripts and UI; corrupt-file and inconsistent-tag reporting still need finishing.
 
 #### BPM & Rekordbox Integration
 - [ ] **Separate BPM storage from Rekordbox sync** - Implementation plan: `C:\Users\hunte\.claude\plans\shimmering-stirring-barto.md`
@@ -104,12 +110,12 @@ Interested in helping? Check the current roadmap and open issues.
 Pull requests welcome!
 
 ---
-Last Updated: 2025-12-30
+Last Updated: 2026-02-28
 Curator: Claude (AI Assistant) + rbassist contributors
 
-## Completion Summary (2025-12-25)
+## Completion Summary (2026-02-28)
 - **Total Wishlist Items:** ~40
-- **Completed:** 8 major items
-- **In Progress:** 5 items
-- **Not Started:** ~27 items
-- **System Feature Completeness:** 95%
+- **Completed:** 12 major items
+- **In Progress:** 6 items
+- **Not Started:** ~22 items
+- **System Feature Completeness:** 70%

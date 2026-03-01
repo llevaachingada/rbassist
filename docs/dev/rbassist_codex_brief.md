@@ -7,7 +7,7 @@ You are working on the **rbassist** project in this workspace.
 ## Context
 
 - Current branch: a feature branch based off `origin/main`, for example: `feat/ai-full-claude-pass`.
-- **rbassist** is a Windows-first, GPU-accelerated Rekordbox assistant toolchain (Typer CLI + Streamlit GUI).
+- **rbassist** is a Windows-first, GPU-accelerated Rekordbox assistant toolchain (Typer CLI + NiceGUI UI).
 - Target machine: **Windows 11**, **32 GB RAM**, **RTX 4060 (8 GB VRAM)**, fast NVMe SSD.
 - Target library size: **tens of thousands of tracks**, so performance and I/O patterns matter.
 
@@ -16,7 +16,7 @@ You are implementing and expanding on a static analysis report that suggested de
 ### Global rules
 
 - Keep existing **CLI commands and flags backwards-compatible**.
-- Do **not** break `rbassist` CLI or webapp behavior.
+- Do **not** break `rbassist` CLI or NiceGUI behavior.
 - Work in **small, logical commits**, and show me diffs after each cluster of changes.
 - Prefer clear, well-named helpers over giant refactors.
 - Keep code style consistent with the existing codebase.
@@ -178,17 +178,16 @@ Prioritize B1 and B2 first, then B3 and B4.
 
 ## C) Performance: Indexing & Recommendations
 
-### C1) HNSW index caching in webapp
+### C1) HNSW index caching in the recommendation/UI layer
 
-- File: `rbassist/webapp.py`
-- Currently: a fresh HNSW index is constructed and loaded from disk on every recommendation query.
+- File(s): recommendation helpers used by `rbassist ui` (for example `rbassist/recommend.py` and any UI loader that repeatedly opens `data/index`).
+- Currently: recommendation flows may reload the HNSW index more often than necessary for a single UI session.
 
 **Task:**
 
-- Implement a cached loader using Streamlit’s `@st.cache_resource` (or the modern equivalent):
+- Implement a cached loader at the process layer so the NiceGUI session can reuse an already-loaded HNSW index:
 
   ```python
-  @st.cache_resource
   def load_hnsw_index(dim: int):
       index = hnswlib.Index(space="cosine", dim=dim)
       index.load_index(str(IDX / "hnsw.idx"))
@@ -197,7 +196,7 @@ Prioritize B1 and B2 first, then B3 and B4.
   ```
 
 - Modify the k-NN helper to call `load_hnsw_index(vec.shape[0])` instead of constructing/loading a fresh index per call.
-- Do **not** change how `analyze_bpm_key` is called from the webapp.
+- Do **not** change how `analyze_bpm_key` is called from the UI workflow.
 
 ---
 
@@ -306,7 +305,7 @@ Prioritize B1 and B2 first, then B3 and B4.
   - Apply simple rules to avoid repeats and encourage smooth transitions.
 - Expose as either:
   - Experimental CLI command (e.g. `rbassist recommend-sequence`), or
-  - A helper function that the webapp can hook into later.
+  - A helper function that the NiceGUI recommendation flow can hook into later.
 
 ---
 
@@ -350,7 +349,7 @@ Prioritize B1 and B2 first, then B3 and B4.
 - Add a small test or script that simulates a few thousand fake embeddings and builds an index, to verify:
   - Memory remains reasonable on a 32 GB machine.
   - Incremental indexing works.
-  - Webapp’s HNSW caching does not crash.
+  - UI-layer HNSW caching does not crash.
 
 ---
 

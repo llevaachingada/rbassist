@@ -2,23 +2,168 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import asyncio
 import shlex
 import re
 from nicegui import ui
 
+from rbassist.health import list_embedding_gaps, normalize_meta_paths
 from ..state import get_state
+from ..components.health_summary import render_health_summary
 from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
+from rbassist.utils import ROOT
+
+SMART_QUOTES = {"'", '"', "\u2018", "\u2019", "\u201c", "\u201d"}
+SMART_QUOTE_PATTERN = "\"([^\"]+)\"|\u201c([^\u201d]+)\u201d|'([^']+)'|\u2018([^\u2019]+)\u2019"
 
 
 def render() -> None:
     """Render the settings page."""
     state = get_state()
+    state.refresh_health()
     sync_guard: dict[str, bool] = {"busy": False}
 
     with ui.column().classes("w-full gap-4 max-w-3xl"):
         ui.label("Settings").classes("text-2xl font-bold text-white")
+
+
+        # Health Dashboard
+        with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):
+            ui.label("Library Health").classes("text-lg font-semibold text-gray-200 mb-3")
+            ui.label(
+                "Audit the current metadata, scan configured folders for missing embeddings, and dry-run path repair before applying any changes."
+            ).classes("text-gray-400 text-sm mb-2")
+            health_mount = ui.column().classes("w-full")
+            with health_mount:
+                render_health_summary(state.health)
+            audit_preview = ui.textarea(label="Audit Preview").props("dark readonly autogrow").classes("w-full")
+            rewrite_hint = ui.label("").classes("text-indigo-300 text-sm")
+            action_status = ui.label("Status: idle").classes("text-gray-400 text-sm")
+
+            def _set_preview(report: dict) -> None:
+                audit_preview.value = json.dumps(report, indent=2)
+                audit_preview.update()
+
+            def _refresh_health_cards(report: dict | None = None) -> None:
+                state.refresh_meta()
+                state.refresh_health()
+                report = report or state.health
+                health_mount.clear()
+                with health_mount:
+                    render_health_summary(report)
+                suggestions = report.get("suggested_rewrite_pairs", []) if isinstance(report, dict) else []
+                if suggestions:
+                    rewrite_hint.text = "Suggested rewrite pairs: " + ", ".join(
+                        f"{item.get('from')} -> {item.get('to')}" for item in suggestions
+                    )
+                else:
+                    rewrite_hint.text = "Suggested rewrite pairs: none detected from current configured folders."
+                rewrite_hint.update()
+
+            def _run_inline_audit() -> None:
+                state.refresh_meta()
+                state.refresh_health()
+                _set_preview(state.health)
+                _refresh_health_cards(state.health)
+                action_status.text = "Status: refreshed live health snapshot from data/meta.json."
+                action_status.update()
+                ui.notify("Health audit refreshed", type="positive")
+
+            def _run_gap_scan() -> None:
+                if not state.music_folders:
+                    ui.notify("Add at least one music folder before scanning embedding gaps.", type="warning")
+                    return
+                report = list_embedding_gaps(
+                    repo=ROOT,
+                    roots=list(state.music_folders),
+                    out_prefix="data/pending_embedding_paths.health_ui",
+                    chunk_size=2000,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                action_status.text = (
+                    f"Status: scanned configured folders and found {report['counts'].get('pending_embedding_total', 0)} pending embedding target(s)."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Gap scan complete: {report['counts'].get('pending_embedding_total', 0)} pending track(s).",
+                    type="positive",
+                )
+
+            def _run_normalize_dry() -> None:
+                state.refresh_meta()
+                state.refresh_health()
+                suggestions = state.health.get("suggested_rewrite_pairs", [])
+                report = normalize_meta_paths(
+                    repo=ROOT,
+                    rewrite_from=[item.get("from", "") for item in suggestions],
+                    rewrite_to=[item.get("to", "") for item in suggestions],
+                    drop_junk=True,
+                    resolve_collisions=True,
+                    apply_changes=False,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                resolved = report.get("counts", {}).get("resolved_collision_groups_total", 0)
+                action_status.text = (
+                    f"Status: dry-run path repair planned {report['counts'].get('changed_paths', 0)} rewrites and "
+                    f"{resolved} collision-group merge(s)."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Path repair dry run complete: {report['counts'].get('changed_paths', 0)} rewrites, "
+                    f"{resolved} collision-group merge(s), {report['counts'].get('dropped_junk', 0)} junk entries flagged.",
+                    type="positive",
+                )
+
+            def _apply_normalize() -> None:
+                state.refresh_meta()
+                state.refresh_health()
+                suggestions = state.health.get("suggested_rewrite_pairs", [])
+                report = normalize_meta_paths(
+                    repo=ROOT,
+                    rewrite_from=[item.get("from", "") for item in suggestions],
+                    rewrite_to=[item.get("to", "") for item in suggestions],
+                    drop_junk=True,
+                    resolve_collisions=True,
+                    apply_changes=True,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                if not report.get("applied"):
+                    if report.get("blocked_reason") == "collisions_detected":
+                        ui.notify(
+                            "Path fixes were not applied because collisions were detected. Review the dry run first.",
+                            type="warning",
+                        )
+                    else:
+                        ui.notify("Path fixes were not applied.", type="warning")
+                    action_status.text = "Status: path repair did not apply. Review the dry run preview for remaining blockers."
+                    action_status.update()
+                    return
+                _refresh_health_cards()
+                action_status.text = (
+                    f"Status: applied safe path repair with {report['counts'].get('changed_paths', 0)} rewrites and "
+                    f"{report['counts'].get('resolved_collision_groups_total', 0)} collision-group merge(s)."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Applied safe path repair: {report['counts'].get('changed_paths', 0)} rewrites, "
+                    f"{report['counts'].get('resolved_collision_groups_total', 0)} collision-group merge(s), "
+                    f"{report['counts'].get('dropped_junk', 0)} junk entries dropped.",
+                    type="positive",
+                )
+
+            _refresh_health_cards(state.health)
+
+            with ui.row().classes("gap-2 flex-wrap"):
+                ui.button("Refresh health snapshot", on_click=_run_inline_audit).props("flat").classes("bg-indigo-600 hover:bg-indigo-500 text-white")
+                ui.button("Scan configured folders", on_click=_run_gap_scan).props("flat").classes("bg-teal-600 hover:bg-teal-500 text-white")
+                ui.button("Dry run path repair", on_click=_run_normalize_dry).props("flat").classes("bg-[#252525] text-gray-200")
+                ui.button("Apply safe path repair", on_click=_apply_normalize).props("flat").classes("bg-amber-600 hover:bg-amber-500 text-white")
+                ui.button("Refresh cards only", on_click=_refresh_health_cards).props("flat").classes("bg-[#252525] text-gray-200")
 
         # Workspace
         with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):
@@ -66,18 +211,18 @@ def render() -> None:
 
                             def _strip_quotes(s: str) -> str:
                                 s = s.strip()
-                                if len(s) >= 2 and s[0] == s[-1] and s[0] in {"'", '"', "“", "”", "‘", "’"}:
+                                if len(s) >= 2 and s[0] == s[-1] and s[0] in SMART_QUOTES:
                                     return s[1:-1]
-                                # handle mismatched leading/trailing smart quotes
-                                if s[:1] in {"'", '"', "“", "”", "‘", "’"}:
+                                # Handle mismatched leading/trailing smart quotes.
+                                if s[:1] in SMART_QUOTES:
                                     s = s[1:]
-                                if s[-1:] in {"'", '"', "“", "”", "‘", "’"}:
+                                if s[-1:] in SMART_QUOTES:
                                     s = s[:-1]
                                 return s.strip()
 
                             def _extract_quoted(line: str) -> list[str]:
-                                # Look for "quoted", 'quoted', or “smart quoted” segments
-                                matches = re.findall(r'"([^"]+)"|“([^”]+)”|\'([^\']+)\'|‘([^’]+)’', line)
+                                # Look for plain or smart-quoted path segments.
+                                matches = re.findall(SMART_QUOTE_PATTERN, line)
                                 out: list[str] = []
                                 for a, b, c, d in matches:
                                     candidate = a or b or c or d
@@ -309,6 +454,8 @@ def render() -> None:
                     ).props("dark dense").classes("w-32")
                     ui.label("Persist progress every N processed tracks").classes("text-gray-500 text-sm")
 
+                preflight_label = ui.markdown("**Preflight:** idle").classes("text-gray-300")
+
                 # Pipeline progress UI
                 pipe_progress = ui.linear_progress(value=0).props("rounded color=indigo").classes("w-full")
                 pipe_label = ui.label("Idle").classes("text-gray-400 text-sm")
@@ -318,6 +465,7 @@ def render() -> None:
                     *,
                     force_overwrite: bool | None = None,
                     force_skip_analyzed: bool | None = None,
+                    use_paths_file_only: bool = False,
                 ) -> None:
                     from rbassist.utils import walk_audio, load_meta, read_paths_file
                     from rbassist.embed import build_embeddings
@@ -325,9 +473,9 @@ def render() -> None:
                     from rbassist.recommend import build_index
 
                     # If user pasted paths but didn't click "Add path", ingest them now (default scope only)
-                    default_scope = roots is None
+                    default_scope = roots is None and not use_paths_file_only
                     scope_label = "all folders"
-                    if roots is None:
+                    if roots is None and not use_paths_file_only:
                         if folder_input.value:
                             _add_folder(folder_input.value)
                         roots = list(state.music_folders)
@@ -337,7 +485,7 @@ def render() -> None:
                     music_roots: list[str] = []
 
                     paths_file_value = str(paths_file_input.value or "").strip()
-                    if default_scope and paths_file_value:
+                    if use_paths_file_only or (default_scope and paths_file_value):
                         pfile = Path(paths_file_value).expanduser()
                         if not pfile.exists():
                             ui.notify(f"Paths file not found: {pfile}", type="warning")
@@ -412,6 +560,15 @@ def render() -> None:
                             ]
 
                     total_steps = max(1, len(embed_files) + len(analysis_files) + len(bg_files) + 1)
+                    try:
+                        preflight_label.content = (
+                            f"**Preflight:** {len(files)} files found, {len(embed_files)} will embed, "
+                            f"{len(analysis_files)} will analyze, {len(bg_files)} will beatgrid, "
+                            f"overwrite={'ON' if overwrite else 'OFF'}, resume={'ON' if resume_embed else 'OFF'}"
+                        )
+                        preflight_label.update()
+                    except Exception:
+                        pass
 
                     def _update(label: str):
                         """Safely update progress UI; ignore if client/slot is gone."""
@@ -514,6 +671,12 @@ def render() -> None:
 
                     try:
                         await asyncio.to_thread(_work)
+                        state.refresh_meta()
+                        state.refresh_health()
+                        try:
+                            _refresh_health_cards()
+                        except Exception:
+                            pass
                         try:
                             ui.notify("Embed + Analyze + Index complete", type="positive")
                             if resume_embed:
@@ -530,9 +693,22 @@ def render() -> None:
                             # let it be visible in the terminal logs only.
                             pass
 
-                ui.button("Process all folders (Embed + Analyze + Index)", icon="play_arrow", on_click=run_pipeline).props("flat").classes(
-                    "bg-indigo-600 hover:bg-indigo-500 w-64"
-                )
+                async def run_configured_folders() -> None:
+                    await run_pipeline(roots=list(state.music_folders))
+
+                async def run_paths_file_only() -> None:
+                    await run_pipeline(use_paths_file_only=True)
+
+                with ui.row().classes("gap-2 flex-wrap"):
+                    ui.button("Process configured folders", icon="folder_play", on_click=run_configured_folders).props("flat").classes(
+                        "bg-indigo-600 hover:bg-indigo-500 text-white"
+                    )
+                    ui.button("Process paths file", icon="playlist_play", on_click=run_paths_file_only).props("flat").classes(
+                        "bg-teal-600 hover:bg-teal-500 text-white"
+                    )
+                    ui.button("Auto scope (legacy)", icon="play_arrow", on_click=run_pipeline).props("flat").classes(
+                        "bg-[#252525] text-gray-200"
+                    )
 
         # Analysis Settings
         with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):
@@ -612,9 +788,17 @@ def render() -> None:
                         4. Optional: turn **Resume embedding from checkpoint** ON for interruption-safe runs.
                         5. Click **Save Settings** if you want these choices to persist.
 
+                        **Configured folders**
+                        - Click **Process configured folders** to run only the folders shown in Settings.
+                        - Use this when you want a predictable library slice instead of scanning everything.
+
+                        **Paths file**
+                        - Set **Paths file** to a curated list (one path per line), then click **Process paths file**.
+                        - Use this when you want a checkpoint-friendly batch or a hand-picked ingest queue.
+
                         **Full rebuild**
-                        - Turn **Overwrite** ON, then click **Process all folders**.
-                        - Optional: set **Paths file** to process a curated list (one path per line).
+                        - Turn **Overwrite** ON before running a large rebuild.
+                        - Run **Dry run path repair** first if health shows stale or duplicate path variants.
                         """
                     ).classes("text-gray-300")
 
@@ -622,7 +806,8 @@ def render() -> None:
                     ui.markdown(
                         """
                         - **Overwrite vs Skip analyzed:** these are linked; turning Overwrite ON turns Skip analyzed OFF (and vice-versa).
-                        - **Why is Discover empty?** Discover needs an index; run the pipeline (folder Import or Process all folders).
+                        - **Why is Discover empty?** Discover needs an index; run a folder import, configured-folder run, or paths-file run first.
+                        - **What is Auto scope?** Legacy behavior: if a Paths file is set, it uses that; otherwise it uses configured folders.
                         - **What does Timbre do?** Adds extra texture features; it is slower and requires `openl3` installed.
                         - **What does Resume do?** Embedding progress is checkpointed and completed tracks are skipped on rerun.
                         """
