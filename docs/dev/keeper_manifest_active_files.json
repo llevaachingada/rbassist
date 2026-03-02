@@ -1,0 +1,825 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-02T08:40:23Z",
+  "repo_root": "C:\\Users\\hunte\\Music\\rbassist",
+  "scope": {
+    "primary_music_root": "C:\\Users\\hunte\\Music",
+    "focus": "Repo-level keeper manifest for the four active post-ingest rbassist workstreams."
+  },
+  "summary": {
+    "workstream_total": 4,
+    "shared_foundation_total": 7,
+    "active_file_inventory_total": 38,
+    "local_runtime_keeper_total": 5,
+    "missing_tracked_keeper_total": 0
+  },
+  "current_state": {
+    "available": true,
+    "primary_music_root": "C:\\Users\\hunte\\Music",
+    "tracks_total": 13331,
+    "embedding_gap_total": 3323,
+    "stale_track_path_total": 2511,
+    "bare_path_total": 1457,
+    "missing_bpm_total": 3328,
+    "missing_key_total": 3328,
+    "missing_cues_total": 3329,
+    "missing_mytags_total": 9073,
+    "quarantine_total": 813
+  },
+  "shared_foundations": [
+    {
+      "path": "README.md",
+      "kind": "doc",
+      "role": "Primary operator-facing workflow and command reference.",
+      "why_keep": "Future agents need one stable entry point for how rbassist is meant to run.",
+      "exists": true
+    },
+    {
+      "path": "WISHLIST.md",
+      "kind": "doc",
+      "role": "Backlog and delivery-status map for current rbassist priorities.",
+      "why_keep": "This is the quickest way to see what is done versus still risky.",
+      "exists": true
+    },
+    {
+      "path": "docs/dev/PROJECT_CONTINUITY.md",
+      "kind": "doc",
+      "role": "Stable north-star brief for mission, scope, current truth, and working rules.",
+      "why_keep": "This is the first continuity file future agents should read.",
+      "exists": true
+    },
+    {
+      "path": "docs/dev/CONTINUITY_LOG.md",
+      "kind": "doc",
+      "role": "Rolling session log for what changed, what was learned, and what remains next.",
+      "why_keep": "This preserves short-form continuity between work sessions.",
+      "exists": true
+    },
+    {
+      "path": "docs/dev/AGENT_HANDOFF_LOG.md",
+      "kind": "doc",
+      "role": "Detailed implementation chronology for ingest, hygiene, and Rekordbox work.",
+      "why_keep": "This prevents future agents from rediscovering the same local-state history.",
+      "exists": true
+    },
+    {
+      "path": "rbassist/utils.py",
+      "kind": "module",
+      "role": "Shared path normalization, audio walking, and meta loading helpers.",
+      "why_keep": "Most hygiene and rollout work depends on these path semantics staying consistent.",
+      "exists": true
+    },
+    {
+      "path": "rbassist/quarantine.py",
+      "kind": "module",
+      "role": "Durable quarantine load/merge/write logic for known-bad assets.",
+      "why_keep": "The active root is rollout-ready only because quarantine became durable and reusable.",
+      "exists": true
+    }
+  ],
+  "workstreams": [
+    {
+      "id": "rbassist-meta-hygiene",
+      "summary": "Metadata health, stale-path review, safe bare-path repair, and active-root cleanup.",
+      "keeper_files": [
+        {
+          "path": "rbassist/health.py",
+          "kind": "module",
+          "role": "Canonical health audit, pending-gap scan, path normalization, and bare-path repair logic.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/audit_meta_health.py",
+          "kind": "script",
+          "role": "CLI entry point for health baselines and before/after hygiene deltas.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/normalize_meta_paths.py",
+          "kind": "script",
+          "role": "Safe path normalization and collision-remediation workflow.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/resolve_bare_meta_paths.py",
+          "kind": "script",
+          "role": "Bare/orphan filename resolver and safe apply wrapper.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_audit_meta_health.py",
+          "kind": "test",
+          "role": "Health-audit regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_normalize_meta_paths.py",
+          "kind": "test",
+          "role": "Normalization and collision-remediation regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_resolve_bare_meta_paths.py",
+          "kind": "test",
+          "role": "Bare-path resolution regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "docs/dev/IMPLEMENTATION_PLAN_HEALTH_AND_UX.md",
+          "kind": "doc",
+          "role": "Detailed implementation map for health and import UX work.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "docs/dev/health_gap_normalize_summary_2026-02-28.md",
+          "kind": "doc",
+          "role": "Baseline summary of health, path normalization, and gap findings.",
+          "why_keep": "",
+          "exists": true
+        }
+      ]
+    },
+    {
+      "id": "rbassist-rekordbox-safe-relink",
+      "summary": "Read-only Rekordbox audit, review queues, and backup-first relink apply readiness.",
+      "keeper_files": [
+        {
+          "path": "rbassist/rekordbox_audit.py",
+          "kind": "module",
+          "role": "Live Rekordbox audit, relink suggestions, consolidation planning, and duplicate dry-run logic.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "rbassist/rekordbox_review.py",
+          "kind": "module",
+          "role": "Splits large Rekordbox audits into high-confidence, ambiguous, and duplicate review queues.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "rbassist/rekordbox_import.py",
+          "kind": "module",
+          "role": "Existing Rekordbox database access and import helpers.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/rekordbox_audit_library.py",
+          "kind": "script",
+          "role": "CLI wrapper for read-only Rekordbox-vs-root auditing.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/prepare_rekordbox_review_queues.py",
+          "kind": "script",
+          "role": "CLI wrapper for review queue generation from audit outputs.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_rekordbox_audit.py",
+          "kind": "test",
+          "role": "Rekordbox audit regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_rekordbox_review.py",
+          "kind": "test",
+          "role": "Review-queue generation regression coverage.",
+          "why_keep": "",
+          "exists": true
+        }
+      ]
+    },
+    {
+      "id": "rbassist-duplicate-remediation",
+      "summary": "Duplicate detection, review queues, and preferred-keeper decisions across root files and Rekordbox references.",
+      "keeper_files": [
+        {
+          "path": "rbassist/duplicates.py",
+          "kind": "module",
+          "role": "Meta-based duplicate grouping and staging helpers.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "rbassist/rekordbox_audit.py",
+          "kind": "module",
+          "role": "Name-plus-duration duplicate dry-run logic built from the music-root catalog.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "rbassist/rekordbox_review.py",
+          "kind": "module",
+          "role": "Exports same-name different-type duplicate review queues.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/prepare_rekordbox_review_queues.py",
+          "kind": "script",
+          "role": "Writes the duplicate review queue outputs.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_duplicates_stage.py",
+          "kind": "test",
+          "role": "Duplicate staging regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_rekordbox_audit.py",
+          "kind": "test",
+          "role": "Duplicate dry-run regression coverage inside the Rekordbox audit path.",
+          "why_keep": "",
+          "exists": true
+        }
+      ]
+    },
+    {
+      "id": "rbassist-library-rollout-qa",
+      "summary": "End-to-end rollout readiness for the active music root: gaps, quarantine, maintenance, analyze, and indexing.",
+      "keeper_files": [
+        {
+          "path": "rbassist/embed.py",
+          "kind": "module",
+          "role": "Embedding engine and checkpoint-aware encode path.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "rbassist/analyze.py",
+          "kind": "module",
+          "role": "Incremental BPM/key/cues analysis pipeline.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "rbassist/recommend.py",
+          "kind": "module",
+          "role": "Recommendation index creation and chunked index maintenance.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "rbassist/health.py",
+          "kind": "module",
+          "role": "Health baselines, missing-coverage counts, and root-scoped gap logic.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/list_embedding_gaps.py",
+          "kind": "script",
+          "role": "Root-scoped pending-embed discovery.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/run_embed_chunks.py",
+          "kind": "script",
+          "role": "Chunked subprocess embed supervisor with retry and CPU fallback paths.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/run_music_root_background_maintenance.py",
+          "kind": "script",
+          "role": "Hands-free root maintenance orchestration for audit, embed, analyze, and index phases.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/update_embed_quarantine.py",
+          "kind": "script",
+          "role": "Promotes repeated failed embeds into durable quarantine.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "scripts/summarize_maintenance_run.py",
+          "kind": "script",
+          "role": "Condenses maintenance outputs into readable summaries.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_run_embed_chunks.py",
+          "kind": "test",
+          "role": "Chunked embed supervisor regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_run_music_root_background_maintenance.py",
+          "kind": "test",
+          "role": "Maintenance supervisor regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_quarantine.py",
+          "kind": "test",
+          "role": "Quarantine merge/load/write regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "tests/test_recommend_index.py",
+          "kind": "test",
+          "role": "Chunked index maintenance regression coverage.",
+          "why_keep": "",
+          "exists": true
+        },
+        {
+          "path": "docs/status/SYSTEM_STATUS_SUMMARY.md",
+          "kind": "doc",
+          "role": "High-level system status summary.",
+          "why_keep": "",
+          "exists": true
+        }
+      ]
+    }
+  ],
+  "local_runtime_keepers": [
+    {
+      "path": "data/meta.json",
+      "kind": "runtime-data",
+      "role": "Local library metadata store backing health, ingest, and export workflows.",
+      "why_keep": "Nearly every active workstream reads from or writes to this local state.",
+      "exists": true
+    },
+    {
+      "path": "data/quarantine_embed.jsonl",
+      "kind": "runtime-data",
+      "role": "Durable embed quarantine for known-bad assets.",
+      "why_keep": "This file keeps repeated bad assets from poisoning unattended runs.",
+      "exists": true
+    },
+    {
+      "path": "data/backups",
+      "kind": "runtime-dir",
+      "role": "Backup directory for metadata repair operations.",
+      "why_keep": "Safe cleanup and relink work should always leave recoverable state behind.",
+      "exists": true
+    },
+    {
+      "path": "data/archives",
+      "kind": "runtime-dir",
+      "role": "Archive directory for removed or triaged metadata rows.",
+      "why_keep": "Future hygiene work needs reversible archival, not silent deletion.",
+      "exists": false
+    },
+    {
+      "path": "data/runlogs",
+      "kind": "runtime-dir",
+      "role": "Operational logs, audits, status files, and review queues from live runs.",
+      "why_keep": "This is the live evidence trail for rollout QA and Rekordbox review work.",
+      "exists": true
+    }
+  ],
+  "active_file_inventory": [
+    {
+      "path": "README.md",
+      "kind": "doc",
+      "exists": true,
+      "owners": [
+        "shared-foundation"
+      ],
+      "roles": [
+        "Primary operator-facing workflow and command reference."
+      ]
+    },
+    {
+      "path": "WISHLIST.md",
+      "kind": "doc",
+      "exists": true,
+      "owners": [
+        "shared-foundation"
+      ],
+      "roles": [
+        "Backlog and delivery-status map for current rbassist priorities."
+      ]
+    },
+    {
+      "path": "docs/dev/AGENT_HANDOFF_LOG.md",
+      "kind": "doc",
+      "exists": true,
+      "owners": [
+        "shared-foundation"
+      ],
+      "roles": [
+        "Detailed implementation chronology for ingest, hygiene, and Rekordbox work."
+      ]
+    },
+    {
+      "path": "docs/dev/CONTINUITY_LOG.md",
+      "kind": "doc",
+      "exists": true,
+      "owners": [
+        "shared-foundation"
+      ],
+      "roles": [
+        "Rolling session log for what changed, what was learned, and what remains next."
+      ]
+    },
+    {
+      "path": "docs/dev/IMPLEMENTATION_PLAN_HEALTH_AND_UX.md",
+      "kind": "doc",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene"
+      ],
+      "roles": [
+        "Detailed implementation map for health and import UX work."
+      ]
+    },
+    {
+      "path": "docs/dev/PROJECT_CONTINUITY.md",
+      "kind": "doc",
+      "exists": true,
+      "owners": [
+        "shared-foundation"
+      ],
+      "roles": [
+        "Stable north-star brief for mission, scope, current truth, and working rules."
+      ]
+    },
+    {
+      "path": "docs/dev/health_gap_normalize_summary_2026-02-28.md",
+      "kind": "doc",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene"
+      ],
+      "roles": [
+        "Baseline summary of health, path normalization, and gap findings."
+      ]
+    },
+    {
+      "path": "docs/status/SYSTEM_STATUS_SUMMARY.md",
+      "kind": "doc",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "High-level system status summary."
+      ]
+    },
+    {
+      "path": "rbassist/analyze.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Incremental BPM/key/cues analysis pipeline."
+      ]
+    },
+    {
+      "path": "rbassist/duplicates.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "rbassist-duplicate-remediation"
+      ],
+      "roles": [
+        "Meta-based duplicate grouping and staging helpers."
+      ]
+    },
+    {
+      "path": "rbassist/embed.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Embedding engine and checkpoint-aware encode path."
+      ]
+    },
+    {
+      "path": "rbassist/health.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene",
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Canonical health audit, pending-gap scan, path normalization, and bare-path repair logic.",
+        "Health baselines, missing-coverage counts, and root-scoped gap logic."
+      ]
+    },
+    {
+      "path": "rbassist/quarantine.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "shared-foundation"
+      ],
+      "roles": [
+        "Durable quarantine load/merge/write logic for known-bad assets."
+      ]
+    },
+    {
+      "path": "rbassist/recommend.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Recommendation index creation and chunked index maintenance."
+      ]
+    },
+    {
+      "path": "rbassist/rekordbox_audit.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "rbassist-rekordbox-safe-relink",
+        "rbassist-duplicate-remediation"
+      ],
+      "roles": [
+        "Live Rekordbox audit, relink suggestions, consolidation planning, and duplicate dry-run logic.",
+        "Name-plus-duration duplicate dry-run logic built from the music-root catalog."
+      ]
+    },
+    {
+      "path": "rbassist/rekordbox_import.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "rbassist-rekordbox-safe-relink"
+      ],
+      "roles": [
+        "Existing Rekordbox database access and import helpers."
+      ]
+    },
+    {
+      "path": "rbassist/rekordbox_review.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "rbassist-rekordbox-safe-relink",
+        "rbassist-duplicate-remediation"
+      ],
+      "roles": [
+        "Splits large Rekordbox audits into high-confidence, ambiguous, and duplicate review queues.",
+        "Exports same-name different-type duplicate review queues."
+      ]
+    },
+    {
+      "path": "rbassist/utils.py",
+      "kind": "module",
+      "exists": true,
+      "owners": [
+        "shared-foundation"
+      ],
+      "roles": [
+        "Shared path normalization, audio walking, and meta loading helpers."
+      ]
+    },
+    {
+      "path": "scripts/audit_meta_health.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene"
+      ],
+      "roles": [
+        "CLI entry point for health baselines and before/after hygiene deltas."
+      ]
+    },
+    {
+      "path": "scripts/list_embedding_gaps.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Root-scoped pending-embed discovery."
+      ]
+    },
+    {
+      "path": "scripts/normalize_meta_paths.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene"
+      ],
+      "roles": [
+        "Safe path normalization and collision-remediation workflow."
+      ]
+    },
+    {
+      "path": "scripts/prepare_rekordbox_review_queues.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-rekordbox-safe-relink",
+        "rbassist-duplicate-remediation"
+      ],
+      "roles": [
+        "CLI wrapper for review queue generation from audit outputs.",
+        "Writes the duplicate review queue outputs."
+      ]
+    },
+    {
+      "path": "scripts/rekordbox_audit_library.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-rekordbox-safe-relink"
+      ],
+      "roles": [
+        "CLI wrapper for read-only Rekordbox-vs-root auditing."
+      ]
+    },
+    {
+      "path": "scripts/resolve_bare_meta_paths.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene"
+      ],
+      "roles": [
+        "Bare/orphan filename resolver and safe apply wrapper."
+      ]
+    },
+    {
+      "path": "scripts/run_embed_chunks.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Chunked subprocess embed supervisor with retry and CPU fallback paths."
+      ]
+    },
+    {
+      "path": "scripts/run_music_root_background_maintenance.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Hands-free root maintenance orchestration for audit, embed, analyze, and index phases."
+      ]
+    },
+    {
+      "path": "scripts/summarize_maintenance_run.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Condenses maintenance outputs into readable summaries."
+      ]
+    },
+    {
+      "path": "scripts/update_embed_quarantine.py",
+      "kind": "script",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Promotes repeated failed embeds into durable quarantine."
+      ]
+    },
+    {
+      "path": "tests/test_audit_meta_health.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene"
+      ],
+      "roles": [
+        "Health-audit regression coverage."
+      ]
+    },
+    {
+      "path": "tests/test_duplicates_stage.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-duplicate-remediation"
+      ],
+      "roles": [
+        "Duplicate staging regression coverage."
+      ]
+    },
+    {
+      "path": "tests/test_normalize_meta_paths.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene"
+      ],
+      "roles": [
+        "Normalization and collision-remediation regression coverage."
+      ]
+    },
+    {
+      "path": "tests/test_quarantine.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Quarantine merge/load/write regression coverage."
+      ]
+    },
+    {
+      "path": "tests/test_recommend_index.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Chunked index maintenance regression coverage."
+      ]
+    },
+    {
+      "path": "tests/test_rekordbox_audit.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-rekordbox-safe-relink",
+        "rbassist-duplicate-remediation"
+      ],
+      "roles": [
+        "Rekordbox audit regression coverage.",
+        "Duplicate dry-run regression coverage inside the Rekordbox audit path."
+      ]
+    },
+    {
+      "path": "tests/test_rekordbox_review.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-rekordbox-safe-relink"
+      ],
+      "roles": [
+        "Review-queue generation regression coverage."
+      ]
+    },
+    {
+      "path": "tests/test_resolve_bare_meta_paths.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-meta-hygiene"
+      ],
+      "roles": [
+        "Bare-path resolution regression coverage."
+      ]
+    },
+    {
+      "path": "tests/test_run_embed_chunks.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Chunked embed supervisor regression coverage."
+      ]
+    },
+    {
+      "path": "tests/test_run_music_root_background_maintenance.py",
+      "kind": "test",
+      "exists": true,
+      "owners": [
+        "rbassist-library-rollout-qa"
+      ],
+      "roles": [
+        "Maintenance supervisor regression coverage."
+      ]
+    }
+  ]
+}

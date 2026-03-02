@@ -116,3 +116,10 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   - `docs/dev/PROJECT_CONTINUITY.md` is now the stable north-star brief for mission, scope, current truth, and working rules.
   - `docs/dev/CONTINUITY_LOG.md` is now the rolling session log for what changed, what was learned, and what should happen next.
   Future agents should read those two files first, then continue into this detailed handoff log.
+
+- 2026-03-02: Added a reusable keeper-manifest system for the four active post-ingest workstreams.
+  - code: `rbassist/keeper_manifest.py`
+  - CLI wrapper: `scripts/build_keeper_manifest.py`
+  - generated artifacts: `docs/dev/KEEPER_MANIFEST_ACTIVE_FILES.md` and `docs/dev/keeper_manifest_active_files.json`
+  - focused test coverage: `tests/test_keeper_manifest.py`
+  Future agents should refresh the manifest after any meaningful change to the active workstream file set.
