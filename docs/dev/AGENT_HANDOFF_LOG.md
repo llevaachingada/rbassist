@@ -111,3 +111,8 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   - retry run folder: `data/runlogs/embed_retry_part002_20260301T100939Z`
   - result: `296` skipped as already embedded, `2` newly embedded, `15` still failing as true `FileNotFoundError` path issues
   - outcome: root-scoped pending embeddings dropped to `15` on the next maintenance baseline (`music_root_analyze_index_20260301T171048Z`)
+
+- 2026-03-02: Added continuity anchors for future agents:
+  - `docs/dev/PROJECT_CONTINUITY.md` is now the stable north-star brief for mission, scope, current truth, and working rules.
+  - `docs/dev/CONTINUITY_LOG.md` is now the rolling session log for what changed, what was learned, and what should happen next.
+  Future agents should read those two files first, then continue into this detailed handoff log.
