@@ -27,3 +27,17 @@
 - Evidence / outputs: The generated manifest now captures shared foundations, workstream-specific keeper files, local runtime keepers, and a lightweight live-state summary.
 - Current blockers or risks: The manifest is a curated map, not an automatic dependency graph; it should be refreshed when the active workstream files or priorities change.
 - Next recommended step: use the manifest while implementing stale cleanup and Rekordbox apply-ready tooling, and update it when new keeper files become central.
+
+### 2026-03-02
+- Goal: Implement root-first stale-path triage and backup-first stale cleanup.
+- Changes made: Added `triage_stale_meta_paths` and `apply_stale_meta_cleanup` in `rbassist/health.py`; added `scripts/triage_stale_meta_paths.py` and `scripts/apply_stale_meta_cleanup.py`; extended `scripts/audit_meta_health.py` to emit stale-triage counts; added focused tests for triage and apply behavior.
+- Evidence / outputs: `8` focused tests passed. Generated `docs/dev/stale_meta_triage_2026-03-02.json`, `docs/dev/stale_meta_cleanup_apply_2026-03-02.json`, `docs/dev/health_audit_with_stale_triage_2026-03-02.json`, and `docs/dev/health_audit_after_stale_cleanup_2026-03-02.json`.
+- Current blockers or risks: once the Rekordbox audit report is included, the two outside-root rows that looked archive-safe in a root-only dry run are no longer removable because Rekordbox still references them.
+- Next recommended step: implement the richer bare/orphan review and safe-apply flow next, then build Rekordbox apply-plan tooling for the remaining outside-root and inside-root relink candidates.
+
+### 2026-03-02
+- Goal: Turn the remaining wishlist into a practical execution sequence instead of a loose backlog.
+- Changes made: Added `docs/dev/MASTER_PRODUCT_EXECUTION_PLAN_2026-03-02.md` covering the seven major workstreams in winning order, with outcomes, file targets, acceptance criteria, and immediate next slices.
+- Evidence / outputs: The master execution plan now aligns the post-ingest roadmap around metadata truth first, then Rekordbox-safe repair, then duplicate remediation, rollout QA, BPM separation, UI gaps, and benchmarks.
+- Current blockers or risks: the plan is broad, so execution discipline matters; backend truth and safety work still need to stay ahead of UI polish.
+- Next recommended step: commit the current stale-path hygiene batch, then finish the richer bare/orphan review and safe-apply flow.

@@ -50,3 +50,20 @@ A good change should leave behind:
 - a measurable before/after report or test result
 - a short dated handoff note
 - clear next steps for the next agent
+
+## Latest Hygiene Readout
+Latest stale triage with active-root plus Rekordbox context:
+- classified stale absolute-path rows: `1054`
+- inside-root stale rows: `1014`
+- duplicate stale candidates: `584`
+- inside-root relink candidates: `465`
+- outside-root Rekordbox candidates: `5`
+- archive-safe removals after Rekordbox context: `0`
+
+Interpretation:
+- most remaining stale metadata is still tied to either a same-name active file under the root or to a Rekordbox-tracked path
+- the new stale cleanup tooling is implemented and validated, but the first safe apply correctly chose not to remove anything once Rekordbox references were considered
+
+## Master Execution Roadmap
+The current product-winning sequence is now captured in `docs/dev/MASTER_PRODUCT_EXECUTION_PLAN_2026-03-02.md`.
+Work should follow that phase order unless a new blocker changes the operational truth.

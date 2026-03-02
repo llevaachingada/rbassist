@@ -123,3 +123,22 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   - generated artifacts: `docs/dev/KEEPER_MANIFEST_ACTIVE_FILES.md` and `docs/dev/keeper_manifest_active_files.json`
   - focused test coverage: `tests/test_keeper_manifest.py`
   Future agents should refresh the manifest after any meaningful change to the active workstream file set.
+
+- 2026-03-02: Implemented root-first stale-path hygiene primitives.
+  - backend: `rbassist/health.py` now exposes `triage_stale_meta_paths(...)` and `apply_stale_meta_cleanup(...)`
+  - scripts: `scripts/triage_stale_meta_paths.py` and `scripts/apply_stale_meta_cleanup.py`
+  - audit: `scripts/audit_meta_health.py` now accepts `--root` and optional `--rekordbox-report`, and reports stale triage counts
+  - tests: `tests/test_triage_stale_meta_paths.py` and `tests/test_apply_stale_meta_cleanup.py`
+  - validation: focused suite passed (`8 passed`)
+  - live outputs: `docs/dev/stale_meta_triage_2026-03-02.json`, `docs/dev/stale_meta_cleanup_apply_2026-03-02.json`, `docs/dev/health_audit_with_stale_triage_2026-03-02.json`, `docs/dev/health_audit_after_stale_cleanup_2026-03-02.json`
+  Important result: the first root-only dry run showed `2` archive-safe stale rows, but the safer run with Rekordbox audit context reduced archive-safe removals to `0` because those rows are still referenced by Rekordbox. This is the correct fail-closed behavior.
+
+- 2026-03-02: Added `docs/dev/MASTER_PRODUCT_EXECUTION_PLAN_2026-03-02.md` as the current product-winning roadmap. It sequences the remaining major work as:
+  1. `rbassist-meta-hygiene`
+  2. `rbassist-rekordbox-safe-relink`
+  3. `rbassist-duplicate-remediation`
+  4. `rbassist-library-rollout-qa`
+  5. BPM/Rekordbox separation
+  6. UI gaps (tags, beatgrid fallback, large-table UX)
+  7. benchmark suite
+  Future agents should prefer this plan over treating `WISHLIST.md` as a flat backlog.

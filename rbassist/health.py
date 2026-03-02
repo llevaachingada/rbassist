@@ -1,10 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import copy
 import json
 import pathlib
 import re
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from typing import Iterable
 
 from rbassist.utils import (
@@ -202,7 +203,70 @@ def suggest_rewrite_pairs(health_report: dict, music_roots: Iterable[str]) -> li
     return [(prefix, current_prefix) for prefix in legacy_prefixes]
 
 
-def audit_meta_health(*, repo: pathlib.Path | None = None, meta: dict | None = None) -> dict:
+
+
+def _normalize_music_roots(roots: Iterable[str] | None) -> list[str]:
+    normalized: list[str] = []
+    for root in roots or []:
+        raw = str(root or '').strip()
+        if not raw:
+            continue
+        normalized.append(normalize_path_string(pathlib.Path(raw).expanduser()))
+    return sorted(dict.fromkeys(normalized))
+
+
+def _path_within_roots(path: str | pathlib.Path, normalized_roots: Iterable[str]) -> bool:
+    candidate = normalize_path_string(path)
+    for root in normalized_roots:
+        base = root.rstrip('/')
+        if candidate == base or candidate.startswith(base + '/'):
+            return True
+    return False
+
+
+def _load_rekordbox_source_index(rekordbox_report: dict | None) -> dict[str, list[str]]:
+    index: dict[str, list[str]] = defaultdict(list)
+    if not isinstance(rekordbox_report, dict):
+        return index
+
+    for item in rekordbox_report.get('relink_suggestion_report', {}).get('suggestions', []) or []:
+        source_path = str(item.get('source_path', '')).strip()
+        row_id = str(item.get('id', '')).strip()
+        if source_path and row_id:
+            normalized = normalize_path_string(source_path)
+            if row_id not in index[normalized]:
+                index[normalized].append(row_id)
+
+    for item in rekordbox_report.get('consolidation_plan_report', {}).get('plan', []) or []:
+        source_path = str(item.get('source_path', '')).strip()
+        row_id = str(item.get('id', '')).strip()
+        if source_path and row_id:
+            normalized = normalize_path_string(source_path)
+            if row_id not in index[normalized]:
+                index[normalized].append(row_id)
+
+    return index
+
+
+def _write_repo_meta_backup(*, repo: pathlib.Path, meta: dict, prefix: str) -> pathlib.Path:
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    backup_dir = repo / 'data' / 'backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = backup_dir / f'{prefix}_{stamp}.json'
+    source_meta = repo / 'data' / 'meta.json'
+    if source_meta.exists():
+        backup_path.write_text(source_meta.read_text(encoding='utf-8'), encoding='utf-8')
+    else:
+        backup_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8')
+    return backup_path
+
+def audit_meta_health(
+    *,
+    repo: pathlib.Path | None = None,
+    meta: dict | None = None,
+    roots: list[str] | None = None,
+    rekordbox_report: dict | None = None,
+) -> dict:
     repo = (repo or ROOT).resolve()
     meta = meta if meta is not None else load_meta()
     tracks = meta.get("tracks", {})
@@ -256,7 +320,8 @@ def audit_meta_health(*, repo: pathlib.Path | None = None, meta: dict | None = N
     counts["duplicate_normalized_path_keys"] = sum(1 for _, count in duplicate_norm_keys.items() if count > 1)
     counts["embedding_gap_total"] = counts["missing_embedding_ref"] + counts["embedding_file_missing"]
     counts["missing_analysis_total"] = sum(1 for info in tracks.values() if not (info.get("bpm") and info.get("key")))
-    return {
+
+    report = {
         "repo": str(repo),
         "counts": dict(counts),
         "samples": {
@@ -266,6 +331,35 @@ def audit_meta_health(*, repo: pathlib.Path | None = None, meta: dict | None = N
             "broken_embedding_paths": broken_embedding_paths[:25],
         },
     }
+
+    triage_roots = roots if roots is not None else default_music_roots()
+    if triage_roots:
+        triage = triage_stale_meta_paths(repo=repo, roots=triage_roots, meta=meta, rekordbox_report=rekordbox_report)
+        triage_counts = triage.get("counts", {})
+        for key in (
+            "stale_inside_root_total",
+            "stale_outside_root_total",
+            "stale_archive_remove_total",
+            "stale_keep_review_total",
+        ):
+            report["counts"][key] = triage_counts.get(key, 0)
+        report["stale_triage"] = {
+            "counts": {
+                key: triage_counts.get(key, 0)
+                for key in (
+                    "stale_total",
+                    "stale_inside_root_total",
+                    "stale_outside_root_total",
+                    "stale_archive_remove_total",
+                    "stale_keep_review_total",
+                    "inside_root_relink_candidate_total",
+                    "outside_root_rekordbox_candidate_total",
+                    "duplicate_stale_candidate_total",
+                )
+            },
+            "samples": triage.get("samples", {}),
+        }
+    return report
 
 
 def list_embedding_gaps(
@@ -561,6 +655,174 @@ def normalize_meta_paths(
     return report
 
 
+
+def triage_stale_meta_paths(
+    *,
+    repo: pathlib.Path | None = None,
+    roots: list[str],
+    meta: dict | None = None,
+    rekordbox_report: dict | None = None,
+) -> dict:
+    repo = (repo or ROOT).resolve()
+    meta = meta if meta is not None else load_meta()
+    tracks = meta.get("tracks", {})
+    normalized_roots = _normalize_music_roots(roots)
+    if not normalized_roots:
+        raise ValueError("Provide at least one active music root for stale-path triage")
+
+    rekordbox_index = _load_rekordbox_source_index(rekordbox_report)
+    existing_by_basename: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for track_path in tracks.keys():
+        if _is_bare_path(track_path):
+            continue
+        try:
+            resolved = resolve_track_path(track_path, base_dir=repo)
+        except Exception:
+            continue
+        if not resolved.exists():
+            continue
+        existing_by_basename[pathlib.Path(str(track_path)).name.lower()].append(
+            {
+                "path": str(track_path),
+                "normalized_path": normalize_path_string(track_path),
+            }
+        )
+
+    counts = Counter()
+    samples: dict[str, list[dict]] = defaultdict(list)
+    entries: list[dict] = []
+
+    for path, info in tracks.items():
+        if _is_bare_path(path):
+            continue
+        info = info or {}
+        try:
+            resolved = resolve_track_path(path, base_dir=repo)
+            exists_on_disk = resolved.exists()
+        except Exception:
+            exists_on_disk = False
+        if exists_on_disk:
+            continue
+
+        normalized_path = normalize_path_string(path)
+        inside_active_root = _path_within_roots(path, normalized_roots)
+        basename = pathlib.Path(str(path)).name.lower()
+        duplicate_candidates = [
+            item["path"]
+            for item in existing_by_basename.get(basename, [])
+            if item["normalized_path"] != normalized_path
+        ]
+        rekordbox_row_ids = sorted(set(rekordbox_index.get(normalized_path, [])))
+        has_embedding = _embedding_exists(info.get("embedding"), repo=repo)
+        has_bpm = bool(info.get("bpm"))
+        has_key = bool(info.get("key"))
+        has_cues = bool(info.get("cues"))
+        has_mytags = bool(info.get("mytags"))
+
+        if duplicate_candidates:
+            suggested_action = "duplicate_stale_candidate"
+            reason = "existing_active_entry_with_same_basename"
+        elif inside_active_root:
+            suggested_action = "inside_root_relink_candidate"
+            reason = "stale_path_inside_active_root"
+        elif rekordbox_row_ids:
+            suggested_action = "outside_root_rekordbox_candidate"
+            reason = "stale_path_referenced_by_rekordbox"
+        elif not any([has_embedding, has_bpm, has_key, has_cues, has_mytags]):
+            suggested_action = "archive_remove"
+            reason = "outside_root_stale_without_metadata_or_rekordbox_reference"
+        else:
+            suggested_action = "keep_review"
+            reason = "outside_root_stale_with_metadata_or_unclear_origin"
+
+        entry = {
+            "path": str(path),
+            "normalized_path": normalized_path,
+            "inside_active_root": inside_active_root,
+            "exists_on_disk": exists_on_disk,
+            "has_embedding": has_embedding,
+            "has_bpm": has_bpm,
+            "has_key": has_key,
+            "has_cues": has_cues,
+            "has_mytags": has_mytags,
+            "in_rekordbox": bool(rekordbox_row_ids),
+            "rekordbox_row_ids": rekordbox_row_ids,
+            "suggested_action": suggested_action,
+            "reason": reason,
+            "duplicate_candidate_paths": duplicate_candidates[:10],
+        }
+        entries.append(entry)
+        counts["stale_total"] += 1
+        if inside_active_root:
+            counts["stale_inside_root_total"] += 1
+        else:
+            counts["stale_outside_root_total"] += 1
+        counts[f"{suggested_action}_total"] += 1
+        if len(samples[suggested_action]) < 50:
+            samples[suggested_action].append(entry)
+
+    counts["stale_archive_remove_total"] = counts.get("archive_remove_total", 0)
+    counts["stale_keep_review_total"] = counts.get("keep_review_total", 0)
+    return {
+        "repo": str(repo),
+        "music_roots": [str(pathlib.Path(root)) for root in roots],
+        "counts": dict(counts),
+        "samples": dict(samples),
+        "entries": entries,
+        "applied": False,
+    }
+
+
+def apply_stale_meta_cleanup(
+    *,
+    repo: pathlib.Path | None = None,
+    roots: list[str],
+    archive_path: str | pathlib.Path | None = None,
+    apply_changes: bool = False,
+    meta: dict | None = None,
+    rekordbox_report: dict | None = None,
+) -> dict:
+    repo = (repo or ROOT).resolve()
+    meta = meta if meta is not None else load_meta()
+    report = triage_stale_meta_paths(repo=repo, roots=roots, meta=meta, rekordbox_report=rekordbox_report)
+    removable = [entry for entry in report.get("entries", []) if entry.get("suggested_action") == "archive_remove"]
+    report["removed_paths"] = [entry["path"] for entry in removable]
+    report["archive_path"] = ""
+    report["backup_path"] = ""
+
+    if not apply_changes:
+        return report
+
+    tracks = meta.get("tracks", {})
+    backup_path_ref = _write_repo_meta_backup(repo=repo, meta=meta, prefix='meta_before_stale_cleanup')
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    archive_target = pathlib.Path(archive_path) if archive_path else (repo / 'data' / 'archives' / f'meta_stale_archive_{stamp}.jsonl')
+    if not archive_target.is_absolute():
+        archive_target = (repo / archive_target).resolve()
+    archive_target.parent.mkdir(parents=True, exist_ok=True)
+
+    removed_lookup = {entry['path']: entry for entry in removable}
+    archive_lines: list[str] = []
+    for path, entry in removed_lookup.items():
+        archive_record = {
+            'path': path,
+            'info': copy.deepcopy(tracks.get(path, {})),
+            'normalized_path': entry['normalized_path'],
+            'suggested_action': entry['suggested_action'],
+            'reason': entry['reason'],
+            'archived_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        }
+        archive_lines.append(json.dumps(archive_record, ensure_ascii=False))
+
+    archive_target.write_text('\n'.join(archive_lines) + ('\n' if archive_lines else ''), encoding='utf-8')
+    meta['tracks'] = {path: copy.deepcopy(info) for path, info in tracks.items() if path not in removed_lookup}
+    save_meta(meta)
+    report['applied'] = True
+    report['backup_path'] = str(backup_path_ref)
+    report['archive_path'] = str(archive_target)
+    return report
+
+
 def default_gap_output_prefix() -> pathlib.Path:
     return DATA / "pending_embedding_paths.health"
 
@@ -662,3 +924,4 @@ def resolve_bare_meta_paths(
         save_meta(meta)
         report["applied"] = True
     return report
+
