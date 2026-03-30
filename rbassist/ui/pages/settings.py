@@ -10,6 +10,7 @@ import re
 from nicegui import ui
 
 from rbassist.health import list_embedding_gaps, normalize_meta_paths, resolve_bare_meta_paths
+from ..jobs import complete_job, fail_job, get_job, latest_job, list_recent_jobs, start_job, update_job
 from ..state import get_state
 from ..components.health_summary import render_health_summary
 from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
@@ -24,6 +25,7 @@ def render() -> None:
     state = get_state()
     state.refresh_health()
     sync_guard: dict[str, bool] = {"busy": False}
+    pipeline_job_id: dict[str, str | None] = {"value": None}
 
     with ui.column().classes("w-full gap-4 max-w-3xl"):
         ui.label("Settings").classes("text-2xl font-bold text-white")
@@ -502,6 +504,39 @@ def render() -> None:
                 # Pipeline progress UI
                 pipe_progress = ui.linear_progress(value=0).props("rounded color=indigo").classes("w-full")
                 pipe_label = ui.label("Idle").classes("text-gray-400 text-sm")
+                pipe_phase = ui.label("No shared job started yet.").classes("text-gray-500 text-xs")
+                pipe_error = ui.label("").classes("text-red-400 text-xs")
+                pipe_history = ui.label("Recent settings jobs: none yet.").classes("text-gray-500 text-xs")
+
+                def _refresh_pipeline_job_view() -> None:
+                    snapshot = get_job(pipeline_job_id["value"])
+                    if snapshot is None:
+                        pipe_progress.value = 0
+                        pipe_label.text = "Idle"
+                        pipe_phase.text = "No active settings pipeline."
+                        pipe_error.text = ""
+                    else:
+                        pipe_progress.value = snapshot.progress or 0.0
+                        pipe_label.text = snapshot.message or "Idle"
+                        pipe_phase.text = f"Phase: {snapshot.phase or '-'} | Status: {snapshot.status}"
+                        pipe_error.text = f"Error: {snapshot.error}" if snapshot.error else ""
+
+                    recent = list_recent_jobs(kind="settings_pipeline", limit=3)
+                    if recent:
+                        pipe_history.text = "Recent settings jobs: " + " | ".join(
+                            f"{job.status}:{job.phase or '-'}"
+                            for job in recent
+                        )
+                    else:
+                        pipe_history.text = "Recent settings jobs: none yet."
+
+                    pipe_progress.update()
+                    pipe_label.update()
+                    pipe_phase.update()
+                    pipe_error.update()
+                    pipe_history.update()
+
+                ui.timer(0.5, _refresh_pipeline_job_view)
 
                 async def run_pipeline(
                     roots: list[str] | None = None,
@@ -514,6 +549,11 @@ def render() -> None:
                     from rbassist.embed import build_embeddings
                     from rbassist.analyze import analyze_bpm_key
                     from rbassist.recommend import build_index
+
+                    active_job = latest_job(kind="settings_pipeline")
+                    if active_job and active_job.status == "running":
+                        ui.notify("A settings pipeline is already running. Wait for it to finish before starting another.", type="warning")
+                        return
 
                     # If user pasted paths but didn't click "Add path", ingest them now (default scope only)
                     default_scope = roots is None and not use_paths_file_only
@@ -568,6 +608,12 @@ def render() -> None:
                     skip_analyzed = bool(skip_check.value) if force_skip_analyzed is None else bool(force_skip_analyzed)
                     use_timbre = bool(timbre_check.value)
                     resume_embed = bool(resume_check.value)
+                    device_value = device_select.value if device_select.value != "auto" else None
+                    workers_value = int(workers_input.value or 0)
+                    batch_size_value = int(batch_input.value or 4)
+                    add_cues_value = bool(cues_check.value)
+                    beatgrid_enabled = bool(beatgrid_check.value)
+                    beatgrid_overwrite = bool(beatgrid_overwrite_check.value)
                     checkpoint_value = str(checkpoint_file_input.value or "").strip()
                     checkpoint_every = max(1, int(checkpoint_every_input.value or 100))
 
@@ -593,8 +639,8 @@ def render() -> None:
                         ]
 
                     bg_files: list[str] = []
-                    if beatgrid_check.value:
-                        if beatgrid_overwrite_check.value:
+                    if beatgrid_enabled:
+                        if beatgrid_overwrite:
                             bg_files = files
                         else:
                             bg_files = [
@@ -613,17 +659,21 @@ def render() -> None:
                     except Exception:
                         pass
 
-                    def _update(label: str):
-                        """Safely update progress UI; ignore if client/slot is gone."""
-                        try:
-                            pipe_label.text = label
-                            pipe_progress.value = min(max(completed / max(total_steps, 1), 0.0), 1.0)
-                            pipe_progress.update()
-                            pipe_label.update()
-                        except RuntimeError:
-                            # Client or parent element has been deleted (tab closed/reloaded);
-                            # allow background pipeline to continue silently.
-                            pass
+                    job = start_job(
+                        "settings_pipeline",
+                        phase="preflight",
+                        message=f"Preparing {scope_label}...",
+                        progress=0.0,
+                        result={
+                            "scope": scope_label,
+                            "files_total": len(files),
+                            "embed_total": len(embed_files),
+                            "analysis_total": len(analysis_files),
+                            "beatgrid_total": len(bg_files),
+                        },
+                    )
+                    pipeline_job_id["value"] = job.job_id
+                    _refresh_pipeline_job_view()
 
                     try:
                         ui.notify(
@@ -632,25 +682,33 @@ def render() -> None:
                             type="info",
                         )
                     except RuntimeError:
-                        # Same rationale as _update: UI may no longer be attached.
+                        # The pipeline can still run via shared job state even if this client detached.
                         pass
-                    _update("Starting pipeline...")
 
                     def _work():
                         nonlocal completed
+
+                        def _publish(phase: str, label: str) -> None:
+                            update_job(
+                                job.job_id,
+                                phase=phase,
+                                message=label,
+                                progress=min(max(completed / max(total_steps, 1), 0.0), 1.0),
+                            )
+
                         # Embed
                         def _embed_cb(done: int, count: int, path: str):
                             nonlocal completed
                             completed = done
-                            _update(f"Embedding {done}/{count}: {path}")
+                            _publish("embed", f"Embedding {done}/{count}: {path}")
 
                         if embed_files:
                             build_embeddings(
                                 embed_files,
                                 duration_s=120,
-                                device=(device_select.value if device_select.value != "auto" else None),
-                                num_workers=int(workers_input.value or 0),
-                                batch_size=int(batch_input.value or 4),
+                                device=device_value,
+                                num_workers=workers_value,
+                                batch_size=batch_size_value,
                                 overwrite=overwrite,
                                 timbre=use_timbre,
                                 resume=resume_embed,
@@ -659,16 +717,16 @@ def render() -> None:
                                 progress_callback=_embed_cb,
                             )
                             completed = len(embed_files)
-                            _update("Embedding complete")
+                            _publish("embed", "Embedding complete")
                         else:
                             completed = 0
-                            _update("Embedding skipped (no targets)")
+                            _publish("embed", "Embedding skipped (no targets)")
 
                         # Analyze
                         def _analyze_cb(done: int, count: int, path: str):
                             nonlocal completed
                             completed = len(embed_files) + done
-                            _update(f"Analyzing {done}/{count}: {path}")
+                            _publish("analyze", f"Analyzing {done}/{count}: {path}")
 
                         if analysis_files:
                             analyze_bpm_key(
@@ -676,50 +734,63 @@ def render() -> None:
                                 duration_s=90,
                                 only_new=not overwrite,
                                 force=overwrite,
-                                add_cues=bool(cues_check.value),
-                                workers=(int(workers_input.value) if int(workers_input.value) > 0 else None),
+                                add_cues=add_cues_value,
+                                workers=(workers_value if workers_value > 0 else None),
                                 progress_callback=_analyze_cb,
                             )
                             completed = len(embed_files) + len(analysis_files)
-                            _update("Analyzing complete")
+                            _publish("analyze", "Analyzing complete")
                         else:
                             completed = len(embed_files)
-                            _update("Analyzing skipped (no targets)")
+                            _publish("analyze", "Analyzing skipped (no targets)")
 
                         # Beatgrid (optional)
-                        if beatgrid_check.value:
+                        if beatgrid_enabled:
                             if bg_files:
                                 def _bg_cb(done: int, count: int, path: str):
                                     nonlocal completed
                                     completed = len(embed_files) + len(analysis_files) + done
-                                    _update(f"Beatgrid {done}/{count}: {path}")
+                                    _publish("beatgrid", f"Beatgrid {done}/{count}: {path}")
 
-                                _update(f"Beatgridding {len(bg_files)} track(s)...")
+                                _publish("beatgrid", f"Beatgridding {len(bg_files)} track(s)...")
                                 analyze_beatgrid_paths(
                                     bg_files,
                                     cfg=BeatgridConfig(mode="fixed", backend="beatnet"),
-                                    overwrite=beatgrid_overwrite_check.value,
+                                    overwrite=beatgrid_overwrite,
                                     progress_callback=_bg_cb,
                                 )
                                 completed = len(embed_files) + len(analysis_files) + len(bg_files)
                             else:
                                 completed = len(embed_files) + len(analysis_files)
-                                _update("Beatgrid skipped (no targets)")
+                                _publish("beatgrid", "Beatgrid skipped (no targets)")
 
                         # Index
-                        _update("Building index...")
+                        _publish("index", "Building index...")
                         build_index(incremental=not overwrite)
                         completed = total_steps
-                        _update("Index built")
+                        _publish("index", "Index built")
 
                     try:
                         await asyncio.to_thread(_work)
+                        complete_job(
+                            job.job_id,
+                            phase="completed",
+                            message="Embed + Analyze + Index complete",
+                            result={
+                                "scope": scope_label,
+                                "files_total": len(files),
+                                "embed_total": len(embed_files),
+                                "analysis_total": len(analysis_files),
+                                "beatgrid_total": len(bg_files),
+                            },
+                        )
                         state.refresh_meta()
                         state.refresh_health()
                         try:
                             _refresh_health_cards()
                         except Exception:
                             pass
+                        _refresh_pipeline_job_view()
                         try:
                             ui.notify("Embed + Analyze + Index complete", type="positive")
                             if resume_embed:
@@ -729,6 +800,14 @@ def render() -> None:
                             # Client may have gone away; pipeline still finished.
                             pass
                     except Exception as e:
+                        fail_job(
+                            job.job_id,
+                            phase="failed",
+                            message="Pipeline failed",
+                            error=str(e),
+                            result={"scope": scope_label},
+                        )
+                        _refresh_pipeline_job_view()
                         try:
                             ui.notify(f"Pipeline failed: {e}", type="negative")
                         except RuntimeError:

@@ -14,6 +14,7 @@ from nicegui import ui
 from rbassist.beatgrid import BeatgridConfig, analyze_file, analyze_paths as analyze_beatgrid_paths
 from rbassist.utils import ROOT, is_junk_path, resolve_track_path, walk_audio
 
+from ..jobs import complete_job, fail_job, get_job, latest_job, list_recent_jobs, start_job, update_job
 from ..components.health_summary import render_health_summary
 from ..components.track_table import TrackTable
 from ..state import get_state
@@ -28,6 +29,7 @@ def render() -> None:
     state.refresh_meta()
     state.refresh_health()
     active_roots = state.current_music_roots()
+    beatgrid_job_id: dict[str, str | None] = {'value': None}
 
     with ui.column().classes('w-full gap-4'):
         with ui.row().classes('w-full items-center justify-between'):
@@ -300,9 +302,47 @@ def render() -> None:
             beat_progress
             beat_status
 
+            batch_progress = ui.linear_progress(value=0).props('rounded color=indigo').style('max-width: 240px; display: none;')
+            batch_status = ui.label('No shared beatgrid job started yet.').classes('text-gray-400 text-sm')
+            batch_phase = ui.label('').classes('text-gray-500 text-xs')
+            batch_history = ui.label('Recent beatgrid jobs: none yet.').classes('text-gray-500 text-xs')
+
+            def _refresh_batch_job_view() -> None:
+                snapshot = get_job(beatgrid_job_id['value'])
+                if snapshot is None:
+                    batch_progress.style('max-width: 240px; display: none;')
+                    batch_progress.value = 0
+                    batch_status.text = 'No active beatgrid batch.'
+                    batch_phase.text = ''
+                else:
+                    batch_progress.style('max-width: 240px; display: block;')
+                    batch_progress.value = snapshot.progress or 0.0
+                    batch_status.text = snapshot.message or 'Idle'
+                    batch_phase.text = f"Phase: {snapshot.phase or '-'} | Status: {snapshot.status}"
+
+                recent = list_recent_jobs(kind='library_beatgrid', limit=3)
+                if recent:
+                    batch_history.text = 'Recent beatgrid jobs: ' + ' | '.join(
+                        f"{job.status}:{job.phase or '-'}"
+                        for job in recent
+                    )
+                else:
+                    batch_history.text = 'Recent beatgrid jobs: none yet.'
+
+                batch_progress.update()
+                batch_status.update()
+                batch_phase.update()
+                batch_history.update()
+
+            ui.timer(0.5, _refresh_batch_job_view)
+
             async def _beatgrid_paths(paths: list[str]) -> None:
                 if not paths:
                     ui.notify('No audio files found.', type='warning')
+                    return
+                active_job = latest_job(kind='library_beatgrid')
+                if active_job and active_job.status == 'running':
+                    ui.notify('A beatgrid batch is already running. Wait for it to finish before starting another.', type='warning')
                     return
                 cfg = BeatgridConfig(
                     mode=str(mode_toggle.value).strip().lower(),
@@ -311,35 +351,79 @@ def render() -> None:
                     bars_window=int(bars_input.value or 16),
                     duration_s=int(duration_input.value or 0),
                 )
+                overwrite_existing = bool(overwrite_check.value)
+                state.refresh_meta()
+                targets = paths
+                if not overwrite_existing:
+                    meta = state.meta
+                    targets = [p for p in paths if not meta.get('tracks', {}).get(p, {}).get('tempos')]
+
                 total = len(paths)
-                beat_progress.style('max-width: 240px; display: block;')
-                beat_progress.value = 0
-                beat_progress.update()
-                beat_status.text = 'Starting beatgrid...'
-                beat_status.update()
-                ui.notify(f"Beatgridding {len(paths)} track(s)...", type='info')
+                job = start_job(
+                    'library_beatgrid',
+                    phase='preflight',
+                    message=f'Preparing beatgrid batch ({len(targets)} target(s))...',
+                    progress=0.0,
+                    result={
+                        'paths_total': total,
+                        'targets_total': len(targets),
+                        'overwrite': overwrite_existing,
+                    },
+                )
+                beatgrid_job_id['value'] = job.job_id
+                _refresh_batch_job_view()
+                ui.notify(f"Beatgridding {len(targets)} track(s)...", type='info')
 
                 def _work() -> None:
-                    targets = paths
-                    if not overwrite_check.value:
-                        meta = state.meta
-                        targets = [p for p in paths if not meta.get('tracks', {}).get(p, {}).get('tempos')]
-
                     def _cb(done: int, count: int, path: str) -> None:
-                        beat_progress.value = max(0.0, min(1.0, done / max(count, 1)))
-                        beat_progress.update()
-                        beat_status.text = f"Beatgrid {done}/{count}: {Path(path).name}"
-                        beat_status.update()
+                        update_job(
+                            job.job_id,
+                            phase='beatgrid',
+                            message=f"Beatgrid {done}/{count}: {Path(path).name}",
+                            progress=done / max(count, 1),
+                        )
 
-                    analyze_beatgrid_paths(targets, cfg=cfg, overwrite=overwrite_check.value, progress_callback=_cb)
+                    if not targets:
+                        update_job(
+                            job.job_id,
+                            phase='beatgrid',
+                            message='Beatgrid skipped (no targets)',
+                            progress=1.0,
+                        )
+                        return
 
-                await asyncio.to_thread(_work)
+                    update_job(job.job_id, phase='beatgrid', message=f'Beatgridding {len(targets)} track(s)...', progress=0.0)
+                    analyze_beatgrid_paths(targets, cfg=cfg, overwrite=overwrite_existing, progress_callback=_cb)
+
+                try:
+                    await asyncio.to_thread(_work)
+                except Exception as exc:
+                    fail_job(
+                        job.job_id,
+                        phase='failed',
+                        message='Beatgrid failed',
+                        error=str(exc),
+                        result={
+                            'paths_total': total,
+                            'targets_total': len(targets),
+                        },
+                    )
+                    _refresh_batch_job_view()
+                    ui.notify(f'Beatgrid failed: {exc}', type='negative')
+                    return
+
                 state.refresh_meta()
                 state.refresh_health()
-                beat_progress.value = 1
-                beat_progress.update()
-                beat_status.text = f"Beatgrid complete ({total} track(s))"
-                beat_status.update()
+                complete_job(
+                    job.job_id,
+                    phase='completed',
+                    message=f'Beatgrid complete ({len(targets)} target(s))',
+                    result={
+                        'paths_total': total,
+                        'targets_total': len(targets),
+                    },
+                )
+                _refresh_batch_job_view()
                 ui.notify('Beatgrid complete', type='positive')
 
             async def _run_music_folders() -> None:

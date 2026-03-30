@@ -103,3 +103,24 @@
 - Evidence / outputs: `.venv\Scripts\python.exe -m py_compile rbassist\ui\pages\discover.py rbassist\ui\pages\crate_expander.py rbassist\ui\components\filters.py rbassist\ui\components\track_table.py` passed; `.venv\Scripts\python.exe -m compileall rbassist\ui\pages\discover.py rbassist\ui\pages\crate_expander.py rbassist\ui\components\filters.py rbassist\ui\components\track_table.py` passed; high-effort regression reviewer finished with no findings after the final fixes.
 - Current blockers or risks: validation for this slice is still code-based; the remaining gap is manual NiceGUI browser smoke for the updated sort behavior, mode switching, and detail panels.
 - Next recommended step: manually click through Discover and Crate Expander, then decide whether the next follow-up should be a deeper recommendation detail panel or a section-aware / transition-aware crate-expansion discovery thread.
+
+### 2026-03-30
+- Goal: Capture a bridge plan for stabilizing the current NiceGUI app without deepening long-term framework lock-in.
+- Changes made: added `docs/dev/NICEGUI_STABILIZATION_PASS.md` with a one-to-two week hardening plan centered on lazy page loading, a shared UI job/runtime layer, `Settings` pipeline migration first, then `Library`/`Cues`/`Discover`, plus launch/session hygiene and focused validation.
+- Evidence / outputs: the plan now records concrete file targets, acceptance criteria, deferrals, agent lanes, and validation commands for a short stabilization sprint that also creates seams for a later non-NiceGUI desktop UI.
+- Current blockers or risks: the plan is intentionally a hardening bridge, not a desktop migration; value depends on keeping scope tight and refusing NiceGUI-only polish that does not reduce flakiness or create reusable seams.
+- Next recommended step: start the first slice in `rbassist/ui/app.py`, add a shared `rbassist/ui/jobs.py` or `rbassist/ui/runtime.py`, then migrate `rbassist/ui/pages/settings.py` onto shared job state before touching lower-priority pages.
+
+### 2026-03-30
+- Goal: Make the NiceGUI stabilization sprint easy to execute in a controller-plus-workers pattern without relying on one giant self-splitting prompt.
+- Changes made: added `docs/dev/prompts/nicegui_stabilization/` with `README.md`, `controller.md`, `worker_ui_shell.md`, `worker_job_runtime.md`, `worker_library_cues_discover.md`, and `worker_reviewer.md`.
+- Evidence / outputs: the repo now has copy-pasteable prompt files for a single controller thread that points to narrow worker threads with clear ownership and validation expectations.
+- Current blockers or risks: the prompt pack only helps if workers keep their file scopes narrow and avoid reopening product design or feature work during hardening.
+- Next recommended step: start one controller thread from `docs/dev/prompts/nicegui_stabilization/controller.md`, then launch worker threads from the remaining prompt files in the order described by the pack `README.md`.
+
+### 2026-03-30
+- Goal: Capture crate-expander performance findings and preserve the next optimization slices for a future hardening pass.
+- Changes made: benchmarked real playlist expansion at `candidate_pool=1000` vs `2000` using `2024 Novemebr DLs` (`50` mapped/embedded seeds, target total `100`), profiled the hot path in `rbassist/playlist_expand.py`, and added a dedicated performance backlog note to `WISHLIST.md`.
+- Evidence / outputs: library snapshot during benchmarking was `13332` tracks with `10008` embeddings; warm benchmark runs were `10.874s` at `1000` and `17.270s` at `2000`, with both runs filling from `50` to `100`; cold multi-run averages were `21.801s` at `1000` and `33.958s` at `2000`; cProfile showed the biggest costs in repeated cosine-similarity math, repeated HNSW/index-path loading, alias-index rebuilding, and repeat-signature text processing.
+- Current blockers or risks: the current crate-expansion path is CPU-bound and does not expose a worker knob; widening the candidate pool improves coverage but can substantially increase rerank cost; GPU/CUDA is relevant to embed/analyze paths in the repo but not to the current playlist-expansion path.
+- Next recommended step: implement the first ROI slice by caching the HNSW index, `paths.json`, and alias/meta resolution across expansion runs, then do a second slice that pre-normalizes vectors and precomputes repeat signatures before considering worker-parallel coverage queries.

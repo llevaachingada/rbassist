@@ -86,6 +86,17 @@
 - [x] Comprehensive unit and integration tests
   - Completed 2025-12-25: Added test_beatgrid.py (6 test categories) and test_ai_tagging.py (7 test categories); both 100% pass rate.
 - [ ] Performance benchmarking suite
+- [ ] Crate Expander performance pass
+  - Focus first on CPU-side wins in `rbassist/playlist_expand.py`, not GPU work.
+  - Highest-ROI slice: cache the loaded HNSW index, `paths.json`, and the resolved meta/alias lookup across playlist-expansion runs instead of rebuilding or reloading them repeatedly.
+  - Next slice: pre-normalize seed/candidate vectors and precompute repeat signatures once per workspace so reranking does less repeated cosine math and text normalization.
+  - Later slice: explore batch or parallel per-seed coverage queries for large seed sets, optionally with a worker/config knob if the simpler caching work is not enough.
+  - Grounded evidence from 2026-03-30 benchmark on playlist `2024 Novemebr DLs` (`50` mapped/embedded seeds, target total `100`):
+    - warm run at `candidate_pool=1000`: `10.874s`, filled to `100`
+    - warm run at `candidate_pool=2000`: `17.270s`, filled to `100`
+    - cold multi-run average at `1000`: `21.801s`
+    - cold multi-run average at `2000`: `33.958s`
+  - Profiling note: the current bottlenecks are repeated cosine similarity work, repeated HNSW/index-path loading, alias-index rebuilding, and repeat-signature text processing.
 - [ ] Cross-platform compatibility testing
 
 #### Documentation
@@ -114,7 +125,7 @@ Interested in helping? Check the current roadmap and open issues.
 Pull requests welcome!
 
 ---
-Last Updated: 2026-03-24
+Last Updated: 2026-03-30
 Curator: Claude (AI Assistant) + rbassist contributors
 
 ## Completion Summary (2026-02-28)

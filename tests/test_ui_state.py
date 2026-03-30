@@ -5,6 +5,11 @@ from rbassist.ui import state as ui_state
 
 
 class AppStateTests(unittest.TestCase):
+    def test_app_state_exposes_empty_meta_counts_by_default(self) -> None:
+        app = ui_state.AppState(meta={"tracks": {}})
+        self.assertEqual(app.get_track_count(), 0)
+        self.assertEqual(app.get_embedded_count(), 0)
+
     def test_refresh_health_uses_configured_music_roots(self) -> None:
         app = ui_state.AppState(meta={'tracks': {}}, music_folders=[r'C:\Music\A', r'C:\Music\B'])
         with mock.patch.object(ui_state, 'audit_meta_health', return_value={'counts': {}}) as audit_mock,              mock.patch.object(ui_state, 'suggest_rewrite_pairs', return_value=[]):

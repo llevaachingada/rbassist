@@ -172,7 +172,6 @@ class AppState:
 state = AppState()
 state.refresh_meta()
 state.load_settings()
-state.refresh_health()
 
 
 def get_state() -> AppState:

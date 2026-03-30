@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from importlib import import_module
 import logging
 from types import ModuleType
+from typing import Any
 
-from nicegui import app, ui
+from nicegui import ui
 
 from .components.progress import StatusBar
+from .jobs import latest_job
 from .state import get_state
 from .theme import apply_dark_theme
 
@@ -53,6 +55,15 @@ def _load_page_module(module_name: str) -> tuple[ModuleType | None, str | None]:
         return None, f"{type(exc).__name__}: {exc}"
 
 
+def _render_page_placeholder(spec: PageSpec) -> None:
+    """Render a lightweight placeholder before a page is first activated."""
+    with ui.card().classes("bg-[#1a1a1a] border border-[#333] p-4 w-full"):
+        ui.label(spec.label).classes("text-lg font-semibold text-gray-200")
+        ui.label("This page loads when you select its tab.").classes("text-gray-400 text-sm")
+        if spec.help_text:
+            ui.label(spec.help_text).classes("text-indigo-300 text-sm mt-2")
+
+
 def _render_page_fallback(spec: PageSpec, error: str) -> None:
     """Render a friendly fallback card when a page cannot be loaded."""
     with ui.card().classes("bg-[#1a1a1a] border border-[#333] p-4 w-full"):
@@ -65,18 +76,36 @@ def _render_page_fallback(spec: PageSpec, error: str) -> None:
         ui.label(error).classes("text-gray-500 text-xs mt-3 font-mono")
 
 
-def _render_page(spec: PageSpec) -> None:
-    """Render one page, degrading to a fallback card on import or render failure."""
-    module, error = _load_page_module(spec.module_name)
-    if module is None or error:
-        _render_page_fallback(spec, error or "Unknown page load error.")
-        return
+def _render_page_into_mount(mount: Any, spec: PageSpec) -> None:
+    """Render one page into a mount, degrading to a fallback card on failure."""
+    mount.clear()
+    with mount:
+        module, error = _load_page_module(spec.module_name)
+        if module is None or error:
+            _render_page_fallback(spec, error or "Unknown page load error.")
+            return
 
-    try:
-        module.render()
-    except Exception as exc:  # pragma: no cover - hard to exercise without full UI runtime
-        logger.exception("Failed to render UI page '%s'", spec.module_name)
-        _render_page_fallback(spec, f"{type(exc).__name__}: {exc}")
+        try:
+            module.render()
+        except Exception as exc:  # pragma: no cover - hard to exercise without full UI runtime
+            logger.exception("Failed to render UI page '%s'", spec.module_name)
+            _render_page_fallback(spec, f"{type(exc).__name__}: {exc}")
+
+
+@dataclass
+class _LazyPageLoader:
+    """Track which page mounts have been loaded already."""
+
+    mounts: dict[str, Any]
+    loaded: set[str]
+
+    def ensure_loaded(self, key: str) -> None:
+        """Load the page for a tab key once, then keep the cached mount."""
+        if key in self.loaded:
+            return
+        spec = next(spec for spec in PAGE_SPECS if spec.key == key)
+        self.loaded.add(key)
+        _render_page_into_mount(self.mounts[key], spec)
 
 
 def create_header() -> ui.tabs:
@@ -95,14 +124,42 @@ def create_header() -> ui.tabs:
     return tabs
 
 
-def create_pages(tabs: ui.tabs) -> None:
-    """Create tab panels for each page."""
-    with ui.tab_panels(tabs, value="discover").classes(
+def create_pages(tabs: ui.tabs) -> _LazyPageLoader:
+    """Create lightweight tab panels and defer heavy page rendering."""
+    mounts: dict[str, Any] = {}
+
+    with ui.tab_panels(tabs, value=PAGE_SPECS[0].key).classes(
         "w-full flex-1 bg-[#0f0f0f] p-4 pb-12"
     ):
         for spec in PAGE_SPECS:
             with ui.tab_panel(spec.key):
-                _render_page(spec)
+                mount = ui.column().classes("w-full gap-4")
+                mounts[spec.key] = mount
+                with mount:
+                    _render_page_placeholder(spec)
+
+    return _LazyPageLoader(mounts=mounts, loaded=set())
+
+
+def _activate_page(loader: _LazyPageLoader, key: str, status: StatusBar) -> None:
+    """Load the active page and keep shell status responsive during activation."""
+    spec = next(spec for spec in PAGE_SPECS if spec.key == key)
+    status.set_status(f"Loading {spec.label}...", busy=True)
+    try:
+        loader.ensure_loaded(key)
+    finally:
+        status.set_status("Ready", busy=False)
+
+
+def _wire_page_activation(tabs: ui.tabs, loader: _LazyPageLoader, status: StatusBar) -> None:
+    """Load pages lazily as the operator switches tabs."""
+
+    def _load_selected() -> None:
+        key = str(tabs.value or PAGE_SPECS[0].key)
+        _activate_page(loader, key, status)
+
+    tabs.on_value_change(lambda _: _load_selected())
+    ui.timer(0.05, _load_selected, once=True)
 
 
 def setup_app() -> None:
@@ -111,7 +168,6 @@ def setup_app() -> None:
     ui.page_title("rbassist")
 
     tabs = create_header()
-    create_pages(tabs)
 
     state = get_state()
     status = StatusBar()
@@ -120,6 +176,18 @@ def setup_app() -> None:
         embedded=state.get_embedded_count(),
         device="GPU" if state.device == "cuda" else "CPU",
     )
+    status.set_status("Ready", busy=False)
+    status.bind_runtime(
+        job_source=latest_job,
+        stats_source=lambda: {
+            "tracks": state.get_track_count(),
+            "embedded": state.get_embedded_count(),
+            "device": "GPU" if state.device == "cuda" else "CPU",
+        },
+    )
+
+    loader = create_pages(tabs)
+    _wire_page_activation(tabs, loader, status)
 
 
 @ui.page("/")
