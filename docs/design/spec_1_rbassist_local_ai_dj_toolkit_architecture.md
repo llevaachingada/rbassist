@@ -17,7 +17,7 @@
 
 - Reliability at gigs (deterministic exports, no cloud outages).
 - Performance (GPU-accelerated embeddings, fast I/O, incremental pipelines).
-- Maintainability (clear module boundaries, plugin-friendly analyzers, typed APIs, tests).
+- Maintainability (c                                lear module boundaries, plugin-friendly analyzers, typed APIs, tests).
 - Portability (Windows-first; potential macOS/Linux support without major rewrites).
 
 **Assumptions (updated)**

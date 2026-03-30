@@ -99,6 +99,10 @@
 
 #### Experimental Features
 - [ ] DJ-style intelligent playlist generation surfaced in the Discover/Tools pages (front-end for existing `int-pl` logic).
+- [ ] Section-aware / transition-aware crate expansion for DJ mixing.
+  - Build on the shared `playlist-expand` backend now used by the CLI and Crate Expander tab.
+  - Goal: expand one playlist into sections or transition-friendly lanes instead of only a flat append-only crate.
+  - Follow this only after the current crate-expansion flow is manually smoke-tested in the browser.
 - [ ] Advanced beat grid analysis and visual cue editing tools in the GUI.
 - [ ] Optional: history rewrite tool (git-filter-repo) to fully purge accidentally committed personal/library files from Git history (force-push workflow).
 - [ ] Automatic set preparation tools (end-to-end: seed → recommendations → ordered export with cues).
@@ -110,7 +114,7 @@ Interested in helping? Check the current roadmap and open issues.
 Pull requests welcome!
 
 ---
-Last Updated: 2026-03-01
+Last Updated: 2026-03-24
 Curator: Claude (AI Assistant) + rbassist contributors
 
 ## Completion Summary (2026-02-28)

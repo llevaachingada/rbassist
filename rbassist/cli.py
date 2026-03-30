@@ -1,9 +1,10 @@
 from __future__ import annotations
+import json
 import pathlib
 import librosa
 import csv
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple
+from typing import Any, List, Optional
 import typer
 from .analyze import analyze_bpm_key
 from .utils import load_meta, save_meta, console, walk_audio, pick_device, read_paths_file
@@ -21,6 +22,86 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="RBassist com
 def _read_paths_file(paths_file: pathlib.Path) -> list[str]:
     """Backward-compatible wrapper around shared paths-file parsing."""
     return read_paths_file(paths_file)
+
+
+def _normalize_playlist_expansion_choice(value: str, allowed: set[str], *, label: str) -> str:
+    clean = str(value or "").lower().strip()
+    if clean not in allowed:
+        raise ValueError(f"Unsupported {label}: {value}")
+    return clean
+
+
+def _build_playlist_expansion_kwargs(
+    *,
+    mode: str,
+    strategy: str,
+    candidate_pool: Optional[int],
+    diversity: Optional[float],
+    tempo_pct: Optional[float],
+    allow_doubletime: Optional[bool],
+    key_mode: Optional[str],
+    key_filter: bool,
+    w_ann_centroid: Optional[float],
+    w_ann_seed_coverage: Optional[float],
+    w_group_match: Optional[float],
+    w_bpm: Optional[float],
+    w_key: Optional[float],
+    w_tags: Optional[float],
+    require_tags: Optional[List[str]],
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "mode": _normalize_playlist_expansion_choice(
+            mode,
+            {"tight", "balanced", "adventurous"},
+            label="playlist expansion mode",
+        ),
+        "strategy": _normalize_playlist_expansion_choice(
+            strategy,
+            {"blend", "centroid", "coverage"},
+            label="playlist expansion strategy",
+        ),
+    }
+
+    if candidate_pool is not None:
+        kwargs["candidate_pool"] = max(1, int(candidate_pool))
+    if diversity is not None:
+        kwargs["diversity"] = max(0.0, min(1.0, float(diversity)))
+
+    filters: dict[str, Any] = {}
+    if tempo_pct is not None:
+        filters["tempo_pct"] = float(tempo_pct)
+    if allow_doubletime is not None:
+        filters["allow_doubletime"] = bool(allow_doubletime)
+    if key_filter:
+        filters["key_mode"] = "filter"
+    elif key_mode is not None:
+        filters["key_mode"] = _normalize_playlist_expansion_choice(
+            key_mode,
+            {"off", "soft", "filter"},
+            label="playlist expansion key mode",
+        )
+    if require_tags:
+        filters["require_tags"] = [str(tag).strip() for tag in require_tags if str(tag).strip()]
+    if filters:
+        kwargs["filters"] = filters
+
+    weights: dict[str, Any] = {}
+    if w_ann_centroid is not None:
+        weights["ann_centroid"] = float(w_ann_centroid)
+    if w_ann_seed_coverage is not None:
+        weights["ann_seed_coverage"] = float(w_ann_seed_coverage)
+    if w_group_match is not None:
+        weights["group_match"] = float(w_group_match)
+    if w_bpm is not None:
+        weights["bpm_match"] = float(w_bpm)
+    if w_key is not None:
+        weights["key_match"] = float(w_key)
+    if w_tags is not None:
+        weights["tag_match"] = float(w_tags)
+    if weights:
+        kwargs["weights"] = weights
+
+    return kwargs
 
 
 @app.command("analyze")
@@ -264,6 +345,198 @@ def cmd_recommend_sequence(
         console.print(f"[red]Recommend deps missing (hnswlib). Error: {e}")
         raise typer.Exit(1)
     do_rec_seq(seeds, top=top)
+
+
+@app.command("playlist-expand")
+def cmd_playlist_expand(
+    playlist: str = typer.Option(..., "--playlist", help="Rekordbox playlist name or folder path"),
+    target_total: Optional[int] = typer.Option(
+        None,
+        "--target-total",
+        min=1,
+        help="Desired final total including mapped seed tracks.",
+    ),
+    add_count: Optional[int] = typer.Option(
+        None,
+        "--add-count",
+        min=1,
+        help="How many new tracks to append to the mapped seed playlist.",
+    ),
+    source: str = typer.Option("db", "--source", help="Seed source: db | xml"),
+    xml_path: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--xml-path",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        help="Optional Rekordbox XML file used when --source xml or as an explicit fallback if DB loading fails.",
+    ),
+    mode: str = typer.Option("balanced", help="Expansion mode: tight | balanced | adventurous"),
+    strategy: str = typer.Option("blend", help="Expansion strategy: blend | centroid | coverage"),
+    candidate_pool: Optional[int] = typer.Option(
+        None,
+        "--candidate-pool",
+        min=25,
+        help="How many ANN candidates to fetch before reranking (omit to use the mode preset).",
+    ),
+    diversity: Optional[float] = typer.Option(
+        None,
+        "--diversity",
+        min=0.0,
+        max=1.0,
+        help="MMR-style diversity weight for added tracks (omit to use the mode preset).",
+    ),
+    tempo_pct: Optional[float] = typer.Option(
+        None, help="Tempo tolerance percent override (omit to use the mode preset)."
+    ),
+    allow_doubletime: Optional[bool] = typer.Option(
+        None,
+        "--allow-doubletime/--no-allow-doubletime",
+        help="Allow 2x/0.5x tempo matches inside the playlist envelope (omit to use the mode preset).",
+    ),
+    key_mode: Optional[str] = typer.Option(
+        None,
+        "--key-mode",
+        help="Key handling override: off | soft | filter (omit to use the mode preset).",
+    ),
+    key_filter: bool = typer.Option(
+        False,
+        "--key-filter",
+        help="Require Camelot-compatible keys as a hard filter instead of a soft score boost.",
+    ),
+    w_ann_centroid: Optional[float] = typer.Option(None, help="Override weight: ANN centroid match."),
+    w_ann_seed_coverage: Optional[float] = typer.Option(None, help="Override weight: ANN seed coverage."),
+    w_group_match: Optional[float] = typer.Option(None, help="Override weight: group-to-seed match."),
+    w_bpm: Optional[float] = typer.Option(None, help="Override weight: BPM match."),
+    w_key: Optional[float] = typer.Option(None, help="Override weight: key match."),
+    w_tags: Optional[float] = typer.Option(None, help="Override weight: tag match."),
+    require_tag: List[str] = typer.Option(
+        None,
+        "--require-tag",
+        help="Require each added track to include this My Tag. Repeat for multiple tags.",
+    ),
+    preview_json: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--preview-json",
+        help="Optional JSON preview path for the expansion result and diagnostics.",
+    ),
+    out_xml: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--out-xml",
+        help="Optional Rekordbox XML export path for seed tracks plus additions.",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        help="Playlist name to use for the XML export (defaults to '<playlist> Expanded').",
+    ),
+):
+    if (target_total is None) == (add_count is None):
+        console.print("[red]Provide exactly one of --target-total or --add-count.[/red]")
+        raise typer.Exit(1)
+
+    try:
+        from .playlist_expand import load_rekordbox_playlist, expand_playlist, write_expansion_xml
+    except Exception as e:
+        console.print(f"[red]Playlist expansion deps missing or failed to import. Error: {e}[/red]")
+        raise typer.Exit(1)
+
+    playlist_source = source.strip().lower()
+    if playlist_source not in {"db", "xml"}:
+        console.print("[red]--source must be either 'db' or 'xml'.[/red]")
+        raise typer.Exit(1)
+    if playlist_source == "xml" and xml_path is None:
+        console.print("[red]--xml-path is required when --source xml is selected.[/red]")
+        raise typer.Exit(1)
+
+    try:
+        if playlist_source == "db":
+            try:
+                seed_playlist = load_rekordbox_playlist(playlist, source="db")
+            except Exception as db_exc:
+                if xml_path is None:
+                    raise
+                console.print(
+                    f"[yellow]DB playlist load failed ({db_exc}); falling back to XML: {xml_path}[/yellow]"
+                )
+                seed_playlist = load_rekordbox_playlist(
+                    playlist,
+                    source="xml",
+                    xml_path=str(xml_path),
+                )
+        else:
+            seed_playlist = load_rekordbox_playlist(
+                playlist,
+                source="xml",
+                xml_path=str(xml_path) if xml_path else None,
+            )
+    except Exception as e:
+        console.print(f"[red]Failed to load Rekordbox playlist '{playlist}': {e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        expand_kwargs = _build_playlist_expansion_kwargs(
+            mode=mode,
+            strategy=strategy,
+            candidate_pool=candidate_pool,
+            diversity=diversity,
+            tempo_pct=tempo_pct,
+            allow_doubletime=allow_doubletime,
+            key_mode=key_mode,
+            key_filter=key_filter,
+            w_ann_centroid=w_ann_centroid,
+            w_ann_seed_coverage=w_ann_seed_coverage,
+            w_group_match=w_group_match,
+            w_bpm=w_bpm,
+            w_key=w_key,
+            w_tags=w_tags,
+            require_tags=require_tag,
+        )
+        result = expand_playlist(
+            seed_playlist,
+            add_count=add_count,
+            target_total=target_total,
+            **expand_kwargs,
+        )
+    except Exception as e:
+        console.print(f"[red]Playlist expansion failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    diag = result.diagnostics
+    console.print(
+        "[green]Expanded playlist[/green] "
+        f"'{seed_playlist.name}' via {seed_playlist.source} "
+        f"({diag.get('clean_seed_tracks_total', 0)} mapped seeds, "
+        f"{diag.get('added_tracks_total', 0)} additions, "
+        f"{diag.get('combined_tracks_total', 0)} total)."
+    )
+    console.print(
+        f"[cyan]Requested[/cyan] add_count={diag.get('requested_add_count')} "
+        f"target_total={diag.get('requested_target_total')} "
+        f"strategy={diag.get('strategy')} mode={diag.get('mode')}"
+    )
+    if diag.get("seed_loader_diagnostics"):
+        loader = diag["seed_loader_diagnostics"]
+        console.print(
+            f"[cyan]Seed loader[/cyan] total={loader.get('seed_tracks_total', 0)} "
+            f"matched={loader.get('matched_total', 0)} "
+            f"unmapped={loader.get('unmapped_total', 0)} "
+            f"missing_embedding={loader.get('missing_embedding_total', 0)}"
+        )
+
+    if preview_json is not None:
+        preview_json.parent.mkdir(parents=True, exist_ok=True)
+        preview_json.write_text(
+            json.dumps(result.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        console.print(f"[green]Wrote preview JSON -> {preview_json}[/green]")
+
+    if out_xml is not None:
+        playlist_name = name or f"{seed_playlist.name} Expanded"
+        write_expansion_xml(result, out_path=str(out_xml), playlist_name=playlist_name)
+        console.print(f"[green]Wrote Rekordbox XML -> {out_xml}[/green]")
 
 
 @app.command("bandcamp-import")

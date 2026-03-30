@@ -9,7 +9,7 @@ import shlex
 import re
 from nicegui import ui
 
-from rbassist.health import default_music_roots, list_embedding_gaps, normalize_meta_paths, resolve_bare_meta_paths
+from rbassist.health import list_embedding_gaps, normalize_meta_paths, resolve_bare_meta_paths
 from ..state import get_state
 from ..components.health_summary import render_health_summary
 from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
@@ -158,7 +158,7 @@ def render() -> None:
 
             def _run_bare_path_dry() -> None:
                 state.refresh_meta()
-                roots = default_music_roots()
+                roots = state.current_music_roots()
                 report = resolve_bare_meta_paths(
                     repo=ROOT,
                     roots=roots,
@@ -173,13 +173,13 @@ def render() -> None:
                 )
                 action_status.update()
                 ui.notify(
-                    f"Bare-path dry run complete: {report['counts'].get('unique_matches_total', 0)} unique match(es).",
+                    f"Bare-path dry run complete: {report['counts'].get('unique_matches_total', 0)} unique match(es) in the current GUI scope.",
                     type="positive",
                 )
 
             def _apply_bare_path_fix() -> None:
                 state.refresh_meta()
-                roots = default_music_roots()
+                roots = state.current_music_roots()
                 report = resolve_bare_meta_paths(
                     repo=ROOT,
                     roots=roots,
@@ -193,7 +193,7 @@ def render() -> None:
                 )
                 action_status.update()
                 ui.notify(
-                    f"Applied bare-path repair: {report['counts'].get('unique_matches_total', 0)} unique match(es) merged.",
+                    f"Applied bare-path repair: {report['counts'].get('unique_matches_total', 0)} unique match(es) merged in the current GUI scope.",
                     type="positive",
                 )
 

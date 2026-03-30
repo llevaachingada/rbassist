@@ -142,3 +142,11 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   6. UI gaps (tags, beatgrid fallback, large-table UX)
   7. benchmark suite
   Future agents should prefer this plan over treating `WISHLIST.md` as a flat backlog.
+
+- 2026-03-02: Began the richer bare/orphan review and safe-apply flow.
+  - backend: `rbassist/health.py` now classifies bare rows as `high_confidence_unique`, `medium_confidence_unique`, `ambiguous`, or `not_found`
+  - CLI: `scripts/resolve_bare_meta_paths.py` now supports `--min-confidence`, `--out-json`, and `--out-csv`
+  - tests: updated `tests/test_resolve_bare_meta_paths.py` and focused suite passed (`6 passed`)
+  - live dry-run outputs: `docs/dev/bare_meta_resolution_2026-03-02.json` and `docs/dev/bare_meta_resolution_2026-03-02.csv`
+  - current live counts: `1457` bare rows, `2` high-confidence unique, `33` medium-confidence unique, `1052` ambiguous, `370` not found
+  Important: ambiguity remains the dominant case because many filenames exist in multiple folders under the active root. This is expected and argues for duplicate/remediation and Rekordbox-safe relink work next.

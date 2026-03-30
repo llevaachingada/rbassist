@@ -1,47 +1,184 @@
-"""Crate/Playlist Expander - Get recommendations from multiple seed tracks."""
+"""Crate/Playlist expander - playlist expansion with shared backend controls."""
 
 from __future__ import annotations
 
-import numpy as np
+from pathlib import Path
+from typing import Any
+
 from nicegui import ui
 
-from ..state import get_state
 from ..components.track_table import TrackTable
+from ..state import get_state
+from rbassist.playlist_expand import (
+    PLAYLIST_EXPANSION_PRESETS,
+    ExpansionResult,
+    ExpansionWorkspace,
+    PlaylistExpansionControls,
+    PlaylistExpansionFilters,
+    PlaylistExpansionWeights,
+    list_rekordbox_playlists,
+    load_rekordbox_playlist,
+    prepare_playlist_expansion,
+    rerank_playlist_expansion,
+)
+
+
+def _track_name(path: str) -> str:
+    try:
+        return Path(path).stem or path
+    except Exception:
+        return path
+
+
+def _format_count_label(mode: str, value: int, seed_count: int) -> str:
+    if mode == "add_count":
+        return f"Add count: {max(0, int(value))}"
+    return f"Target total: {max(int(value), seed_count)}"
+
+
+def _plain_component_name(name: str) -> str:
+    mapping = {
+        "ann_centroid": "playlist vibe",
+        "ann_seed_coverage": "shared seed support",
+        "group_match": "group fit",
+        "bpm_match": "tempo fit",
+        "key_match": "harmonic fit",
+        "tag_match": "tag overlap",
+        "anti_repetition": "repeat protection",
+    }
+    return mapping.get(str(name), str(name).replace("_", " "))
+
+
+REQUIRED_TAG_PRESETS: list[tuple[str, str]] = [
+    ("Warm-up", "Warm-up"),
+    ("Opener", "Opener"),
+    ("Tool", "Tool"),
+    ("Peak-time", "Peak-time"),
+    ("Closer", "Closer"),
+]
 
 
 class CrateExpander:
-    """Expand a crate/playlist with similar recommendations."""
+    """Expand a crate/playlist using the shared playlist expansion backend."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.state = get_state()
         self.selected_seeds: list[str] = []
-        self.recommendations: list[dict] = []
+        self.workspace: ExpansionWorkspace | None = None
+        self.workspace_signature: tuple[Any, ...] | None = None
+        self.current_result: ExpansionResult | None = None
+        self.recommendations: list[dict[str, Any]] = []
+        self.rekordbox_source = "db"
+        self.rekordbox_xml_path = ""
+        self.rekordbox_playlist_items: list[dict[str, Any]] = []
+        self.rekordbox_playlist_query = ""
+        self.loaded_playlist_name: str | None = None
+        self.require_tags_text = ""
+        self.detail_title = None
+        self.detail_summary = None
+        self.detail_metrics = None
+        self.detail_note = None
+
+        preset = PLAYLIST_EXPANSION_PRESETS["balanced"]
+        weights = preset["weights"].to_dict()
+        filters = preset["filters"].to_dict()
+
+        self.preset_name = "balanced"
+        self.strategy_name = "blend"
+        self.count_mode = "target_total"
+        self.count_value = 30
+        self.candidate_pool = 250
+        self.diversity = float(preset["diversity"])
+        self.tempo_pct = float(filters["tempo_pct"])
+        self.allow_doubletime = bool(filters["allow_doubletime"])
+        self.key_mode = str(filters["key_mode"])
+        self.weight_values = {
+            "ann_centroid": float(weights["ann_centroid"]),
+            "ann_seed_coverage": float(weights["ann_seed_coverage"]),
+            "group_match": float(weights["group_match"]),
+            "bpm_match": float(weights["bpm_match"]),
+            "key_match": float(weights["key_match"]),
+            "tag_match": float(weights["tag_match"]),
+        }
+
+    def _effective_seed_count(self) -> int:
+        if self.workspace is not None:
+            return int(self.workspace.diagnostics.get("clean_seed_tracks_total", len(self.selected_seeds)))
+        return len(self.selected_seeds)
 
     def render(self) -> None:
         """Render the crate expander interface."""
         with ui.column().classes("w-full gap-4"):
             ui.label("Crate Expander").classes("text-2xl font-bold text-white")
             ui.label(
-                "Select multiple tracks from your library to get recommendations that match the vibe of the group."
+                "Expand a Rekordbox playlist into a larger crate using the shared backend. "
+                "Seed order stays first, additions are appended after reranking."
             ).classes("text-gray-400 text-sm mb-4")
+            with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):
+                ui.label("How playlist expansion works").classes("text-sm font-medium text-gray-200")
+                ui.label(
+                    "We keep your seed playlist, build a candidate pool around the whole group's vibe, then append the strongest additions after tempo, key, tag, and variety checks."
+                ).classes("text-gray-400 text-sm")
+                ui.label(
+                    "Overall fit is the final score after reranking. Raw fit is the score before variety and repeat-protection nudges."
+                ).classes("text-gray-500 text-xs mt-1")
 
             with ui.row().classes("w-full gap-6 items-start"):
-                # Left: Seed selection
-                with ui.card().classes("w-96 bg-[#1a1a1a] border border-[#333] p-4"):
-                    ui.label("Seed Tracks").classes("text-lg font-semibold text-gray-200 mb-3")
+                with ui.card().classes("w-[34rem] bg-[#1a1a1a] border border-[#333] p-4"):
+                    ui.label("Seeds").classes("text-lg font-semibold text-gray-200 mb-3")
 
-                    # Search and add tracks
-                    search_input = ui.input(
-                        placeholder="Search to add tracks..."
-                    ).props("dark dense").classes("w-full mb-2")
+                    ui.label("Load Rekordbox Playlist").classes("text-md font-medium text-gray-300 mb-2")
+                    with ui.row().classes("w-full items-center gap-2"):
+                        self.rekordbox_source_toggle = ui.toggle(
+                            {"db": "Rekordbox DB", "xml": "Rekordbox XML"},
+                            value=self.rekordbox_source,
+                        ).props("dark").classes("flex-1")
+                        ui.button("Refresh", icon="refresh", on_click=lambda: self._refresh_rekordbox_playlists()).props(
+                            "flat dense"
+                        ).classes("bg-[#252525] hover:bg-[#333] text-gray-300")
 
+                    self.rekordbox_xml_input = ui.input(
+                        label="XML path (only needed for XML source)",
+                        placeholder=r"C:\Exports\rekordbox.xml",
+                        value=self.rekordbox_xml_path,
+                    ).props("dark dense").classes("w-full mt-2")
+                    self.rekordbox_xml_input.visible = False
+
+                    self.rekordbox_filter_input = ui.input(
+                        label="Filter playlists",
+                        placeholder="Search playlists by name or path...",
+                    ).props("dark dense").classes("w-full mt-2")
+
+                    self.rekordbox_playlist_select = ui.select(
+                        {},
+                        value=None,
+                        label="Rekordbox playlist",
+                    ).props("dark dense").classes("w-full mt-2")
+
+                    with ui.row().classes("w-full gap-2 mt-2"):
+                        ui.button("Load Playlist As Seeds", icon="playlist_play", on_click=self._load_selected_rekordbox_playlist).props(
+                            "flat"
+                        ).classes("bg-indigo-600 hover:bg-indigo-500 flex-1")
+                        ui.button("Use Manual Seeds", icon="queue_music", on_click=lambda: ui.notify("Manual seed search stays available below.", type="info")).props("flat").classes(
+                            "bg-[#252525] text-gray-300"
+                        )
+
+                    self.rekordbox_status_label = ui.label("Refresh to view Rekordbox playlists.").classes(
+                        "text-gray-500 text-xs mb-3"
+                    )
+
+                    ui.separator().classes("my-3")
+
+                    search_input = ui.input(placeholder="Search to add tracks...").props("dark dense").classes(
+                        "w-full mb-2"
+                    )
                     search_results = ui.column().classes(
                         "w-full max-h-48 overflow-y-auto bg-[#252525] rounded border border-[#333] mb-3"
                     )
                     search_results.visible = False
 
                     def search_tracks(e) -> None:
-                        query = (e.args or "").lower().strip()
+                        query = str(e.args or "").lower().strip()
                         search_results.clear()
 
                         if not query:
@@ -49,38 +186,38 @@ class CrateExpander:
                             return
 
                         tracks = self.state.meta.get("tracks", {})
-                        matches = []
-
-                        for p, info in tracks.items():
-                            if p in self.selected_seeds:
+                        matches: list[tuple[str, dict[str, Any]]] = []
+                        for path, info in tracks.items():
+                            if path in self.selected_seeds:
                                 continue
-
-                            artist = (info.get("artist", "") or "").lower()
-                            title = (info.get("title", "") or "").lower()
-
-                            if query in artist or query in title or query in p.lower():
-                                matches.append((p, info))
+                            artist = str(info.get("artist", "") or "").lower()
+                            title = str(info.get("title", "") or "").lower()
+                            if query in artist or query in title or query in path.lower():
+                                matches.append((path, info))
                                 if len(matches) >= 50:
                                     break
 
                         with search_results:
-                            for p, info in matches:
-                                artist = info.get("artist", "")
-                                title = info.get("title", p.split("\\")[-1].split("/")[-1])
+                            for path, info in matches:
+                                artist = str(info.get("artist", "") or "")
+                                title = str(info.get("title", "") or _track_name(path))
+                                display = f"{artist} - {title}" if artist else title
+                                with ui.row().classes("w-full p-2 hover:bg-[#333] cursor-pointer").on(
+                                    "click", lambda seed_path=path: add_seed(seed_path)
+                                ):
+                                    ui.label(display).classes("text-gray-200 text-sm")
 
-                                with ui.row().classes(
-                                    "w-full p-2 hover:bg-[#333] cursor-pointer"
-                                ).on("click", lambda path=p: add_seed(path)):
-                                    ui.label(f"{artist} - {title}" if artist else title).classes(
-                                        "text-gray-200 text-sm"
-                                    )
-
-                        search_results.visible = len(matches) > 0
+                        search_results.visible = bool(matches)
 
                     def add_seed(path: str) -> None:
                         if path not in self.selected_seeds:
                             self.selected_seeds.append(path)
+                            self.workspace = None
+                            self.workspace_signature = None
+                            self.current_result = None
+                            self.recommendations = []
                             render_seeds()
+                            update_seed_summary()
                         search_input.value = ""
                         search_results.visible = False
 
@@ -88,220 +225,710 @@ class CrateExpander:
 
                     ui.separator().classes("my-3")
 
-                    # Selected seeds list
                     seeds_container = ui.column().classes("w-full gap-2")
+
+                    self.seed_count_label = ui.label("0 selected").classes("text-gray-400 text-sm")
+                    self.loaded_playlist_label = ui.label("No Rekordbox playlist loaded").classes("text-gray-500 text-xs")
+
+                    def update_seed_summary() -> None:
+                        self.seed_count_label.text = f"{len(self.selected_seeds)} selected"
+                        if self.loaded_playlist_name:
+                            self.loaded_playlist_label.text = f"Loaded playlist: {self.loaded_playlist_name}"
+                        else:
+                            self.loaded_playlist_label.text = "No Rekordbox playlist loaded"
+                        if self.workspace is not None:
+                            seed_info = self.workspace.diagnostics
+                            self.status_label.text = (
+                                f"Ready: {seed_info.get('clean_seed_tracks_total', 0)} mapped seeds, "
+                                f"{seed_info.get('candidate_pool_total', 0)} prepared candidates"
+                            )
+                        else:
+                            self.status_label.text = "Ready: add at least 3 mapped seeds, then generate"
+                        self.seed_count_label.update()
+                        self.loaded_playlist_label.update()
+                        self.status_label.update()
 
                     def render_seeds() -> None:
                         seeds_container.clear()
                         tracks = self.state.meta.get("tracks", {})
-
                         with seeds_container:
                             if not self.selected_seeds:
                                 ui.label("No tracks selected").classes("text-gray-500 italic")
                             else:
-                                for p in self.selected_seeds:
-                                    info = tracks.get(p, {})
-                                    artist = info.get("artist", "")
-                                    title = info.get("title", p.split("\\")[-1].split("/")[-1])
-
+                                for path in self.selected_seeds:
+                                    info = tracks.get(path, {})
+                                    artist = str(info.get("artist", "") or "")
+                                    title = str(info.get("title", "") or _track_name(path))
+                                    display = f"{artist} - {title}" if artist else title
                                     with ui.row().classes("w-full items-center gap-2"):
-                                        ui.label(f"{artist} - {title}" if artist else title).classes(
-                                            "text-gray-300 text-sm flex-1"
-                                        )
+                                        ui.label(display).classes("text-gray-300 text-sm flex-1")
                                         ui.button(
                                             icon="close",
-                                            on_click=lambda path=p: remove_seed(path),
+                                            on_click=lambda seed_path=path: remove_seed(seed_path),
                                         ).props("flat round dense").classes("text-gray-400")
 
                     def remove_seed(path: str) -> None:
                         if path in self.selected_seeds:
                             self.selected_seeds.remove(path)
+                            self.workspace = None
+                            self.workspace_signature = None
+                            self.current_result = None
+                            self.recommendations = []
                             render_seeds()
+                            update_seed_summary()
+                            self._clear_results_table()
 
                     render_seeds()
 
                     ui.separator().classes("my-3")
 
-                    # Controls
-                    count_input = ui.number(
-                        value=25, min=5, max=100, step=5
-                    ).props("dark dense label='Tracks to suggest'").classes("w-full mb-2")
+                    with ui.row().classes("w-full items-center justify-between"):
+                        ui.label("Result Size").classes("text-md font-medium text-gray-300")
+                        # seed_count_label is created above so the summary callback can update it.
 
-                    diversity_slider = ui.slider(
-                        min=0, max=1, step=0.1, value=0.3
-                    ).props("dark label-always").classes("w-full")
-                    ui.label("Diversity: Lower = More similar to seeds, Higher = More varied").classes(
-                        "text-gray-500 text-xs mb-3"
-                    )
+                    with ui.row().classes("w-full items-end gap-2"):
+                        self.count_mode_toggle = ui.toggle(
+                            {"target_total": "Target total", "add_count": "Add count"},
+                            value=self.count_mode,
+                        ).props("dark").classes("w-44")
+                        self.count_value_input = ui.number(
+                            value=self.count_value,
+                            min=0,
+                            step=1,
+                        ).props("dark dense").classes("flex-1")
 
-                    def generate_recs() -> None:
-                        if len(self.selected_seeds) < 1:
-                            ui.notify("Add at least one seed track", type="warning")
-                            return
+                    self.count_hint_label = ui.label("").classes("text-gray-500 text-xs mb-2")
+                    ui.label(
+                        "Target total keeps the mapped seed tracks and grows the crate to this final size. "
+                        "Add count appends exactly this many new tracks."
+                    ).classes("text-gray-500 text-xs mb-2")
 
-                        try:
-                            recs = self._get_multi_seed_recommendations(
-                                self.selected_seeds,
-                                top=int(count_input.value or 25),
-                                diversity=float(diversity_slider.value or 0.3),
-                            )
-                            self.recommendations = recs
-                            rec_table.update(recs)
-                            result_count.text = f"{len(recs)} results"
-                            result_count.update()
-                            ui.notify(f"Found {len(recs)} recommendations", type="positive")
-                        except Exception as e:
-                            ui.notify(f"Error: {e}", type="negative")
+                    def update_count_hint() -> None:
+                        self.count_hint_label.text = _format_count_label(
+                            str(self.count_mode_toggle.value or self.count_mode),
+                            int(float(self.count_value_input.value or 0)),
+                            self._effective_seed_count(),
+                        )
+                        self.count_hint_label.update()
 
-                    ui.button(
-                        "Generate Recommendations",
-                        icon="auto_awesome",
-                        on_click=generate_recs,
-                    ).props("flat").classes("bg-indigo-600 hover:bg-indigo-500 w-full")
+                    update_count_hint()
 
-                    def clear_seeds() -> None:
-                        self.selected_seeds.clear()
-                        render_seeds()
-                        rec_table.update([])
-                        result_count.text = "0 results"
-                        result_count.update()
+                    ui.separator().classes("my-3")
 
-                    ui.button("Clear All", icon="clear", on_click=clear_seeds).props("flat").classes(
+                    ui.label("Presets").classes("text-md font-medium text-gray-300 mb-2")
+                    self.preset_toggle = ui.toggle(
+                        {"tight": "Tight", "balanced": "Balanced", "adventurous": "Adventurous"},
+                        value=self.preset_name,
+                    ).props("dark").classes("w-full")
+                    ui.label(
+                        "Tight stays closer to the original playlist, Balanced mixes similarity with variety, "
+                        "and Adventurous explores farther while still respecting the playlist vibe."
+                    ).classes("text-gray-500 text-xs mb-2")
+
+                    ui.separator().classes("my-3")
+
+                    ui.label("Advanced Controls").classes("text-md font-medium text-gray-300 mb-2")
+                    ui.label(
+                        "Use these when you want to shape how expansion behaves. Strategy changes the candidate pool; "
+                        "the rest mainly rerank that pool."
+                    ).classes("text-gray-500 text-xs mb-2")
+                    with ui.column().classes("w-full gap-2"):
+                        with ui.row().classes("w-full items-center gap-2"):
+                            ui.label("Matching view").classes("text-gray-400 w-24")
+                            self.strategy_toggle = ui.toggle(
+                                {"blend": "Blend", "centroid": "Centroid", "coverage": "Coverage"},
+                                value=self.strategy_name,
+                            ).props("dark").classes("flex-1")
+                        ui.label(
+                            "Blend combines the playlist-average view with per-seed support. Centroid follows the overall average vibe. "
+                            "Coverage favors tracks supported by more individual seed neighborhoods."
+                        ).classes("text-gray-500 text-xs")
+
+                        with ui.row().classes("w-full items-center gap-2"):
+                            ui.label("Search depth").classes("text-gray-400 w-24")
+                            self.candidate_pool_input = ui.number(value=self.candidate_pool, min=25, step=25).props(
+                                "dark dense"
+                            ).classes("flex-1")
+                        ui.label(
+                            "Candidate pool is how many possible tracks we fetch before scoring and diversity reranking. "
+                            "Higher values can give better variety, but cost more work."
+                        ).classes("text-gray-500 text-xs")
+
+                        with ui.row().classes("w-full items-center gap-2"):
+                            ui.label("Tempo window").classes("text-gray-400 w-24")
+                            self.tempo_slider = ui.slider(
+                                min=1,
+                                max=15,
+                                step=0.5,
+                                value=self.tempo_pct,
+                            ).props("dark color=indigo label-always").classes("flex-1")
+                        ui.label(
+                            "Tempo sets the BPM envelope around the playlist median BPM. Smaller values stay tighter; "
+                            "larger values allow broader tempo drift."
+                        ).classes("text-gray-500 text-xs")
+
+                        with ui.row().classes("w-full items-center gap-2"):
+                            ui.label("Key mode").classes("text-gray-400 w-24")
+                            self.key_mode_toggle = ui.toggle(
+                                {"off": "Off", "soft": "Soft", "filter": "Filter"},
+                                value=self.key_mode,
+                            ).props("dark").classes("flex-1")
+                        ui.label(
+                            "Off ignores key, Soft rewards compatible Camelot keys, and Filter removes tracks that are not key-compatible."
+                        ).classes("text-gray-500 text-xs")
+
+                        with ui.row().classes("w-full items-center gap-2"):
+                            ui.label("Variety").classes("text-gray-400 w-24")
+                            self.diversity_slider = ui.slider(
+                                min=0,
+                                max=1,
+                                step=0.05,
+                                value=self.diversity,
+                            ).props("dark color=indigo label-always").classes("flex-1")
+                        ui.label(
+                            "Diversity reduces near-duplicate additions. Lower values stay closer to the top matches; "
+                            "higher values spread the picks out more."
+                        ).classes("text-gray-500 text-xs")
+
+                        with ui.row().classes("w-full items-center gap-2"):
+                            ui.label("Half/doubletime").classes("text-gray-400 w-24")
+                            self.doubletime_switch = ui.switch(value=self.allow_doubletime).props("dark")
+                        ui.label(
+                            "Allow 2x/0.5x lets the BPM envelope treat doubletime and halftime as compatible when tempo matching."
+                        ).classes("text-gray-500 text-xs")
+
+                        self.require_tags_input = ui.input(
+                            label="Required tags",
+                            placeholder="Comma-separated My Tags, e.g. Warm-up, Opener",
+                            value=self.require_tags_text,
+                        ).props("dark dense").classes("w-full")
+                        ui.label(
+                            "Required tags are hard filters. Use them for purpose-built crates like warm-up, opener, tool, peak-time, or closer pools."
+                        ).classes("text-gray-500 text-xs")
+                        with ui.row().classes("w-full gap-2 flex-wrap"):
+                            for label, tag_value in REQUIRED_TAG_PRESETS:
+                                ui.button(
+                                    label,
+                                    on_click=lambda value=tag_value: self._set_required_tags(value),
+                                ).props("flat dense").classes("bg-[#252525] text-gray-300")
+                            ui.button("Clear", on_click=lambda: self._set_required_tags("")).props(
+                                "flat dense"
+                            ).classes("bg-[#252525] text-gray-400")
+                        ui.label(
+                            "Tap a lane to prefill the filter, or type your own comma-separated tags."
+                        ).classes("text-gray-500 text-xs")
+
+                        ui.separator().classes("my-2")
+                        ui.label(
+                            "Weights decide what matters most in the final score. They are normalized automatically, so raising one "
+                            "signal makes it matter more relative to the others."
+                        ).classes("text-gray-500 text-xs")
+
+                        self.ann_centroid_slider = self._weight_slider_row("Playlist vibe", self.weight_values["ann_centroid"])
+                        ui.label(
+                            "Technical name: ANN centroid. This is similarity to the playlist's average embedding, which captures the overall vibe."
+                        ).classes("text-gray-500 text-xs")
+                        self.ann_seed_coverage_slider = self._weight_slider_row(
+                            "Across seeds", self.weight_values["ann_seed_coverage"]
+                        )
+                        ui.label(
+                            "Technical name: ANN coverage. This rewards tracks that show up across more individual seed neighborhoods."
+                        ).classes("text-gray-500 text-xs")
+                        self.group_match_slider = self._weight_slider_row("Group fit", self.weight_values["group_match"])
+                        ui.label(
+                            "Technical name: Group match. This is direct similarity to the seed set as a group, not just the overall centroid."
+                        ).classes("text-gray-500 text-xs")
+                        self.bpm_match_slider = self._weight_slider_row("Tempo fit", self.weight_values["bpm_match"])
+                        ui.label(
+                            "Tempo fit rewards tracks closer to the playlist tempo envelope."
+                        ).classes("text-gray-500 text-xs")
+                        self.key_match_slider = self._weight_slider_row("Key fit", self.weight_values["key_match"])
+                        ui.label(
+                            "Key fit rewards Camelot-compatible harmonic matches."
+                        ).classes("text-gray-500 text-xs")
+                        self.tag_match_slider = self._weight_slider_row("Tag fit", self.weight_values["tag_match"])
+                        ui.label(
+                            "Tag fit rewards overlap with the playlist's core My Tags when tags are available."
+                        ).classes("text-gray-500 text-xs")
+
+                    ui.separator().classes("my-3")
+
+                    with ui.row().classes("w-full gap-2"):
+                        ui.button("Generate / Rerank", icon="auto_awesome", on_click=self._generate).props("flat").classes(
+                            "bg-indigo-600 hover:bg-indigo-500 w-full"
+                        )
+                    ui.button("Clear All", icon="clear", on_click=self._clear_all).props("flat").classes(
                         "bg-[#252525] hover:bg-[#333] text-gray-300 w-full mt-2"
                     )
 
-                # Right: Results
                 with ui.column().classes("flex-1 gap-4"):
                     with ui.row().classes("w-full items-center justify-between"):
-                        ui.label("Recommendations").classes("text-xl font-bold text-white")
-                        result_count = ui.label("0 results").classes("text-gray-400")
+                        ui.label("Expanded Playlist").classes("text-xl font-bold text-white")
+                        self.result_count_label = ui.label("0 tracks").classes("text-gray-400")
+
+                    self.status_label = ui.label("Ready: add at least 3 mapped seeds, then generate").classes(
+                        "text-gray-500 text-sm"
+                    )
 
                     with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-0"):
-                        rec_table = TrackTable(
+                        self.rec_table = TrackTable(
+                            on_row_click=self._show_track_detail,
                             extra_columns=[
-                                {"name": "score", "label": "Match", "field": "score", "sortable": True, "align": "right"},
-                                {"name": "key_rule", "label": "Key", "field": "key_rule", "sortable": False, "align": "left"},
-                            ]
+                                {"name": "score", "label": "Overall fit", "field": "score", "sortable": True, "align": "right"},
+                                {
+                                    "name": "base_score",
+                                    "label": "Raw fit",
+                                    "field": "base_score",
+                                    "sortable": True,
+                                    "align": "right",
+                                },
+                                {
+                                    "name": "support_count",
+                                    "label": "Seed support",
+                                    "field": "support_count",
+                                    "sortable": True,
+                                    "align": "right",
+                                },
+                                {
+                                    "name": "components",
+                                    "label": "Why it matched",
+                                    "field": "components",
+                                    "sortable": False,
+                                    "align": "left",
+                                },
+                            ],
                         )
-                        rec_table.build()
+                        self.rec_table.build()
 
-    def _get_multi_seed_recommendations(
-        self, seed_paths: list[str], top: int = 25, diversity: float = 0.3
-    ) -> list[dict]:
-        """Get recommendations from multiple seed tracks using averaged embeddings."""
-        from rbassist.recommend import load_embedding_safe, IDX
-        from rbassist.utils import camelot_relation, tempo_match
-        import hnswlib
-        import json
+                    ui.label(
+                        "Click a row for a compact breakdown of the backend scores and controls used."
+                    ).classes("text-gray-500 text-xs")
+                    with ui.card().classes("w-full bg-[#151515] border border-[#2a2a2a] p-4"):
+                        ui.label("Why this track matched").classes("text-sm font-medium text-gray-200")
+                        self.detail_title = ui.label("Click any added track for a plain-English explanation.").classes(
+                            "text-gray-300 text-sm"
+                        )
+                        self.detail_summary = ui.label(
+                            "You will see the overall fit, raw fit, seed support, and the strongest match reasons."
+                        ).classes("text-gray-400 text-sm")
+                        self.detail_metrics = ui.label("").classes("text-gray-500 text-xs")
+                        self.detail_note = ui.label(
+                            "This panel explains the ranking; it does not change the result."
+                        ).classes("text-gray-500 text-xs mt-1")
 
-        meta = self.state.meta
-        tracks = meta.get("tracks", {})
+        self._wire_control_events()
+        update_seed_summary()
+        update_count_hint()
+        self._render_seeds_callback = render_seeds
+        self._refresh_rekordbox_playlists(notify=False)
 
-        seed_vecs = []
-        seed_bpms = []
-        seed_keys = []
+    def _weight_slider_row(self, label: str, value: float):
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.label(f"{label}:").classes("text-gray-400 w-24")
+            slider = ui.slider(min=0, max=1, step=0.05, value=value).props("dark color=indigo").classes("flex-1")
+            value_label = ui.label(f"{value:.2f}").classes("text-gray-300 w-12")
+        slider.on("update:model-value", lambda e, label_ref=value_label: self._update_weight_label(label_ref, e.args))
+        return slider
 
-        for path in seed_paths:
-            info = tracks.get(path, {})
-            emb_path = info.get("embedding")
-            if not emb_path:
+    def _update_weight_label(self, label, value: Any) -> None:
+        try:
+            label.text = f"{float(value):.2f}"
+        except Exception:
+            label.text = "0.00"
+        label.update()
+
+    def _wire_control_events(self) -> None:
+        self.rekordbox_source_toggle.on("update:model-value", lambda e: self._on_rekordbox_source_change())
+        self.rekordbox_xml_input.on("update:model-value", lambda e: self._on_rekordbox_xml_change())
+        self.rekordbox_filter_input.on("update:model-value", lambda e: self._filter_rekordbox_playlists())
+        self.count_mode_toggle.on("update:model-value", lambda e: self._on_count_control_change())
+        self.count_value_input.on("update:model-value", lambda e: self._on_count_control_change())
+
+        self.preset_toggle.on("update:model-value", lambda e: self._apply_preset(str(self.preset_toggle.value or "balanced")))
+        self.strategy_toggle.on("update:model-value", lambda e: self._on_rebuild_control_change())
+        self.candidate_pool_input.on("update:model-value", lambda e: self._on_rebuild_control_change())
+
+        self.tempo_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.key_mode_toggle.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.diversity_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.doubletime_switch.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.require_tags_input.on("update:model-value", lambda e: self._on_rerank_control_change())
+
+        self.ann_centroid_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.ann_seed_coverage_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.group_match_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.bpm_match_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.key_match_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.tag_match_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
+
+    def _on_rekordbox_source_change(self) -> None:
+        self.rekordbox_source = str(self.rekordbox_source_toggle.value or "db")
+        self.rekordbox_xml_input.visible = self.rekordbox_source == "xml"
+        self.rekordbox_xml_input.update()
+        self._refresh_rekordbox_playlists()
+
+    def _on_rekordbox_xml_change(self) -> None:
+        self.rekordbox_xml_path = str(self.rekordbox_xml_input.value or "").strip()
+
+    def _filter_rekordbox_playlists(self) -> None:
+        self.rekordbox_playlist_query = str(self.rekordbox_filter_input.value or "").strip().lower()
+        options: dict[str, str] = {}
+        for item in self.rekordbox_playlist_items:
+            path = str(item.get("path", "") or "")
+            name = str(item.get("name", "") or "")
+            haystack = f"{path} {name}".lower()
+            if self.rekordbox_playlist_query and self.rekordbox_playlist_query not in haystack:
                 continue
+            options[path] = path
+        current_value = self.rekordbox_playlist_select.value
+        self.rekordbox_playlist_select.options = options
+        if current_value not in options:
+            self.rekordbox_playlist_select.value = next(iter(options.keys()), None)
+        self.rekordbox_playlist_select.update()
+        self.rekordbox_status_label.text = f"{len(options)} playlists available"
+        self.rekordbox_status_label.update()
 
-            vec = load_embedding_safe(emb_path)
-            if vec is None:
-                continue
+    def _refresh_rekordbox_playlists(self, *, notify: bool = True) -> None:
+        try:
+            source = str(self.rekordbox_source_toggle.value or self.rekordbox_source or "db")
+            self.rekordbox_source = source
+            xml_path = str(self.rekordbox_xml_input.value or "").strip()
+            self.rekordbox_xml_path = xml_path
+            if source == "xml" and not xml_path:
+                self.rekordbox_playlist_items = []
+                self.rekordbox_playlist_select.options = {}
+                self.rekordbox_playlist_select.value = None
+                self.rekordbox_playlist_select.update()
+                self.rekordbox_status_label.text = "Enter a Rekordbox XML path to load playlists."
+                self.rekordbox_status_label.update()
+                return
+            self.rekordbox_playlist_items = list_rekordbox_playlists(
+                source=source,
+                xml_path=xml_path or None,
+            )
+            self._filter_rekordbox_playlists()
+            if notify:
+                ui.notify(f"Loaded {len(self.rekordbox_playlist_items)} Rekordbox playlists", type="positive")
+        except Exception as exc:
+            self.rekordbox_playlist_items = []
+            self.rekordbox_playlist_select.options = {}
+            self.rekordbox_playlist_select.value = None
+            self.rekordbox_playlist_select.update()
+            self.rekordbox_status_label.text = f"Playlist load failed: {exc}"
+            self.rekordbox_status_label.update()
+            if notify:
+                ui.notify(f"Rekordbox playlist load failed: {exc}", type="negative")
 
-            seed_vecs.append(vec)
-            if info.get("bpm"):
-                seed_bpms.append(float(info["bpm"]))
-            if info.get("key"):
-                seed_keys.append(str(info["key"]))
+    def _load_selected_rekordbox_playlist(self) -> None:
+        playlist_ref = self.rekordbox_playlist_select.value
+        if not playlist_ref:
+            ui.notify("Choose a Rekordbox playlist first", type="warning")
+            return
+        try:
+            seed_playlist = load_rekordbox_playlist(
+                str(playlist_ref),
+                source=str(self.rekordbox_source_toggle.value or "db"),
+                xml_path=(str(self.rekordbox_xml_input.value or "").strip() or None),
+            )
+            self.selected_seeds = [track.meta_path or track.rekordbox_path for track in seed_playlist.tracks]
+            self.loaded_playlist_name = seed_playlist.name
+            self.workspace = None
+            self.workspace_signature = None
+            self.current_result = None
+            self.recommendations = []
+            if hasattr(self, "_render_seeds_callback"):
+                self._render_seeds_callback()
+            if hasattr(self, "seed_count_label"):
+                self.seed_count_label.text = f"{len(self.selected_seeds)} selected"
+                self.seed_count_label.update()
+            self._clear_results_table()
+            self._update_count_hint()
+            if hasattr(self, "status_label"):
+                loader = seed_playlist.diagnostics
+                self.status_label.text = (
+                    f"Loaded {seed_playlist.name}: "
+                    f"{loader.get('matched_total', 0)} matched, "
+                    f"{loader.get('missing_embedding_total', 0)} missing embedding, "
+                    f"{loader.get('unmapped_total', 0)} unmapped"
+                )
+                self.status_label.update()
+            if hasattr(self, "loaded_playlist_label"):
+                self.loaded_playlist_label.text = f"Loaded playlist: {seed_playlist.name}"
+                self.loaded_playlist_label.update()
+            ui.notify(f"Loaded Rekordbox playlist '{seed_playlist.name}' into seeds", type="positive")
+        except Exception as exc:
+            ui.notify(f"Failed to load Rekordbox playlist: {exc}", type="negative")
 
-        if not seed_vecs:
-            raise ValueError("No valid seed embeddings found")
+    def _update_count_hint(self) -> None:
+        self.count_mode = str(self.count_mode_toggle.value or "target_total")
+        try:
+            self.count_value = int(float(self.count_value_input.value or 0))
+        except Exception:
+            self.count_value = 0
+        effective_seed_count = self._effective_seed_count()
+        update_text = _format_count_label(self.count_mode, self.count_value, effective_seed_count)
+        if hasattr(self, "count_mode_toggle"):
+            self.count_mode_toggle.update()
+        if hasattr(self, "count_value_input"):
+            self.count_value_input.update()
+        if hasattr(self, "count_hint_label"):
+            self.count_hint_label.text = update_text
+            self.count_hint_label.update()
 
-        combined_vec = np.mean(np.stack(seed_vecs, axis=0), axis=0).astype(np.float32)
-        avg_bpm = np.mean(seed_bpms) if seed_bpms else None
+    def _apply_preset(self, mode: str) -> None:
+        mode = str(mode or "balanced").lower().strip()
+        if mode not in PLAYLIST_EXPANSION_PRESETS:
+            mode = "balanced"
+        self.preset_name = mode
+        preset = PLAYLIST_EXPANSION_PRESETS[mode]
+        weights = preset["weights"].to_dict()
+        filters = preset["filters"].to_dict()
 
-        paths_file = IDX / "paths.json"
-        paths_map = json.loads(paths_file.read_text(encoding="utf-8"))
+        self.tempo_pct = float(filters["tempo_pct"])
+        self.allow_doubletime = bool(filters["allow_doubletime"])
+        self.key_mode = str(filters["key_mode"])
+        self.diversity = float(preset["diversity"])
+        self.weight_values = {
+            "ann_centroid": float(weights["ann_centroid"]),
+            "ann_seed_coverage": float(weights["ann_seed_coverage"]),
+            "group_match": float(weights["group_match"]),
+            "bpm_match": float(weights["bpm_match"]),
+            "key_match": float(weights["key_match"]),
+            "tag_match": float(weights["tag_match"]),
+        }
 
-        index = hnswlib.Index(space="cosine", dim=combined_vec.shape[0])
-        index.load_index(str(IDX / "hnsw.idx"))
-        index.set_ef(64)
+        self.preset_toggle.value = mode
+        self.tempo_slider.value = self.tempo_pct
+        self.doubletime_switch.value = self.allow_doubletime
+        self.key_mode_toggle.value = self.key_mode
+        self.diversity_slider.value = self.diversity
+        self.ann_centroid_slider.value = self.weight_values["ann_centroid"]
+        self.ann_seed_coverage_slider.value = self.weight_values["ann_seed_coverage"]
+        self.group_match_slider.value = self.weight_values["group_match"]
+        self.bpm_match_slider.value = self.weight_values["bpm_match"]
+        self.key_match_slider.value = self.weight_values["key_match"]
+        self.tag_match_slider.value = self.weight_values["tag_match"]
 
-        query_k = min(top * 10, len(paths_map))
-        labels, dists = index.knn_query(combined_vec, k=query_k)
-        labels, dists = labels[0].tolist(), dists[0].tolist()
+        self._rerank_if_ready(rebuild=False)
 
-        filters = self.state.filters
+    def _weight_values_from_widgets(self) -> PlaylistExpansionWeights:
+        return PlaylistExpansionWeights(
+            ann_centroid=float(self.ann_centroid_slider.value or 0.0),
+            ann_seed_coverage=float(self.ann_seed_coverage_slider.value or 0.0),
+            group_match=float(self.group_match_slider.value or 0.0),
+            bpm_match=float(self.bpm_match_slider.value or 0.0),
+            key_match=float(self.key_match_slider.value or 0.0),
+            tag_match=float(self.tag_match_slider.value or 0.0),
+        )
 
-        candidates = []
-        for label, dist in zip(labels, dists):
-            path = paths_map[label]
-            if path in seed_paths:
-                continue
+    def _filters_from_widgets(self) -> PlaylistExpansionFilters:
+        require_tags = [
+            tag.strip()
+            for tag in str(self.require_tags_input.value or "").replace(";", ",").split(",")
+            if str(tag).strip()
+        ]
+        return PlaylistExpansionFilters(
+            tempo_pct=float(self.tempo_slider.value or 0.0),
+            allow_doubletime=bool(self.doubletime_switch.value),
+            key_mode=str(self.key_mode_toggle.value or "soft"),
+            require_tags=require_tags,
+        )
 
-            info = tracks.get(path, {})
-            cand_bpm = float(info.get("bpm") or 0.0)
-            cand_key = str(info.get("key") or "")
+    def _set_required_tags(self, value: str) -> None:
+        self.require_tags_input.value = value
+        self.require_tags_input.update()
+        self._on_rerank_control_change()
 
-            if avg_bpm and cand_bpm:
-                if not tempo_match(
-                    avg_bpm, cand_bpm,
-                    pct=filters.get("tempo_pct", 6.0),
-                    allow_doubletime=filters.get("doubletime", True),
-                ):
-                    continue
+    def _build_controls(self) -> PlaylistExpansionControls:
+        return PlaylistExpansionControls(
+            mode=str(self.preset_toggle.value or "balanced"),
+            strategy=str(self.strategy_toggle.value or "blend"),
+            weights=self._weight_values_from_widgets(),
+            diversity=float(self.diversity_slider.value or 0.0),
+            filters=self._filters_from_widgets(),
+            candidate_pool=max(25, int(float(self.candidate_pool_input.value or 250))),
+        )
 
-            if filters.get("camelot") and seed_keys and cand_key:
-                compatible = any(camelot_relation(sk, cand_key)[0] for sk in seed_keys)
-                if not compatible:
-                    continue
+    def _workspace_signature(self) -> tuple[Any, ...]:
+        controls = self._build_controls()
+        return (
+            tuple(self.selected_seeds),
+            controls.strategy,
+            controls.candidate_pool,
+        )
 
-            base_score = 1.0 - float(dist)
+    def _on_rebuild_control_change(self) -> None:
+        self._rerank_if_ready(rebuild=True)
 
-            diversity_penalty = 0.0
-            if diversity > 0 and candidates:
-                for prev_path, _ in candidates[-5:]:
-                    prev_info = tracks.get(prev_path, {})
-                    prev_emb = load_embedding_safe(prev_info.get("embedding"))
-                    if prev_emb is not None:
-                        cand_emb = load_embedding_safe(info.get("embedding"))
-                        if cand_emb is not None:
-                            similarity = np.dot(prev_emb, cand_emb)
-                            diversity_penalty += similarity * diversity
+    def _on_rerank_control_change(self) -> None:
+        self._rerank_if_ready(rebuild=False)
 
-            final_score = base_score - (diversity_penalty / max(len(candidates[-5:]), 1))
-            candidates.append((path, final_score))
+    def _on_count_control_change(self) -> None:
+        self._update_count_hint()
+        self._rerank_if_ready(rebuild=False)
 
-        candidates.sort(key=lambda x: x[1], reverse=True)
+    def _requested_counts(self) -> tuple[int | None, int | None]:
+        count_mode = str(self.count_mode_toggle.value or "target_total")
+        try:
+            count_value = int(float(self.count_value_input.value or 0))
+        except Exception:
+            count_value = 0
 
-        results = []
-        for path, score in candidates[:top]:
-            info = tracks.get(path, {})
-            cand_bpm = info.get("bpm")
-            cand_key = info.get("key")
+        if count_mode == "add_count":
+            return None, max(0, count_value)
+        return max(self._effective_seed_count(), count_value), None
 
-            key_rule = "-"
-            if cand_key and seed_keys:
-                for sk in seed_keys:
-                    ok, rule = camelot_relation(sk, cand_key)
-                    if ok and rule != "-":
-                        key_rule = rule
-                        break
+    def _rerank_if_ready(self, *, rebuild: bool) -> None:
+        if not self.selected_seeds:
+            self._clear_results_table()
+            self.workspace = None
+            self.workspace_signature = None
+            self.current_result = None
+            if hasattr(self, "status_label"):
+                self.status_label.text = "Ready: add at least 3 mapped seeds, then generate"
+                self.status_label.update()
+            return
 
-            results.append({
-                "path": path,
-                "artist": info.get("artist", ""),
-                "title": info.get("title", path.split("\\")[-1].split("/")[-1]),
-                "bpm": f"{cand_bpm:.0f}" if cand_bpm else "-",
-                "key": cand_key or "-",
-                "score": f"{score:.3f}",
-                "key_rule": key_rule,
-            })
+        try:
+            controls = self._build_controls()
+            signature = self._workspace_signature()
+            if rebuild or self.workspace is None or self.workspace_signature != signature:
+                self.workspace = prepare_playlist_expansion(self.selected_seeds, controls=controls)
+                self.workspace_signature = signature
 
-        return results
+            target_total, add_count = self._requested_counts()
+            result = rerank_playlist_expansion(
+                self.workspace,
+                controls=controls,
+                target_total=target_total,
+                add_count=add_count,
+            )
+            self.current_result = result
+            self._render_result(result)
+        except Exception as exc:
+            ui.notify(f"Error: {exc}", type="negative")
+            self._clear_results_table()
+            self.current_result = None
+
+    def _generate(self) -> None:
+        self._rerank_if_ready(rebuild=True)
+
+    def _clear_all(self) -> None:
+        self.selected_seeds.clear()
+        self.loaded_playlist_name = None
+        self.workspace = None
+        self.workspace_signature = None
+        self.current_result = None
+        self.recommendations = []
+        self._clear_results_table()
+        self.count_value_input.value = 30
+        self.count_mode_toggle.value = "target_total"
+        if hasattr(self, "require_tags_input"):
+            self.require_tags_input.value = ""
+            self.require_tags_input.update()
+        self._update_count_hint()
+        if hasattr(self, "_render_seeds_callback"):
+            self._render_seeds_callback()
+        if hasattr(self, "seed_count_label"):
+            self.seed_count_label.text = "0 selected"
+            self.seed_count_label.update()
+        if hasattr(self, "loaded_playlist_label"):
+            self.loaded_playlist_label.text = "No Rekordbox playlist loaded"
+            self.loaded_playlist_label.update()
+        if hasattr(self, "status_label"):
+            self.status_label.text = "Ready: add at least 3 mapped seeds, then generate"
+            self.status_label.update()
+
+    def _clear_results_table(self) -> None:
+        if hasattr(self, "rec_table"):
+            self.rec_table.update([])
+        if hasattr(self, "result_count_label"):
+            self.result_count_label.text = "0 tracks"
+            self.result_count_label.update()
+        self._set_detail_card(
+            title="Why this track matched",
+            summary="Click any added track for a plain-English explanation.",
+            metrics="You will see the overall fit, raw fit, seed support, and the strongest match reasons.",
+            note="This panel explains the ranking; it does not change the result.",
+        )
+
+    def _compact_components(self, component_scores: dict[str, float]) -> str:
+        ordered = sorted(component_scores.items(), key=lambda item: (-float(item[1]), item[0]))
+        return ", ".join(f"{_plain_component_name(key)} {float(value):.2f}" for key, value in ordered[:4])
+
+    def _render_result(self, result: ExpansionResult) -> None:
+        rows: list[dict[str, Any]] = []
+        for track in result.added_tracks:
+            rows.append(
+                {
+                    "path": track.path,
+                    "artist": track.artist or "",
+                    "title": track.title or _track_name(track.path),
+                    "bpm": f"{track.bpm:.0f}" if isinstance(track.bpm, (int, float)) and track.bpm else "-",
+                    "key": track.key or "-",
+                    "score": round(float(track.final_score or track.score), 6),
+                    "base_score": round(float(track.base_score), 6),
+                    "support_count": int(track.support_count),
+                    "ann_distance": round(float(track.ann_distance), 6) if track.ann_distance is not None else "-",
+                    "components": self._compact_components(track.component_scores),
+                    "detail_components": ", ".join(
+                        f"{_plain_component_name(name)} {float(value):.2f}"
+                        for name, value in sorted(track.component_scores.items(), key=lambda item: (-float(item[1]), item[0]))
+                    ),
+                }
+            )
+
+        self.recommendations = rows
+        if hasattr(self, "rec_table"):
+            self.rec_table.update(rows)
+            self.rec_table.set_sort("score", True)
+        if hasattr(self, "result_count_label"):
+            self.result_count_label.text = f"{len(rows)} tracks"
+            self.result_count_label.update()
+
+        diag = result.diagnostics
+        if hasattr(self, "status_label"):
+            self.status_label.text = (
+                f"{diag.get('mode', result.mode)} / {diag.get('strategy', result.strategy)} | "
+                f"{diag.get('selected_count', len(rows))} additions from "
+                f"{diag.get('candidate_pool_total', diag.get('candidate_pool', 0))} prepared candidates"
+            )
+            self.status_label.update()
+
+        self._update_count_hint()
+
+    def _show_track_detail(self, track: dict | None) -> None:
+        if not track:
+            return
+        artist = str(track.get("artist", "") or "")
+        title = str(track.get("title", "") or "")
+        heading = f"{artist} - {title}".strip(" -") or "Track detail"
+        self._set_detail_card(
+            title=heading,
+            summary=(
+                f"Overall fit {float(track.get('score', 0) or 0):.3f}, raw fit {float(track.get('base_score', 0) or 0):.3f}, "
+                f"seed support {int(track.get('support_count', 0) or 0)}."
+            ),
+            metrics=(
+                f"Tempo: {track.get('bpm', '-')} | Key: {track.get('key', '-')} | "
+                f"Why it matched: {track.get('detail_components', track.get('components', ''))}"
+            ),
+            note="Overall fit is the final reranked score. Raw fit is before variety and repeat-protection nudges.",
+        )
+
+    def _set_detail_card(self, *, title: str, summary: str, metrics: str, note: str) -> None:
+        if self.detail_title is not None:
+            self.detail_title.text = title
+            self.detail_title.update()
+        if self.detail_summary is not None:
+            self.detail_summary.text = summary
+            self.detail_summary.update()
+        if self.detail_metrics is not None:
+            self.detail_metrics.text = metrics
+            self.detail_metrics.update()
+        if self.detail_note is not None:
+            self.detail_note.text = note
+            self.detail_note.update()
 
 
 def render() -> None:

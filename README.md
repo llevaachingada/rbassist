@@ -139,21 +139,30 @@ rbassist index
 ```powershell
 rbassist recommend "Artist - Title" --top 25
 ```
-4) Import Bandcamp tags (update local meta for filtering later)
+4) Expand an existing Rekordbox playlist into a larger crate
+```powershell
+rbassist playlist-expand --playlist "DarkMoon" --target-total 30 --mode balanced --preview-json .\data\runlogs\darkmoon_expand.json --out-xml .\exports\darkmoon_expanded.xml
+```
+This is read-only against Rekordbox and `data/meta.json`, and it fails closed if fewer than 3 mapped tracks with embeddings are available.
+Presets now include `tight`, `balanced`, and `adventurous`; advanced overrides include `--strategy blend|centroid|coverage`, `--key-mode off|soft|filter`, and weight flags such as `--w-ann-centroid`, `--w-group-match`, and `--w-tags`.
+The NiceGUI `Crate Expander` tab now uses the same shared backend with Rekordbox playlist loading, preset toggles, advanced sliders, quick role-tag lane buttons such as `Warm-up` and `Peak-time`, and cached reranking so slider changes reuse the prepared candidate pool instead of rebuilding ANN every time.
+Added-track selection also applies a small anti-repetition penalty to reduce same-artist / same-version clustering in the appended crate.
+
+5) Import Bandcamp tags (update local meta for filtering later)
 ```powershell
 rbassist bandcamp-import .\bandcamp.csv rbassist\config.yml
 ```
-5) Import existing Rekordbox My Tags (optional)
+6) Import existing Rekordbox My Tags (optional)
 ```powershell
 rbassist import-mytags "D:\Exports\rekordbox.xml"
 ```
-6) Import Rekordbox 6+ My Tags directly from the encrypted database (no XML export)
+7) Import Rekordbox 6+ My Tags directly from the encrypted database (no XML export)
 ```powershell
 rbassist rekordbox-import-mytags-db
 ```
 Make sure Rekordbox is closed first; this opens `master.db` in read-only mode via `pyrekordbox` and merges MyTags into `data/meta.json` keyed by file path.
 
-7) Auto-suggest My Tags for new tracks
+8) Auto-suggest My Tags for new tracks
 ```powershell
 rbassist tags-auto --margin 0.05
 # review suggestions, then apply:

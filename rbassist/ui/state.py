@@ -1,10 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from rbassist.health import audit_meta_health, suggest_rewrite_pairs
+from rbassist.health import audit_meta_health, default_music_roots, suggest_rewrite_pairs
 from rbassist.utils import load_meta, DATA, IDX, ROOT, pick_device
 
 UI_CONFIG = ROOT / 'config' / 'ui_settings.json'
@@ -75,12 +75,17 @@ class AppState:
         else:
             self.music_folders = []
 
+    def current_music_roots(self) -> list[str]:
+        roots = [str(Path(path)) for path in self.music_folders if str(path).strip()]
+        return roots or default_music_roots()
+
     def refresh_meta(self) -> None:
         self.meta = load_meta()
 
     def refresh_health(self) -> None:
-        report = audit_meta_health(repo=ROOT, meta=self.meta)
-        suggestions = suggest_rewrite_pairs(report, self.music_folders)
+        roots = self.current_music_roots()
+        report = audit_meta_health(repo=ROOT, meta=self.meta, roots=roots)
+        suggestions = suggest_rewrite_pairs(report, roots)
         if suggestions:
             report['suggested_rewrite_pairs'] = [
                 {'from': old, 'to': new}

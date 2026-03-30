@@ -4,7 +4,9 @@ import copy
 import json
 import pathlib
 import re
+import unicodedata
 from collections import Counter, defaultdict
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -19,6 +21,11 @@ from rbassist.utils import (
     save_meta,
     walk_audio,
 )
+
+try:
+    from mutagen import File as MFile  # type: ignore
+except Exception:
+    MFile = None
 
 MERGE_SET_FIELDS = {"mytags", "tags"}
 MERGE_PREFER_LONGER_LIST_FIELDS = {"cues", "tempos"}
@@ -827,11 +834,121 @@ def default_gap_output_prefix() -> pathlib.Path:
     return DATA / "pending_embedding_paths.health"
 
 
+
+
+def _fold_text(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return text
+
+
+def _tokenize_name(value: str | None) -> list[str]:
+    text = _fold_text(value).lower()
+    text = re.sub(r"\.[a-z0-9]{2,5}$", "", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return [part for part in text.split() if part]
+
+
+def _name_key(value: str | None) -> str:
+    return " ".join(_tokenize_name(value))
+
+
+def _name_similarity(left: str | None, right: str | None) -> float:
+    left_key = _name_key(left)
+    right_key = _name_key(right)
+    if not left_key or not right_key:
+        return 0.0
+    return SequenceMatcher(None, left_key, right_key).ratio()
+
+
+def _duration_of_audio(path: str | pathlib.Path) -> float | None:
+    if MFile is None:
+        return None
+    try:
+        media = MFile(str(path))
+        length = float(getattr(getattr(media, "info", None), "length", 0.0) or 0.0)
+        return round(length, 3) if length > 0 else None
+    except Exception:
+        return None
+
+
+def _duration_from_track_info(info: dict | None) -> float | None:
+    if not isinstance(info, dict):
+        return None
+    raw = info.get("duration")
+    try:
+        value = float(raw)
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def _score_bare_candidate(
+    *,
+    source_path: str,
+    source_info: dict,
+    candidate_path: str,
+    candidate_info: dict | None,
+) -> dict:
+    source_name = pathlib.Path(source_path).name
+    source_stem = pathlib.Path(source_path).stem
+    candidate_name = pathlib.Path(candidate_path).name
+    candidate_stem = pathlib.Path(candidate_path).stem
+    source_ext = pathlib.Path(source_path).suffix.lower()
+    candidate_ext = pathlib.Path(candidate_path).suffix.lower()
+
+    confidence = 0.0
+    reasons: list[str] = []
+    if source_name.lower() == candidate_name.lower():
+        confidence = max(confidence, 0.98)
+        reasons.append("exact_basename")
+
+    name_similarity = _name_similarity(source_stem, candidate_stem)
+    if name_similarity >= 0.98:
+        confidence = max(confidence, 0.97)
+        reasons.append("normalized_name_similarity_ge_0_98")
+    elif name_similarity >= 0.92:
+        confidence = max(confidence, 0.9)
+        reasons.append("normalized_name_similarity_ge_0_92")
+    elif name_similarity >= 0.85:
+        confidence = max(confidence, 0.84)
+        reasons.append("normalized_name_similarity_ge_0_85")
+    elif name_similarity >= 0.75:
+        confidence = max(confidence, 0.82)
+        reasons.append("normalized_name_similarity_ge_0_75")
+
+    if source_ext and source_ext == candidate_ext:
+        confidence = min(1.0, max(confidence, 0.0) + 0.01)
+        reasons.append("same_extension")
+
+    source_duration = _duration_from_track_info(source_info)
+    candidate_duration = _duration_from_track_info(candidate_info) or _duration_of_audio(candidate_path)
+    duration_delta = None
+    if source_duration is not None and candidate_duration is not None:
+        duration_delta = round(abs(source_duration - candidate_duration), 3)
+        if duration_delta <= 2.0:
+            confidence = min(1.0, confidence + 0.03)
+            reasons.append("duration_within_2s")
+        elif duration_delta > 5.0:
+            confidence = min(confidence, 0.79)
+            reasons.append("duration_mismatch_gt_5s")
+
+    return {
+        "path": candidate_path,
+        "candidate_path": candidate_path,
+        "confidence": round(confidence, 3),
+        "match_reasons": reasons,
+        "duration_delta": duration_delta,
+        "name_similarity": round(name_similarity, 3),
+        "existing_absolute_entry": candidate_info is not None,
+    }
+
 def resolve_bare_meta_paths(
     *,
     repo: pathlib.Path | None = None,
     roots: list[str] | None = None,
     apply_changes: bool = False,
+    min_confidence: float = 0.92,
     meta: dict | None = None,
 ) -> dict:
     repo = (repo or ROOT).resolve()
@@ -843,14 +960,29 @@ def resolve_bare_meta_paths(
 
     scanned_files = walk_audio(roots)
     by_name: dict[str, list[str]] = defaultdict(list)
+    by_stem: dict[str, list[str]] = defaultdict(list)
+    by_first_token: dict[str, list[str]] = defaultdict(list)
+    absolute_info_lookup: dict[str, dict] = {}
+
+    for path, info in tracks.items():
+        if _is_bare_path(path):
+            continue
+        absolute_info_lookup[normalize_path_string(path)] = info or {}
+
     for path in scanned_files:
-        by_name[pathlib.Path(path).name.lower()].append(path)
+        name = pathlib.Path(path).name.lower()
+        stem_key = _name_key(pathlib.Path(path).stem)
+        by_name[name].append(path)
+        if stem_key:
+            by_stem[stem_key].append(path)
+            first_token = stem_key.split()[0]
+            if first_token:
+                by_first_token[first_token].append(path)
 
     counts = Counter()
-    bare_samples_unique: list[dict] = []
-    bare_samples_ambiguous: list[dict] = []
-    bare_samples_missing: list[dict] = []
     grouped_tracks: dict[str, list[dict]] = defaultdict(list)
+    samples: dict[str, list[dict]] = defaultdict(list)
+    entries: list[dict] = []
 
     for path, info in tracks.items():
         if not _is_bare_path(path):
@@ -860,41 +992,95 @@ def resolve_bare_meta_paths(
         if not _is_bare_path(path):
             continue
         counts["bare_total"] += 1
-        filename = pathlib.Path(str(path)).name.lower()
-        matches = sorted(dict.fromkeys(by_name.get(filename, [])))
-        if len(matches) == 1:
-            target = matches[0]
+        source_path = str(path)
+        source_info = info or {}
+        source_name = pathlib.Path(source_path).name.lower()
+        source_stem_key = _name_key(pathlib.Path(source_path).stem)
+        first_token = source_stem_key.split()[0] if source_stem_key else ""
+
+        candidate_pool: dict[str, str] = {}
+        for candidate in by_name.get(source_name, []):
+            candidate_pool[normalize_path_string(candidate)] = candidate
+        for candidate in by_stem.get(source_stem_key, []):
+            candidate_pool[normalize_path_string(candidate)] = candidate
+        if first_token:
+            for candidate in by_first_token.get(first_token, []):
+                similarity = _name_similarity(pathlib.Path(source_path).stem, pathlib.Path(candidate).stem)
+                if similarity >= 0.75:
+                    candidate_pool[normalize_path_string(candidate)] = candidate
+
+        scored_candidates = []
+        for normalized_candidate, candidate in candidate_pool.items():
+            candidate_info = absolute_info_lookup.get(normalized_candidate)
+            scored = _score_bare_candidate(
+                source_path=source_path,
+                source_info=source_info,
+                candidate_path=candidate,
+                candidate_info=candidate_info,
+            )
+            if scored["confidence"] >= 0.8 or "exact_basename" in scored["match_reasons"]:
+                scored_candidates.append(scored)
+        scored_candidates = sorted(scored_candidates, key=lambda item: (item["confidence"], item["name_similarity"]), reverse=True)
+
+        classification = "not_found"
+        best_candidate = None
+        if not scored_candidates:
+            counts["missing_matches_total"] += 1
+        elif len(scored_candidates) == 1:
+            best_candidate = scored_candidates[0]
             counts["unique_matches_total"] += 1
-            if target in tracks:
+            if best_candidate["confidence"] >= min_confidence:
+                classification = "high_confidence_unique"
+                counts["high_confidence_unique_total"] += 1
+            else:
+                classification = "medium_confidence_unique"
+                counts["medium_confidence_unique_total"] += 1
+            if best_candidate["existing_absolute_entry"]:
                 counts["matched_existing_absolute_total"] += 1
             else:
                 counts["matched_new_absolute_total"] += 1
-            grouped_tracks[target].append({"source_path": str(path), "info": copy.deepcopy(info)})
-            if len(bare_samples_unique) < 100:
-                bare_samples_unique.append({"from": str(path), "to": target})
-        elif len(matches) > 1:
-            counts["ambiguous_matches_total"] += 1
-            if len(bare_samples_ambiguous) < 100:
-                bare_samples_ambiguous.append({"from": str(path), "candidates": matches[:10]})
-            grouped_tracks[str(path)].append({"source_path": str(path), "info": copy.deepcopy(info)})
         else:
-            counts["missing_matches_total"] += 1
-            if len(bare_samples_missing) < 100:
-                bare_samples_missing.append({"from": str(path)})
-            grouped_tracks[str(path)].append({"source_path": str(path), "info": copy.deepcopy(info)})
+            classification = "ambiguous"
+            counts["ambiguous_matches_total"] += 1
+            best_candidate = scored_candidates[0]
+
+        merged_into_existing = bool(best_candidate and best_candidate["existing_absolute_entry"])
+        created_new_absolute_entry = bool(best_candidate and not best_candidate["existing_absolute_entry"] and classification == "high_confidence_unique")
+        if classification == "high_confidence_unique" and best_candidate is not None:
+            grouped_tracks[best_candidate["candidate_path"]].append({"source_path": source_path, "info": copy.deepcopy(source_info)})
+            action_taken = "merge_high_confidence"
+        else:
+            grouped_tracks[source_path].append({"source_path": source_path, "info": copy.deepcopy(source_info)})
+            action_taken = "review_only"
+
+        entry = {
+            "source_bare_path": source_path,
+            "candidate_path": (best_candidate or {}).get("candidate_path", ""),
+            "confidence": (best_candidate or {}).get("confidence", 0.0),
+            "classification": classification,
+            "match_reasons": (best_candidate or {}).get("match_reasons", []),
+            "merged_into_existing": merged_into_existing,
+            "created_new_absolute_entry": created_new_absolute_entry,
+            "candidate_count": len(scored_candidates),
+            "candidates": scored_candidates[:10],
+            "action_taken": action_taken,
+        }
+        entries.append(entry)
+        if len(samples[classification]) < 100:
+            samples[classification].append(entry)
 
     merged_tracks: dict[str, dict] = {}
     merged_groups: list[dict] = []
     conflicting_groups: list[dict] = []
     group_kinds = Counter()
-    for canonical_path, entries in grouped_tracks.items():
-        if len(entries) == 1:
-            merged_tracks[canonical_path] = copy.deepcopy(entries[0]["info"])
+    for canonical_path, grouped_entries in grouped_tracks.items():
+        if len(grouped_entries) == 1:
+            merged_tracks[canonical_path] = copy.deepcopy(grouped_entries[0]["info"])
             continue
-        merged_info, group_report = _merge_track_group(canonical_path, entries, repo=repo)
+        merged_info, group_report = _merge_track_group(canonical_path, grouped_entries, repo=repo)
         merged_tracks[canonical_path] = merged_info
         counts["resolved_groups_total"] += 1
-        counts["merged_entries_total"] += len(entries) - 1
+        counts["merged_entries_total"] += len(grouped_entries) - 1
         group_kinds[group_report["group_kind"]] += 1
         if group_report["conflict_fields"]:
             counts["conflicting_groups_total"] += 1
@@ -904,15 +1090,18 @@ def resolve_bare_meta_paths(
         if len(merged_groups) < 100:
             merged_groups.append(group_report)
 
-    counts["unresolved_bare_total"] = counts["ambiguous_matches_total"] + counts["missing_matches_total"]
+    counts["unresolved_bare_total"] = counts.get("ambiguous_matches_total", 0) + counts.get("missing_matches_total", 0) + counts.get("medium_confidence_unique_total", 0)
     report = {
         "repo": str(repo),
         "music_roots": roots,
+        "min_confidence": min_confidence,
         "counts": dict(counts),
+        "entries": entries,
         "samples": {
-            "unique_matches": bare_samples_unique,
-            "ambiguous_matches": bare_samples_ambiguous,
-            "missing_matches": bare_samples_missing,
+            "high_confidence_unique": samples.get("high_confidence_unique", []),
+            "medium_confidence_unique": samples.get("medium_confidence_unique", []),
+            "ambiguous": samples.get("ambiguous", []),
+            "not_found": samples.get("not_found", []),
             "merged_groups": merged_groups,
             "conflicting_groups": conflicting_groups,
         },

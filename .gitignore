@@ -62,6 +62,7 @@ archive_*/**
 
 # Local user/library data (do not commit)
 config/ui_settings.json
+config/user_profile.json
 config/tags.yml
 config/my_tags.yml
 config/ai_suggestions.json
@@ -76,3 +77,10 @@ hs collection 12.xml
 
 # Review archives
 review/archives/archive_20251209/meta.json
+
+# Generated local analysis/report artifacts
+docs/dev/bare_meta_resolution_*.csv
+docs/dev/bare_meta_resolution_*.json
+docs/dev/health_audit_*.json
+docs/dev/stale_meta_*.json
+output/
