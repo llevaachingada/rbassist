@@ -112,6 +112,66 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   - result: `296` skipped as already embedded, `2` newly embedded, `15` still failing as true `FileNotFoundError` path issues
   - outcome: root-scoped pending embeddings dropped to `15` on the next maintenance baseline (`music_root_analyze_index_20260301T171048Z`)
 
+- 2026-03-31: Comprehensive optimization research audit — no code changes, findings written to WISHLIST.md and CONTINUITY_LOG.md.
+  - Scope: full codebase survey across code quality, performance, UI/UX, features, speed, and external integrations.
+  - Critical bugs found (fix first):
+    - `utils.py:116` — `save_meta()` non-atomic; crash mid-write corrupts entire meta.json. Fix: write to `.tmp` then `tmp.replace(META)`.
+    - `recommend.py:199, 321` — unclosed file handles on `json.load(open(...))`.
+    - `ui/pages/library.py:373`, `ui/pages/cues.py:133` — `job_id` dict overwritten if two jobs start quickly.
+    - `ui/pages/discover.py:336–338` — seed set without index validation; produces cryptic errors.
+    - `ui/state.py:51–95` — `music_folders` mutation not auto-saved to config.
+  - Performance bottlenecks found:
+    - `playlist_expand.py:1020` — brute-force fallback loads `.npy` per-candidate (5,000 disk reads/query). Pre-cache embeddings at fallback init.
+    - `health.py`, `playlist_expand.py`, `embed.py` — `load_meta()` called 5–10× per pipeline run without caching.
+    - `embed.py:707–761` — `batch_size` param ignored; futures submitted one-at-a-time. True batching = 3–5× GPU throughput.
+    - `recommend.py:30–37` — HNSW `resize_index()` thrashes incrementally; pre-allocate from estimated total.
+    - Playlist expansion: cold run penalty (10–20s) from index reloaded per call. `CachedIndexManager` = 50% time reduction.
+    - Batch vectorized cosine in `playlist_expand.py` scoring loop = 20–30% CPU reduction.
+  - Code condensation found:
+    - `playlist_expand.py:461–563` — three nearly-identical playlist loaders (60+ duplicate lines). Extract `_extract_track_metadata()`.
+    - `playlist_expand.py:303–363` — O(n) alias-index search duplicated; build once per session.
+    - `embed.py:518–706` — checkpoint flush pattern repeated; extract helper.
+    - `pyproject.toml` — `demucs` in stems extra is never imported anywhere.
+  - Data layer findings:
+    - No metadata version field; breaking changes silently corrupt old exports.
+    - No embedding hash validation; stale `.npy` files load silently.
+    - SQLite migration worth considering for 13k+ track libraries (per-track ACID, concurrent readers, SQL queries).
+  - UI/UX gaps:
+    - No waveform/spectrogram preview in Discover.
+    - Camelot wheel is plain checkboxes; should be interactive SVG.
+    - No BPM/key color-coded badges.
+    - Drag-to-playlist is a stub.
+    - Full table redraw on filter/sort for 10k+ rows; virtual scrolling needed.
+    - `BatchJobRunner` pattern duplicated across `library.py` and `cues.py`; extract component.
+    - No thread locks on `AppState`; concurrent UI/background access delivers stale data.
+  - Recommendation engine gaps:
+    - Zero diversity weighting; MMR reranking needed.
+    - No context-awareness (set position, energy trajectory).
+    - No serendipity parameter.
+    - No "why this track?" component score breakdown.
+  - New features identified:
+    - Heuristic mood/energy classifier using existing features — ~1 day effort.
+    - ML genre/mood classifier on MERT embeddings — ~5 days.
+    - `samples_score()` computed in `embed.py` but never used in recommendations.
+  - CLI gaps:
+    - `embed`, `analyze`, `beatgrid`, `index` run silently; no progress output.
+    - `--resume` only exists for `embed`; `analyze` and `beatgrid` lose all progress on interrupt.
+    - No `--dry-run` on `export-xml`, `tags-auto --apply`, `playlist-expand`.
+    - 12+ flat commands with no grouping; should be `pipeline`, `metadata`, `io` sub-apps.
+    - No shell tab completion (Typer supports this natively).
+  - External integration gaps:
+    - Serato DJ Pro: high-value, not started. Format: `.plist` + JSON crates.
+    - Traktor Pro 3: high-value, not started. Format: `.nml` XML.
+    - Spotify: skeleton only (`sync_online.py:35–54`); no UI, no two-way sync.
+    - Discogs, MusicBrainz/AcoustID, Last.fm: all not started.
+  - Architecture gaps:
+    - Global path constants (`EMB`, `IDX`, `DATA`, `ROOT`) in `utils.py` block multi-root support.
+    - No event bus; meta changes don't propagate.
+    - No dependency injection; UI pages import modules directly.
+    - Constants scattered across modules; no central config layer.
+  All ~35 new findings are now tracked in `WISHLIST.md` under "Optimization Research Findings (2026-03-31)".
+  Next agent should read: `WISHLIST.md` (new section), `utils.py:116` (atomic fix), `recommend.py:199,321` (file handles), `ui/pages/library.py:373` (job race).
+
 - 2026-03-02: Added continuity anchors for future agents:
   - `docs/dev/PROJECT_CONTINUITY.md` is now the stable north-star brief for mission, scope, current truth, and working rules.
   - `docs/dev/CONTINUITY_LOG.md` is now the rolling session log for what changed, what was learned, and what should happen next.

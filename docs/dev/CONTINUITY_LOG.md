@@ -124,3 +124,23 @@
 - Evidence / outputs: library snapshot during benchmarking was `13332` tracks with `10008` embeddings; warm benchmark runs were `10.874s` at `1000` and `17.270s` at `2000`, with both runs filling from `50` to `100`; cold multi-run averages were `21.801s` at `1000` and `33.958s` at `2000`; cProfile showed the biggest costs in repeated cosine-similarity math, repeated HNSW/index-path loading, alias-index rebuilding, and repeat-signature text processing.
 - Current blockers or risks: the current crate-expansion path is CPU-bound and does not expose a worker knob; widening the candidate pool improves coverage but can substantially increase rerank cost; GPU/CUDA is relevant to embed/analyze paths in the repo but not to the current playlist-expansion path.
 - Next recommended step: implement the first ROI slice by caching the HNSW index, `paths.json`, and alias/meta resolution across expansion runs, then do a second slice that pre-normalizes vectors and precomputes repeat signatures before considering worker-parallel coverage queries.
+
+### 2026-03-31
+- Goal: Comprehensive optimization audit across all dimensions — code quality, performance, UI/UX, features, speed, and external integrations.
+- Changes made: deep research pass across entire codebase (60+ modules, all UI pages, WISHLIST, MASTER_PLAN, pyproject.toml); findings written to `WISHLIST.md` (new "Optimization Research Findings" section, ~35 new items) and this log; `AGENT_HANDOFF_LOG.md` updated with detailed findings.
+- Evidence / outputs: three parallel research agents covered (1) code quality + performance bottlenecks, (2) UI/UX + integration gaps, (3) features + wishlist + architecture gaps. All findings are now tracked in WISHLIST.md.
+- Key findings:
+  - **Critical data loss risk**: `save_meta()` in `utils.py:116` is non-atomic; one-liner fix (temp + rename).
+  - **File handle leaks**: `recommend.py:199, 321` use bare `open()` without context manager.
+  - **Hot-loop disk I/O**: `playlist_expand.py:1020` brute-force fallback does 5,000 `np.load()` calls per query.
+  - **Embed batching broken**: `embed.py` `batch_size` param ignored in parallel path; 3–5× GPU throughput left on table.
+  - **HNSW cold load**: index reloaded per expansion run; `CachedIndexManager` would cut cold run time 50%.
+  - **No recommendation diversity**: ANN naturally clusters similar tracks; MMR reranking is the fix.
+  - **60+ lines duplicated** in playlist loaders (`playlist_expand.py:461–563`).
+  - **UI race conditions**: job ID dict overwritten on concurrent starts; `AppState` has no thread locks.
+  - **No DJ-centric UI features**: waveform preview, Camelot wheel, drag-to-playlist all missing.
+  - **No external integrations**: Serato, Traktor, Discogs, AcoustID all unimplemented; Spotify skeleton has no UI.
+  - **Heuristic mood/energy classifier** could be built on existing features in ~1 day.
+  - **Architecture gaps**: global hardcoded paths block multi-root; no event bus; no DI; no config layer.
+- Current blockers or risks: audit is research-only; no code changed this session. Prioritization of ~35 new items still needed before implementation begins.
+- Next recommended step: start with the three zero-risk critical fixes (atomic save_meta, file handle leaks, job ID race), then implement HNSW index caching as the highest-ROI performance improvement.
