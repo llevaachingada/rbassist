@@ -93,6 +93,13 @@
 ### 2026-03-24
 - Goal: Tighten crate expansion around real DJ crate-building workflows without reopening the scoring architecture.
 - Changes made: used discovery-plus-hardening agents plus targeted workflow research to identify two safe follow-ups; updated `rbassist/ui/pages/crate_expander.py` with one-click role-tag lane buttons (`Warm-up`, `Opener`, `Tool`, `Peak-time`, `Closer`) that feed the existing required-tag filter, and updated `rbassist/playlist_expand.py` to apply a deterministic anti-repetition penalty for same-artist / same-title-stem / same-version clustering while preserving read-only Rekordbox behavior; refreshed `README.md`; extended `tests/test_playlist_expand.py`.
+
+### 2026-03-31
+- Goal: Produce a handoff-ready holistic context report for the analysis/recommendation platform so a follow-on agent can run a mathematical optimality review.
+- Changes made: Added `docs/dev/ANALYSIS_RECOMMENDATION_PLATFORM_CONTEXT_2026-03-31.md` summarizing architecture, scoring workflow, crate-expansion objective structure, known bottlenecks, current vectors, and a concrete evaluation/ablation plan for mathematical validation.
+- Evidence / outputs: The new brief maps embed/analyze/index/recommend/playlist-expand flows and provides explicit scoring equations plus successor-agent scope boundaries.
+- Current blockers or risks: The repo still lacks a formal offline benchmark harness and calibrated objective metrics, so quality claims remain heuristic.
+- Next recommended step: implement a replayable benchmark script that consumes playlist expansion diagnostics and compares baseline heuristics against calibrated alternatives.
 - Evidence / outputs: `.venv\Scripts\python.exe -m pytest tests/test_playlist_expand.py` passed (`14 passed`); `.venv\Scripts\python.exe -m py_compile rbassist\playlist_expand.py rbassist\ui\pages\crate_expander.py` passed; `.venv\Scripts\python.exe -m compileall rbassist\playlist_expand.py rbassist\ui\pages\crate_expander.py` passed.
 - Current blockers or risks: anti-repetition is still heuristic and metadata-dependent, so sparse or inconsistent artist/title fields will weaken it; section-aware or transition-aware set building remains deferred to a later discovery slice.
 - Next recommended step: manually check the Crate Expander lane buttons against real-tagged playlists, then decide whether the next workflow slice should be a “why this track” explainer panel or a section-aware / transition-aware pilot.
