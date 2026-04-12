@@ -12,6 +12,7 @@ from nicegui import ui
 from rbassist.cues import propose_cues
 from rbassist.analyze import _estimate_tempo  # reuse tempo estimator
 from rbassist.utils import load_meta, save_meta, console, walk_audio
+from rbassist.ui_services.cues import build_cue_page_view, plan_cue_targets
 from ..jobs import complete_job, fail_job, latest_job, list_recent_jobs, resolve_active_job, start_job, update_job
 from ..state import get_state
 
@@ -76,25 +77,17 @@ def render() -> None:
                 snapshot = resolve_active_job(cue_job_id["value"], kind="cues_generation")
                 if snapshot is not None:
                     cue_job_id["value"] = snapshot.job_id
-                if snapshot is None:
+                recent = list_recent_jobs(kind="cues_generation", limit=3)
+                view = build_cue_page_view(snapshot, recent)
+                if view.progress_visible:
+                    progress_bar.style("max-width: 400px; display: block;")
+                    progress_bar.value = view.progress_value
+                else:
                     progress_bar.style("max-width: 400px; display: none;")
                     progress_bar.value = 0
-                    status_label.text = "No active cue job."
-                    phase_label.text = ""
-                else:
-                    progress_bar.style("max-width: 400px; display: block;")
-                    progress_bar.value = snapshot.progress or 0.0
-                    status_label.text = snapshot.message or "Idle"
-                    phase_label.text = f"Phase: {snapshot.phase or '-'} | Status: {snapshot.status}"
-
-                recent = list_recent_jobs(kind="cues_generation", limit=3)
-                if recent:
-                    history_label.text = "Recent cue jobs: " + " | ".join(
-                        f"{job.status}:{job.phase or '-'}"
-                        for job in recent
-                    )
-                else:
-                    history_label.text = "Recent cue jobs: none yet."
+                status_label.text = view.status_text
+                phase_label.text = view.phase_text
+                history_label.text = view.history_text
 
                 progress_bar.update()
                 status_label.update()
@@ -117,9 +110,8 @@ def render() -> None:
                 overwrite_existing = bool(overwrite_check.value)
                 duration_value = int(duration_input.value or 120)
                 meta = load_meta()
-                targets = paths
-                if not overwrite_existing:
-                    targets = [p for p in paths if not meta.get("tracks", {}).get(p, {}).get("cues")]
+                plan = plan_cue_targets(meta, paths, overwrite_existing=overwrite_existing)
+                targets = plan.target_paths
 
                 job = start_job(
                     "cues_generation",

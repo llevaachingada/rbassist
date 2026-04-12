@@ -1,6 +1,9 @@
+import subprocess
+import sys
 import unittest
 
-from rbassist.ui.jobs import JobRegistry, resolve_active_job
+from rbassist.runtime import jobs as runtime_jobs
+from rbassist.runtime.jobs import JobRegistry, resolve_active_job
 
 
 class JobRegistryTests(unittest.TestCase):
@@ -44,39 +47,54 @@ class JobRegistryTests(unittest.TestCase):
     def test_resolve_active_job_prefers_local_job_id(self) -> None:
         registry = JobRegistry()
         snapshot = registry.start("settings_pipeline", message="active")
-        from rbassist.ui import jobs as ui_jobs
 
-        old_registry = ui_jobs._REGISTRY
-        ui_jobs._REGISTRY = registry
+        old_registry = runtime_jobs._REGISTRY
+        runtime_jobs._REGISTRY = registry
         try:
             self.assertEqual(resolve_active_job(snapshot.job_id, kind="settings_pipeline"), snapshot)
         finally:
-            ui_jobs._REGISTRY = old_registry
+            runtime_jobs._REGISTRY = old_registry
 
     def test_resolve_active_job_falls_back_to_latest_running_job_by_kind(self) -> None:
         registry = JobRegistry()
         snapshot = registry.start("settings_pipeline", message="active")
-        from rbassist.ui import jobs as ui_jobs
 
-        old_registry = ui_jobs._REGISTRY
-        ui_jobs._REGISTRY = registry
+        old_registry = runtime_jobs._REGISTRY
+        runtime_jobs._REGISTRY = registry
         try:
             self.assertEqual(resolve_active_job(None, kind="settings_pipeline"), snapshot)
         finally:
-            ui_jobs._REGISTRY = old_registry
+            runtime_jobs._REGISTRY = old_registry
 
     def test_resolve_active_job_ignores_completed_fallback_job(self) -> None:
         registry = JobRegistry()
         snapshot = registry.start("settings_pipeline", message="active")
         registry.complete(snapshot.job_id, message="done")
-        from rbassist.ui import jobs as ui_jobs
 
-        old_registry = ui_jobs._REGISTRY
-        ui_jobs._REGISTRY = registry
+        old_registry = runtime_jobs._REGISTRY
+        runtime_jobs._REGISTRY = registry
         try:
             self.assertIsNone(resolve_active_job(None, kind="settings_pipeline"))
         finally:
-            ui_jobs._REGISTRY = old_registry
+            runtime_jobs._REGISTRY = old_registry
+
+    def test_ui_jobs_compat_import_does_not_load_nicegui_app(self) -> None:
+        script = (
+            "import importlib, sys; "
+            "importlib.import_module('rbassist.ui.jobs'); "
+            "raise SystemExit(1 if 'rbassist.ui.app' in sys.modules or 'nicegui' in sys.modules else 0)"
+        )
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ui_package_lazy_run_export_does_not_load_nicegui_app(self) -> None:
+        script = (
+            "import importlib, sys; "
+            "importlib.import_module('rbassist.ui'); "
+            "raise SystemExit(1 if 'rbassist.ui.app' in sys.modules or 'nicegui' in sys.modules else 0)"
+        )
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

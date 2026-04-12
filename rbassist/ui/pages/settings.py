@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import asyncio
-import shlex
-import re
 from nicegui import ui
 
 from rbassist.health import list_embedding_gaps, normalize_meta_paths, resolve_bare_meta_paths
@@ -14,10 +12,12 @@ from ..jobs import complete_job, fail_job, latest_job, list_recent_jobs, resolve
 from ..state import get_state
 from ..components.health_summary import render_health_summary
 from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
+from rbassist.ui_services.settings import (
+    build_settings_pipeline_request,
+    build_settings_pipeline_view,
+    parse_folder_inputs,
+)
 from rbassist.utils import ROOT
-
-SMART_QUOTES = {"'", '"', "\u2018", "\u2019", "\u201c", "\u201d"}
-SMART_QUOTE_PATTERN = "\"([^\"]+)\"|\u201c([^\u201d]+)\u201d|'([^']+)'|\u2018([^\u2019]+)\u2019"
 
 
 def render() -> None:
@@ -249,69 +249,7 @@ def render() -> None:
                                     ui.button(icon="close", on_click=_remove).props("flat round dense").classes("text-gray-400")
 
                     def _add_folder(val: str) -> None:
-                        def _parse_folder_inputs(raw: str) -> list[str]:
-                            if not raw:
-                                return []
-                            tokens: list[str] = []
-
-                            def _strip_quotes(s: str) -> str:
-                                s = s.strip()
-                                if len(s) >= 2 and s[0] == s[-1] and s[0] in SMART_QUOTES:
-                                    return s[1:-1]
-                                # Handle mismatched leading/trailing smart quotes.
-                                if s[:1] in SMART_QUOTES:
-                                    s = s[1:]
-                                if s[-1:] in SMART_QUOTES:
-                                    s = s[:-1]
-                                return s.strip()
-
-                            def _extract_quoted(line: str) -> list[str]:
-                                # Look for plain or smart-quoted path segments.
-                                matches = re.findall(SMART_QUOTE_PATTERN, line)
-                                out: list[str] = []
-                                for a, b, c, d in matches:
-                                    candidate = a or b or c or d
-                                    if candidate:
-                                        out.append(candidate)
-                                return out
-
-                            def _looks_like_path(line: str) -> bool:
-                                line = line.strip()
-                                return (
-                                    bool(re.match(r"^[A-Za-z]:[\\/]", line))
-                                    or line.startswith("\\\\")
-                                    or line.startswith("/")
-                                )
-
-                            for line in raw.replace("\r", "\n").split("\n"):
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                quoted = _extract_quoted(line)
-                                if quoted:
-                                    parts = quoted
-                                elif ";" in line:
-                                    parts = [p for p in line.split(";") if p.strip()]
-                                elif _looks_like_path(line):
-                                    parts = [line]
-                                else:
-                                    try:
-                                        parts = shlex.split(line, posix=False)
-                                    except ValueError:
-                                        parts = [line]
-                                    # Fallback: if shlex returned one long string but we had multiple quoted segments
-                                    if len(parts) == 1:
-                                        extra_quoted = _extract_quoted(line)
-                                        if len(extra_quoted) > 1:
-                                            parts = extra_quoted
-                                for part in parts:
-                                    for piece in part.split(";"):
-                                        piece = _strip_quotes(piece)
-                                        if piece:
-                                            tokens.append(piece)
-                            return tokens
-
-                        paths = _parse_folder_inputs(val)
+                        paths = parse_folder_inputs(val)
                         if not paths:
                             ui.notify("Folder path is empty", type="warning")
                             return
@@ -512,25 +450,16 @@ def render() -> None:
                     snapshot = resolve_active_job(pipeline_job_id["value"], kind="settings_pipeline")
                     if snapshot is not None:
                         pipeline_job_id["value"] = snapshot.job_id
-                    if snapshot is None:
-                        pipe_progress.value = 0
-                        pipe_label.text = "Idle"
-                        pipe_phase.text = "No active settings pipeline."
-                        pipe_error.text = ""
-                    else:
-                        pipe_progress.value = snapshot.progress or 0.0
-                        pipe_label.text = snapshot.message or "Idle"
-                        pipe_phase.text = f"Phase: {snapshot.phase or '-'} | Status: {snapshot.status}"
-                        pipe_error.text = f"Error: {snapshot.error}" if snapshot.error else ""
-
                     recent = list_recent_jobs(kind="settings_pipeline", limit=3)
-                    if recent:
-                        pipe_history.text = "Recent settings jobs: " + " | ".join(
-                            f"{job.status}:{job.phase or '-'}"
-                            for job in recent
-                        )
+                    view = build_settings_pipeline_view(snapshot, recent)
+                    if view.progress_visible:
+                        pipe_progress.value = view.progress_value
                     else:
-                        pipe_history.text = "Recent settings jobs: none yet."
+                        pipe_progress.value = 0
+                    pipe_label.text = view.status_text
+                    pipe_phase.text = view.phase_text
+                    pipe_error.text = view.error_text
+                    pipe_history.text = view.history_text
 
                     pipe_progress.update()
                     pipe_label.update()
@@ -651,12 +580,28 @@ def render() -> None:
                             ]
 
                     total_steps = max(1, len(embed_files) + len(analysis_files) + len(bg_files) + 1)
+                    pipeline_request = build_settings_pipeline_request(
+                        scope_label=scope_label,
+                        files_total=len(files),
+                        embed_total=len(embed_files),
+                        analysis_total=len(analysis_files),
+                        beatgrid_total=len(bg_files),
+                        overwrite=overwrite,
+                        skip_analyzed=skip_analyzed,
+                        use_timbre=use_timbre,
+                        resume_embed=resume_embed,
+                        duration_s=int(duration_input.value or 120),
+                        workers=workers_value,
+                        batch_size=batch_size_value,
+                        device=device_value,
+                        add_cues=add_cues_value,
+                        beatgrid_enabled=beatgrid_enabled,
+                        beatgrid_overwrite=beatgrid_overwrite,
+                        checkpoint_file=checkpoint_value,
+                        checkpoint_every=checkpoint_every,
+                    )
                     try:
-                        preflight_label.content = (
-                            f"**Preflight:** {len(files)} files found, {len(embed_files)} will embed, "
-                            f"{len(analysis_files)} will analyze, {len(bg_files)} will beatgrid, "
-                            f"overwrite={'ON' if overwrite else 'OFF'}, resume={'ON' if resume_embed else 'OFF'}"
-                        )
+                        preflight_label.content = pipeline_request.preflight_text()
                         preflight_label.update()
                     except Exception:
                         pass
@@ -666,21 +611,14 @@ def render() -> None:
                         phase="preflight",
                         message=f"Preparing {scope_label}...",
                         progress=0.0,
-                        result={
-                            "scope": scope_label,
-                            "files_total": len(files),
-                            "embed_total": len(embed_files),
-                            "analysis_total": len(analysis_files),
-                            "beatgrid_total": len(bg_files),
-                        },
+                        result=pipeline_request.result_payload(),
                     )
                     pipeline_job_id["value"] = job.job_id
                     _refresh_pipeline_job_view()
 
                     try:
                         ui.notify(
-                            f"Running pipeline on {scope_label}: {len(files)} track(s) "
-                            f"({len(embed_files)} embed, {len(analysis_files)} analyze)...",
+                            pipeline_request.running_text(),
                             type="info",
                         )
                     except RuntimeError:
@@ -777,14 +715,8 @@ def render() -> None:
                         complete_job(
                             job.job_id,
                             phase="completed",
-                            message="Embed + Analyze + Index complete",
-                            result={
-                                "scope": scope_label,
-                                "files_total": len(files),
-                                "embed_total": len(embed_files),
-                                "analysis_total": len(analysis_files),
-                                "beatgrid_total": len(bg_files),
-                            },
+                            message=pipeline_request.completed_text(),
+                            result=pipeline_request.result_payload(),
                         )
                         state.refresh_meta()
                         state.refresh_health()
@@ -805,9 +737,9 @@ def render() -> None:
                         fail_job(
                             job.job_id,
                             phase="failed",
-                            message="Pipeline failed",
+                            message=pipeline_request.failed_text(),
                             error=str(e),
-                            result={"scope": scope_label},
+                            result=pipeline_request.result_payload(),
                         )
                         _refresh_pipeline_job_view()
                         try:

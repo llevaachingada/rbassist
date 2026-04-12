@@ -1,6 +1,9 @@
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from rbassist.ui.pages.discover import (
+    DiscoverPage,
     _should_apply_refresh_result,
     _should_continue_refresh_drain,
     _should_start_refresh_task,
@@ -44,6 +47,30 @@ class DiscoverPageHelperTests(unittest.TestCase):
                 latest_request_id=3,
                 browse_mode=True,
             )
+        )
+
+    def test_get_recommendations_delegates_to_gui_neutral_service(self) -> None:
+        page = SimpleNamespace(
+            state=SimpleNamespace(
+                meta={"tracks": {}},
+                filters={"tempo_pct": 6.0},
+                weights={"ann": 1.0},
+            )
+        )
+
+        with mock.patch(
+            "rbassist.ui.pages.discover.build_recommendation_rows",
+            return_value=[{"path": "candidate.mp3"}],
+        ) as build_mock:
+            rows = DiscoverPage._get_recommendations(page, "seed.mp3")
+
+        self.assertEqual(rows, [{"path": "candidate.mp3"}])
+        build_mock.assert_called_once_with(
+            seed_path="seed.mp3",
+            top=50,
+            meta={"tracks": {}},
+            filters={"tempo_pct": 6.0},
+            weights={"ann": 1.0},
         )
 
 

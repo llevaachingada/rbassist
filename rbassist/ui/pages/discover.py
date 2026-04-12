@@ -3,128 +3,32 @@
 from __future__ import annotations
 
 import asyncio
-import numpy as np
 from nicegui import ui
 
-from rbassist.bpm_sources import track_bpm_sources
+from rbassist.ui_services.discover import (
+    audio_distance_note as _audio_distance_note,
+    bpm_summary_text as _bpm_summary_text,
+    build_recommendation_rows,
+    build_track_detail,
+    camelot_relation_score,
+    plain_key_fit as _plain_key_fit,
+    should_apply_refresh_result as _should_apply_refresh_result,
+    should_continue_refresh_drain as _should_continue_refresh_drain,
+    should_start_refresh_task as _should_start_refresh_task,
+    tag_similarity_score,
+    tempo_score,
+)
+from rbassist.ui_services.library import (
+    bpm_alert_text as _bpm_alert_text,
+    build_library_rows,
+    format_bpm_cell as _format_bpm_cell,
+    format_bpm_metric as _format_bpm_metric,
+)
 from ..jobs import complete_job, fail_job, start_job, update_job
 from ..state import get_state
 from ..components.seed_card import SeedCard
 from ..components.filters import FilterPanel
 from ..components.track_table import TrackTable
-
-
-def tempo_score(seed_bpm: float, cand_bpm: float, max_diff: float = 6.0) -> float:
-    """Calculate BPM similarity score in [0, 1]."""
-    if seed_bpm <= 0 or cand_bpm <= 0:
-        return 0.0
-    diff = abs(seed_bpm - cand_bpm)
-    if max_diff > 0 and diff > max_diff:
-        return 0.0
-    if max_diff <= 0:
-        max_diff = 6.0
-    return max(0.0, 1.0 - diff / max_diff)
-
-
-def camelot_relation_score(seed: str, cand: str) -> float:
-    """Calculate key relation score in [0, 1] based on Camelot wheel."""
-    if not seed or not cand:
-        return 0.0
-    if seed == cand:
-        return 1.0
-
-    try:
-        n1, m1 = int(seed[:-1]), seed[-1].upper()
-        n2, m2 = int(cand[:-1]), cand[-1].upper()
-    except Exception:
-        return 0.0
-
-    if n1 == n2 and m1 != m2:
-        return 0.8
-
-    if (n1 - n2) % 12 in (1, 11):
-        return 0.7
-
-    return 0.0
-
-
-def tag_similarity_score(seed_tags: set, cand_tags: set, prefer_tags: set = None) -> float:
-    """Calculate tag similarity using Jaccard similarity."""
-    if not seed_tags and not cand_tags:
-        return 0.0
-
-    if prefer_tags:
-        all_tags = seed_tags | prefer_tags
-    else:
-        all_tags = seed_tags
-
-    if not all_tags:
-        return 0.0
-
-    inter = len(cand_tags & all_tags)
-    union = len(cand_tags | all_tags)
-
-    if union == 0:
-        return 0.0
-
-    return inter / union
-
-
-def _plain_key_fit(label: str) -> str:
-    clean = str(label or "-").strip().lower()
-    if clean in {"same", "relative", "neighbor"}:
-        return clean.title()
-    if clean == "-":
-        return "Not scored"
-    return clean.replace("_", " ").title()
-
-
-def _audio_distance_note(value: object) -> str:
-    if isinstance(value, (int, float)):
-        return f"{float(value):.3f} (lower means the raw audio match is closer)"
-    return "Not shown in library browse mode"
-
-
-def _format_bpm_cell(value: float | None) -> str:
-    return f"{float(value):.0f}" if isinstance(value, (int, float)) and value else "-"
-
-
-def _format_bpm_metric(value: float | None) -> str:
-    return f"{float(value):.2f} BPM" if isinstance(value, (int, float)) and value else "-- BPM"
-
-
-def _bpm_alert_text(large_mismatch: bool) -> str:
-    return "Large mismatch" if large_mismatch else "-"
-
-
-def _bpm_summary_text(path: str, info: dict) -> str:
-    bpm_info = track_bpm_sources(path, info)
-    preferred_label = "Rekordbox" if bpm_info.preferred_source == "rekordbox" else "RB Assist"
-    summary = (
-        f"Using {preferred_label}: {_format_bpm_metric(bpm_info.preferred_bpm)}"
-        f" | Rekordbox: {_format_bpm_metric(bpm_info.rekordbox_bpm)}"
-        f" | RB Assist: {_format_bpm_metric(bpm_info.rbassist_bpm)}"
-    )
-    if bpm_info.large_mismatch and bpm_info.delta is not None:
-        summary += f" | Delta: {bpm_info.delta:+.2f}"
-    return summary
-
-
-def _should_apply_refresh_result(*, request_id: int, latest_request_id: int, browse_mode: bool) -> bool:
-    """Only the newest non-browse refresh should update the table."""
-    return not browse_mode and request_id == latest_request_id
-
-
-def _should_start_refresh_task(*, running: bool) -> bool:
-    """Coalesce rapid refresh requests behind the current in-flight task."""
-    return not running
-
-
-def _should_continue_refresh_drain(
-    *, completed_request_id: int, latest_request_id: int, browse_mode: bool
-) -> bool:
-    """Decide whether the drain loop should immediately run the newest queued request."""
-    return not browse_mode and completed_request_id != latest_request_id
 
 
 class DiscoverPage:
@@ -298,27 +202,7 @@ class DiscoverPage:
 
     def _show_library(self) -> None:
         """Show full library in browse mode."""
-        tracks = self.state.meta.get("tracks", {})
-
-        rows = []
-        for path, info in tracks.items():
-            bpm_info = track_bpm_sources(path, info)
-            key = info.get("key")
-
-            rows.append({
-                "path": path,
-                "artist": info.get("artist", ""),
-                "title": info.get("title", path.split("\\")[-1].split("/")[-1]),
-                "bpm": _format_bpm_cell(bpm_info.preferred_bpm),
-                "rekordbox_bpm": _format_bpm_cell(bpm_info.rekordbox_bpm),
-                "rbassist_bpm": _format_bpm_cell(bpm_info.rbassist_bpm),
-                "bpm_alert": _bpm_alert_text(bpm_info.large_mismatch),
-                "key": key or "-",
-                "dist": "-",
-                "key_rule": "-",
-            })
-
-        rows.sort(key=lambda r: (r["artist"].lower(), r["title"].lower()))
+        rows = build_library_rows(self.state.meta)
 
         if self.rec_table:
             self.rec_table.update(rows[:500])
@@ -358,31 +242,12 @@ class DiscoverPage:
         if not path:
             return
         info = self.state.meta.get("tracks", {}).get(path, {})
-        key = info.get("key")
-        merged_tags = [
-            str(tag).strip()
-            for tag in list(info.get("tags", []) or []) + list(info.get("mytags", []) or [])
-            if str(tag).strip()
-        ]
-        tags = ", ".join(dict.fromkeys(merged_tags)) or "No tags"
-        key_text = key or "-"
-        title = f"{track.get('artist', '')} - {track.get('title', '')}".strip(" -")
-        summary = (
-            f"Overall fit {track.get('score', '-')}, audio distance {_audio_distance_note(track.get('dist'))}, "
-            f"harmonic fit {_plain_key_fit(track.get('key_rule', '-'))}."
-        )
-        if self.browse_mode:
-            summary = "Library browse mode shows track metadata only. Switch back to Recommendations for ranked matches."
-
+        detail = build_track_detail(path=path, track=track, info=info, browse_mode=self.browse_mode)
         self._set_detail_card(
-            title=title or str(track.get("title", "") or "Track detail"),
-            summary=summary,
-            metrics=f"Tempo: {_bpm_summary_text(path, info)} | Key: {key_text} | Tags: {tags}",
-            note=(
-                "Tempo scoring prefers Rekordbox BPM when it is available. RB Assist BPM stays visible as the local analysis value."
-                if not self.browse_mode
-                else "This row is not being reranked in browse mode."
-            ),
+            title=detail["title"],
+            summary=detail["summary"],
+            metrics=detail["metrics"],
+            note=detail["note"],
         )
 
     def _use_selected_as_seed(self) -> None:
@@ -559,181 +424,13 @@ class DiscoverPage:
         weights: dict | None = None,
     ) -> list[dict]:
         """Get recommendations for seed track with weighted scoring."""
-        from rbassist.recommend import load_embedding_safe, IDX
-        from rbassist.utils import camelot_relation, tempo_match
-        import hnswlib
-        import json
-
-        try:
-            from rbassist.features import bass_similarity, rhythm_similarity
-        except Exception:
-            bass_similarity = None
-            rhythm_similarity = None
-
-        meta = meta or self.state.meta
-        tracks = meta.get("tracks", {})
-        seed_info = tracks.get(seed_path, {})
-
-        emb_path = seed_info.get("embedding")
-        if not emb_path:
-            raise ValueError("Seed track has no embedding")
-
-        seed_vec = load_embedding_safe(emb_path)
-        if seed_vec is None:
-            raise ValueError("Could not load seed embedding")
-
-        paths_file = IDX / "paths.json"
-        paths_map = json.loads(paths_file.read_text(encoding="utf-8"))
-
-        index = hnswlib.Index(space="cosine", dim=seed_vec.shape[0])
-        index.load_index(str(IDX / "hnsw.idx"))
-        index.set_ef(64)
-
-        labels, dists = index.knn_query(seed_vec, k=min(top * 4, len(paths_map)))
-        labels, dists = labels[0].tolist(), dists[0].tolist()
-
-        filters = dict(filters or self.state.filters)
-        weights = dict(weights or self.state.weights)
-
-        seed_bpm_info = track_bpm_sources(seed_path, seed_info)
-        seed_bpm = float(seed_bpm_info.preferred_bpm or 0.0)
-        seed_key = str(seed_info.get("key") or "")
-        seed_camelot = str(seed_info.get("camelot") or "")
-        seed_features = seed_info.get("features", {})
-        seed_tags = set(seed_info.get("tags", []) + seed_info.get("mytags", []))
-
-        seed_bass_contour = np.array(
-            seed_features.get("bass_contour", {}).get("contour", []),
-            dtype=float,
+        return build_recommendation_rows(
+            seed_path=seed_path,
+            top=top,
+            meta=meta or self.state.meta,
+            filters=filters or self.state.filters,
+            weights=weights or self.state.weights,
         )
-        seed_rhythm_contour = np.array(
-            seed_features.get("rhythm_contour", {}).get("contour", []),
-            dtype=float,
-        )
-
-        bpm_max_diff = float(filters.get("bpm_max_diff", 0.0))
-        allowed_key_rel = set(filters.get("allowed_key_relations", []))
-        require_tags = set(filters.get("require_tags", []))
-        prefer_tags = set(filters.get("prefer_tags", []))
-
-        weight_sum = sum(weights.values())
-        if weight_sum <= 0:
-            weight_sum = 1.0
-
-        results = []
-        for label, dist in zip(labels, dists):
-            path = paths_map[label]
-            if path == seed_path:
-                continue
-
-            info = tracks.get(path, {})
-            cand_bpm_info = track_bpm_sources(path, info)
-            cand_bpm = float(cand_bpm_info.preferred_bpm or 0.0)
-            cand_key = str(info.get("key") or "")
-            cand_camelot = str(info.get("camelot") or "")
-            cand_features = info.get("features", {})
-            cand_tags = set(info.get("tags", []) + info.get("mytags", []))
-
-            if bpm_max_diff > 0 and seed_bpm > 0 and cand_bpm > 0:
-                if abs(seed_bpm - cand_bpm) > bpm_max_diff:
-                    continue
-
-            if not tempo_match(
-                seed_bpm, cand_bpm,
-                pct=filters.get("tempo_pct", 6.0),
-                allow_doubletime=filters.get("doubletime", True)
-            ):
-                continue
-
-            if require_tags and not require_tags.issubset(cand_tags):
-                continue
-
-            key_score = camelot_relation_score(seed_camelot or seed_key, cand_camelot or cand_key)
-
-            if allowed_key_rel:
-                if key_score >= 0.99:
-                    rel = "same"
-                elif key_score >= 0.79:
-                    rel = "relative"
-                elif key_score >= 0.69:
-                    rel = "neighbor"
-                else:
-                    rel = "other"
-
-                if rel not in allowed_key_rel:
-                    continue
-            else:
-                if key_score >= 0.99:
-                    rel = "same"
-                elif key_score >= 0.79:
-                    rel = "relative"
-                elif key_score >= 0.69:
-                    rel = "neighbor"
-                else:
-                    ok, rel = camelot_relation(seed_key, cand_key)
-                    if filters.get("camelot") and not ok:
-                        continue
-                    if not ok:
-                        rel = "-"
-
-            score = 0.0
-
-            if weights.get("ann", 0.0):
-                ann_score = 1.0 - float(dist)
-                score += weights["ann"] * ann_score
-
-            if weights.get("samples", 0.0):
-                samples_val = float(cand_features.get("samples", 0.0))
-                score += weights["samples"] * samples_val
-
-            if weights.get("bass", 0.0) and bass_similarity is not None:
-                cand_bass_contour = np.array(
-                    cand_features.get("bass_contour", {}).get("contour", []),
-                    dtype=float,
-                )
-                if seed_bass_contour.size and cand_bass_contour.size:
-                    bass_score = float(bass_similarity(seed_bass_contour, cand_bass_contour))
-                    score += weights["bass"] * bass_score
-
-            if weights.get("rhythm", 0.0) and rhythm_similarity is not None:
-                cand_rhythm_contour = np.array(
-                    cand_features.get("rhythm_contour", {}).get("contour", []),
-                    dtype=float,
-                )
-                if seed_rhythm_contour.size and cand_rhythm_contour.size:
-                    rhythm_score = float(rhythm_similarity(seed_rhythm_contour, cand_rhythm_contour))
-                    score += weights["rhythm"] * rhythm_score
-
-            if weights.get("bpm", 0.0) and seed_bpm > 0 and cand_bpm > 0:
-                bpm_score = tempo_score(seed_bpm, cand_bpm, bpm_max_diff or filters.get("tempo_pct", 6.0))
-                score += weights["bpm"] * bpm_score
-
-            if weights.get("key", 0.0):
-                score += weights["key"] * key_score
-
-            if weights.get("tags", 0.0):
-                tag_score = tag_similarity_score(seed_tags, cand_tags, prefer_tags)
-                score += weights["tags"] * tag_score
-
-            score /= weight_sum
-
-            results.append({
-                "path": path,
-                "artist": info.get("artist", ""),
-                "title": info.get("title", path.split("\\")[-1].split("/")[-1]),
-                "bpm": _format_bpm_cell(cand_bpm_info.preferred_bpm),
-                "rekordbox_bpm": _format_bpm_cell(cand_bpm_info.rekordbox_bpm),
-                "rbassist_bpm": _format_bpm_cell(cand_bpm_info.rbassist_bpm),
-                "bpm_alert": _bpm_alert_text(cand_bpm_info.large_mismatch),
-                "key": cand_key or "-",
-                "dist": round(float(dist), 3),
-                "key_rule": rel,
-                "score": round(float(score), 3),
-            })
-
-        results.sort(key=lambda r: r["score"], reverse=True)
-
-        return results[:top]
 
 
 _page: DiscoverPage | None = None

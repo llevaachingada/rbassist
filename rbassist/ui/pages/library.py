@@ -12,12 +12,13 @@ import numpy as np
 from nicegui import ui
 
 from rbassist.beatgrid import BeatgridConfig, analyze_file, analyze_paths as analyze_beatgrid_paths
-from rbassist.utils import ROOT, is_junk_path, resolve_track_path, walk_audio
+from rbassist.utils import walk_audio
 
 from ..jobs import complete_job, fail_job, latest_job, list_recent_jobs, resolve_active_job, start_job, update_job
 from ..components.health_summary import render_health_summary
 from ..components.track_table import TrackTable
 from ..state import get_state
+from rbassist.ui_services.library import build_library_page_model
 
 
 ROWS_PER_PAGE_OPTIONS = [25, 50, 100, 250, 500]
@@ -519,70 +520,9 @@ def render() -> None:
                 'bg-teal-600 hover:bg-teal-500 text-white mt-2'
             )
 
-        tracks = state.meta.get('tracks', {})
-        all_rows = []
-        for path, info in tracks.items():
-            tags = info.get('mytags') or info.get('tags') or []
-            if isinstance(tags, (list, tuple)):
-                tags_str = ', '.join(str(tag) for tag in tags)
-            else:
-                tags_str = str(tags)
-            try:
-                stale_path = not resolve_track_path(path, base_dir=ROOT).exists()
-            except Exception:
-                stale_path = True
-            bare_path = not Path(str(path)).drive and not Path(str(path)).is_absolute()
-            junk_path = is_junk_path(path)
-            embedding_path = info.get('embedding')
-            embedding_ok = False
-            if embedding_path:
-                emb_candidate = Path(str(embedding_path))
-                if not emb_candidate.is_absolute():
-                    emb_candidate = (ROOT / emb_candidate).resolve()
-                embedding_ok = emb_candidate.exists()
-            missing_embedding = not embedding_ok
-            missing_analysis = not (info.get('bpm') and info.get('key'))
-            missing_cues = not info.get('cues')
-            issues: list[str] = []
-            if stale_path:
-                issues.append('stale path')
-            if bare_path:
-                issues.append('bare path')
-            if junk_path:
-                issues.append('junk path')
-            if missing_embedding:
-                issues.append('missing embedding')
-            if missing_analysis:
-                issues.append('missing analysis')
-            if missing_cues:
-                issues.append('missing cues')
-
-            all_rows.append({
-                'path': path,
-                'artist': info.get('artist', ''),
-                'title': info.get('title', Path(path).name),
-                'bpm': f"{info.get('bpm', 0):.0f}" if info.get('bpm') else '-',
-                'key': info.get('key', '-'),
-                'embedded': 'Yes' if embedding_ok else 'No',
-                'analyzed': 'Yes' if not missing_analysis else 'No',
-                'beatgrid': 'Yes' if info.get('tempos') else 'No',
-                'mytags': tags_str,
-                'issues': ', '.join(issues) if issues else '-',
-                '_health': {
-                    'missing_embedding': missing_embedding,
-                    'missing_analysis': missing_analysis,
-                    'missing_cues': missing_cues,
-                    'stale_path': stale_path,
-                    'bare_path': bare_path,
-                    'junk_path': junk_path,
-                },
-            })
-
-        issue_modes = ['missing_embedding', 'missing_analysis', 'missing_cues', 'stale_path', 'bare_path', 'junk_path']
-        issue_counts = {
-            mode: sum(1 for row in all_rows if row.get('_health', {}).get(mode))
-            for mode in issue_modes
-        }
+        page_model = build_library_page_model(state.meta)
+        all_rows = page_model.rows
+        issue_counts = page_model.issue_counts
 
         with ui.row().classes('w-full items-center gap-3 flex-wrap'):
             search_box = ui.input(placeholder='Search artist / title / MyTags / issues').props('dark dense clearable').classes('w-96')
