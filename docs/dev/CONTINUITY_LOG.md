@@ -118,9 +118,58 @@
 - Current blockers or risks: the prompt pack only helps if workers keep their file scopes narrow and avoid reopening product design or feature work during hardening.
 - Next recommended step: start one controller thread from `docs/dev/prompts/nicegui_stabilization/controller.md`, then launch worker threads from the remaining prompt files in the order described by the pack `README.md`.
 
+### 2026-04-12
+- Goal: Add a concrete manual go/no-go checklist for the NiceGUI stabilization bridge after shared job runtime follow-ups.
+- Changes made: added `docs/dev/NICEGUI_STABILIZATION_SMOKE_CHECKLIST.md` covering shell lazy-load smoke, `Settings` pipeline job reattach, `Library` beatgrid job reattach, `Cues` job reattach, rapid `Discover` refresh coalescing, and second-launch/port behavior.
+- Evidence / outputs: the checklist gives future operators and agents a focused manual validation path before deciding whether to stop NiceGUI hardening or do one narrow launch/session hygiene follow-up.
+- Current blockers or risks: the checklist is manual by design; it does not replace browser-end validation or resolve unrelated dirty worktree drift.
+- Next recommended step: run the checklist in a browser, record pass/fail notes, then either stop NiceGUI stabilization or do only the launch/session hygiene slice in `start.ps1` and `rbassist/cli.py`.
+
 ### 2026-03-30
 - Goal: Capture crate-expander performance findings and preserve the next optimization slices for a future hardening pass.
 - Changes made: benchmarked real playlist expansion at `candidate_pool=1000` vs `2000` using `2024 Novemebr DLs` (`50` mapped/embedded seeds, target total `100`), profiled the hot path in `rbassist/playlist_expand.py`, and added a dedicated performance backlog note to `WISHLIST.md`.
 - Evidence / outputs: library snapshot during benchmarking was `13332` tracks with `10008` embeddings; warm benchmark runs were `10.874s` at `1000` and `17.270s` at `2000`, with both runs filling from `50` to `100`; cold multi-run averages were `21.801s` at `1000` and `33.958s` at `2000`; cProfile showed the biggest costs in repeated cosine-similarity math, repeated HNSW/index-path loading, alias-index rebuilding, and repeat-signature text processing.
 - Current blockers or risks: the current crate-expansion path is CPU-bound and does not expose a worker knob; widening the candidate pool improves coverage but can substantially increase rerank cost; GPU/CUDA is relevant to embed/analyze paths in the repo but not to the current playlist-expansion path.
 - Next recommended step: implement the first ROI slice by caching the HNSW index, `paths.json`, and alias/meta resolution across expansion runs, then do a second slice that pre-normalizes vectors and precomputes repeat signatures before considering worker-parallel coverage queries.
+
+### 2026-03-30
+- Goal: Close the remaining crate-expander workflow gap by letting the GUI save an expansion in a Rekordbox-importable format.
+- Changes made: updated `rbassist/ui/pages/crate_expander.py` to add a `Save Rekordbox Playlist XML` action, clear copy that the export is a playlist XML file only and does not overwrite the Rekordbox library, a default export folder under `exports/crate_expander`, and post-save folder opening so the saved XML can be dragged into Rekordbox; refreshed `README.md`.
+- Evidence / outputs: the UI now has an end-to-end save path from generated expansion result to XML export location without requiring the CLI; the export path reuses the existing `write_expansion_xml(...)` backend.
+- Current blockers or risks: the GUI still exports via XML rather than writing directly into the Rekordbox DB, which is safer but still requires a manual import/drag-drop step inside Rekordbox.
+- Next recommended step: validate the new save action in the browser, then decide whether the follow-up should be a user-editable export filename/path or keeping the current timestamped safe default.
+
+### 2026-03-30
+- Goal: Land the NiceGUI stabilization hardening pass for shell startup, shared job runtime, batch job responsiveness, and non-blocking recommendation refresh.
+- Changes made: moved the app shell to lazy page loading with per-page fallback isolation; added a shared `rbassist/ui/jobs.py` job registry plus shell/runtime binding in `rbassist/ui/components/progress.py`; migrated `rbassist/ui/pages/settings.py`, `rbassist/ui/pages/library.py`, and `rbassist/ui/pages/cues.py` off background widget mutation for long-running flows; made `rbassist/ui/pages/discover.py` refresh recommendations through an async latest-request-wins path; added focused UI regression tests including `tests/test_ui_jobs.py` and `tests/test_ui_discover.py`; removed eager `refresh_health()` from `rbassist/ui/state.py` import-time startup.
+- Evidence / outputs: `python -m compileall rbassist\ui` passed; `pytest -q tests/test_ui_app.py tests/test_ui_state.py tests/test_ui_components.py tests/test_ui_jobs.py tests/test_ui_discover.py tests/test_recommend_index.py` passed (`19 passed`).
+- Current blockers or risks: validation is still code-based, not a live NiceGUI browser smoke; launch/session hygiene in `start.ps1` and `rbassist/cli.py` is still a follow-up if second-launch or occupied-port friction remains; recommendation refresh is now non-blocking and latest-request-wins, but manual interaction smoke should still confirm button/seed/filter feel in-browser.
+- Next recommended step: do one manual browser smoke for shell startup, Settings batch progress, one beatgrid batch, one cue batch, and one rapid seed/filter change in Discover; if launch friction still shows up, take a narrow follow-up slice in `start.ps1` and `rbassist/cli.py`.
+
+### 2026-03-30
+- Goal: Make recommendation and crate-expander tempo handling Rekordbox-first without losing RB Assist analysis context.
+- Changes made: added shared BPM-source helpers in `rbassist/bpm_sources.py`; updated `rbassist/playlist_expand.py` to prefer Rekordbox BPM for seed and candidate tempo logic while carrying `rbassist_bpm`, `rekordbox_bpm`, mismatch delta, and source metadata forward; updated `rbassist/ui/pages/discover.py`, `rbassist/ui/pages/crate_expander.py`, and `rbassist/ui/components/seed_card.py` to display both BPMs, label the effective source, and flag large mismatches; refreshed `rbassist/ui/state.py` to clear the Rekordbox BPM cache on meta refresh.
+- Evidence / outputs: `.venv\Scripts\python.exe -m pytest tests\test_bpm_sources.py tests\test_playlist_expand.py tests\test_ui_discover.py` passed (`19 passed`); `.venv\Scripts\python.exe -m compileall rbassist` passed.
+- Current blockers or risks: this slice is still read-only against Rekordbox and treats live DB BPM as the truth only for runtime ranking/display; manual NiceGUI smoke is still needed to confirm the new columns and detail text feel right in Discover and Crate Expander.
+- Next recommended step: smoke-test Discover and Crate Expander in the browser against known mismatch tracks, then decide whether the follow-up should be a dedicated BPM mismatch filter/report or extending the same Rekordbox-first tempo policy into CLI recommendation output.
+
+### 2026-03-30
+- Goal: Close the remaining NiceGUI stabilization follow-up gaps around recommendation refresh coalescing and page-level job reattachment after reload/reconnect.
+- Changes made: added active-job resolution in `rbassist/ui/jobs.py`; updated `rbassist/ui/pages/settings.py`, `rbassist/ui/pages/library.py`, and `rbassist/ui/pages/cues.py` to reattach their progress panels from `latest_job(kind=...)` when the local page job id is missing; tightened `rbassist/ui/pages/discover.py` around a single in-flight refresh task with explicit drain-loop helper checks; extended `tests/test_ui_jobs.py` and `tests/test_ui_discover.py`.
+- Evidence / outputs: `python -m compileall rbassist\ui` passed; `pytest -q tests/test_ui_app.py tests/test_ui_state.py tests/test_ui_components.py tests/test_ui_jobs.py tests/test_ui_discover.py tests/test_recommend_index.py` passed (`23 passed`).
+- Current blockers or risks: the recommendation work is now coalesced to one active task rather than truly cancelled mid-query; manual NiceGUI smoke is still needed to confirm page panels visibly reattach after a reload and that rapid Discover changes feel calm in-browser.
+- Next recommended step: do one browser smoke focused on reloading `Settings`, `Library`, and `Cues` during active jobs plus a rapid seed/filter change pass in `Discover`, then move to launch/session hygiene only if startup friction remains.
+
+### 2026-03-30
+- Goal: Close the Crate Expander reconnect failure exposed by the BPM/UI browser smoke and record the remaining follow-up cleanly.
+- Changes made: updated `rbassist/ui/pages/crate_expander.py` so Rekordbox playlist refresh/load runs through `asyncio.to_thread(...)` instead of blocking the NiceGUI event loop; moved the initial playlist refresh onto `nicegui.background_tasks.create(...)` so the first render does not spawn an un-awaited coroutine; kept UI notifications and widget updates on the main task; added focused async regression coverage in `tests/test_ui_crate_expander.py`.
+- Evidence / outputs: `.venv\Scripts\python.exe -m pytest tests/test_ui_crate_expander.py tests/test_ui_discover.py tests/test_playlist_expand.py tests/test_bpm_sources.py` passed (`23 passed`); `.venv\Scripts\python.exe -m compileall rbassist` passed. Focused browser smoke on Crate Expander no longer showed `Connection lost. Trying to reconnect...`; `Refresh` completed and surfaced `Loaded 352 Rekordbox playlists`.
+- Current blockers or risks: the websocket/reconnect failure appears fixed, but the next step in the same smoke still failed at playlist loading with `Failed to load Rekordbox playlist: Playlist not found for source 'db': 135-165 last year 4 stars`. That points to playlist identifier resolution after refresh/load rather than the original UI-thread stall.
+- Next recommended step: trace how Crate Expander stores the selected playlist value versus what `load_rekordbox_playlist(...)` expects for Rekordbox DB sources, then add a focused regression test for the selected value shape before changing the loader contract.
+
+### 2026-03-31
+- Goal: Create a handoff-grade technical context document for the analysis/recommendation platform so a follow-on agent can evaluate mathematical optimality.
+- Changes made: Added `docs/dev/ANALYSIS_RECOMMENDATION_PLATFORM_CONTEXT_2026-03-31.md` with holistic workflow mapping (embed/analyze/index/recommend/playlist-expand), explicit current objective functions, known mathematical limits, and a staged evaluation roadmap.
+- Evidence / outputs: New context document includes immediate low-risk experimentation slices (telemetry, benchmark harness, component normalization, hard-filter vs soft-penalty evaluation) aligned with existing safety constraints.
+- Current blockers or risks: The repo still lacks a standardized offline ranking benchmark and explicit relevance labels, so claims of "mathematically best" remain untestable until instrumentation/benchmarking is added.
+- Next recommended step: implement ranking telemetry and an offline benchmark CLI, then compare baseline presets against calibrated rerank variants on a fixed labeled seed set.

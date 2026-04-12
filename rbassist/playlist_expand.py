@@ -10,6 +10,7 @@ from urllib.parse import unquote
 
 import numpy as np
 
+from .bpm_sources import normalize_rekordbox_bpm, track_bpm_sources
 from .export_xml import write_rekordbox_xml
 from .recommend import IDX, load_embedding_safe
 from .utils import camelot_relation, load_meta, make_path_aliases, normalize_path_string, tempo_match
@@ -37,6 +38,11 @@ class SeedTrack:
     title: str = ""
     artist: str = ""
     bpm: float | None = None
+    rekordbox_bpm: float | None = None
+    rbassist_bpm: float | None = None
+    bpm_delta: float | None = None
+    bpm_mismatch: bool = False
+    bpm_source: str = "unknown"
     key: str | None = None
     mytags: list[str] = field(default_factory=list)
     embedding_path: str | None = None
@@ -65,6 +71,11 @@ class SeedTrack:
             "title": self.title,
             "artist": self.artist,
             "bpm": self.bpm,
+            "rekordbox_bpm": self.rekordbox_bpm,
+            "rbassist_bpm": self.rbassist_bpm,
+            "bpm_delta": self.bpm_delta,
+            "bpm_mismatch": self.bpm_mismatch,
+            "bpm_source": self.bpm_source,
             "key": self.key,
             "mytags": list(self.mytags),
             "embedding_path": self.embedding_path,
@@ -114,6 +125,11 @@ class ExpandedTrack:
     title: str = ""
     artist: str = ""
     bpm: float | None = None
+    rekordbox_bpm: float | None = None
+    rbassist_bpm: float | None = None
+    bpm_delta: float | None = None
+    bpm_mismatch: bool = False
+    bpm_source: str = "unknown"
     key: str | None = None
     mytags: list[str] = field(default_factory=list)
     component_scores: dict[str, float] = field(default_factory=dict)
@@ -130,6 +146,11 @@ class ExpandedTrack:
             "title": self.title,
             "artist": self.artist,
             "bpm": self.bpm,
+            "rekordbox_bpm": self.rekordbox_bpm,
+            "rbassist_bpm": self.rbassist_bpm,
+            "bpm_delta": self.bpm_delta,
+            "bpm_mismatch": self.bpm_mismatch,
+            "bpm_source": self.bpm_source,
             "key": self.key,
             "mytags": list(self.mytags),
             "component_scores": {key: round(float(value), 6) for key, value in self.component_scores.items()},
@@ -294,6 +315,11 @@ class PreparedCandidate:
     title: str = ""
     artist: str = ""
     bpm: float | None = None
+    rekordbox_bpm: float | None = None
+    rbassist_bpm: float | None = None
+    bpm_delta: float | None = None
+    bpm_mismatch: bool = False
+    bpm_source: str = "unknown"
     key: str | None = None
     mytags: list[str] = field(default_factory=list)
     component_scores: dict[str, float] = field(default_factory=dict)
@@ -375,12 +401,18 @@ def _seed_track_from_meta(
     fallback_key: str | None = None,
 ) -> SeedTrack:
     info = meta_tracks.get(meta_path or raw_path, {}) if meta_path else {}
+    bpm_info = track_bpm_sources(meta_path or raw_path, info, rekordbox_bpm=fallback_bpm)
     return SeedTrack(
         rekordbox_path=raw_path,
         meta_path=meta_path,
         title=str(info.get("title", "") or fallback_title or ""),
         artist=str(info.get("artist", "") or fallback_artist or ""),
-        bpm=float(info["bpm"]) if isinstance(info.get("bpm"), (int, float)) else fallback_bpm,
+        bpm=bpm_info.preferred_bpm,
+        rekordbox_bpm=bpm_info.rekordbox_bpm,
+        rbassist_bpm=bpm_info.rbassist_bpm,
+        bpm_delta=bpm_info.delta,
+        bpm_mismatch=bpm_info.large_mismatch,
+        bpm_source=bpm_info.preferred_source,
         key=str(info.get("key", "") or fallback_key or "") or None,
         mytags=[str(tag) for tag in (info.get("mytags", []) or []) if str(tag).strip()],
         embedding_path=str(info.get("embedding", "") or "") or None,
@@ -678,12 +710,7 @@ def load_rekordbox_playlist(
         meta_path, matched_by = _match_meta_path(raw_path, alias_index)
         title = str(getattr(row, "Title", "") or getattr(row, "Name", "") or "")
         artist = str(getattr(row, "ArtistName", "") or getattr(row, "Artist", "") or "")
-        bpm_value = getattr(row, "BPM", None)
-        bpm: float | None = None
-        if isinstance(bpm_value, (int, float)):
-            bpm = float(bpm_value)
-            if bpm > 1000:
-                bpm = bpm / 100.0
+        bpm = normalize_rekordbox_bpm(getattr(row, "BPM", None))
         key = str(getattr(row, "KeyName", "") or getattr(row, "Tonality", "") or "") or None
         track = _seed_track_from_meta(
             raw_path,
@@ -1047,8 +1074,8 @@ def _candidate_score(
         score += max(relevance, -1.0)
         reasons.append("ann")
 
-    bpm = info.get("bpm")
-    cand_bpm = float(bpm) if isinstance(bpm, (int, float)) else None
+    bpm_info = track_bpm_sources(path, info)
+    cand_bpm = bpm_info.preferred_bpm
     seed_bpm = meta_stats.get("seed_bpm_median")
     tempo_pct = float(filters.get("tempo_pct", 6.0) or 6.0)
     allow_doubletime = bool(filters.get("doubletime", True))
@@ -1101,6 +1128,7 @@ def _rank_candidates(
         if hit.path in exclude_paths:
             continue
         info = meta_tracks.get(hit.path, {})
+        bpm_info = track_bpm_sources(hit.path, info)
         if filters.get("camelot_filter"):
             seed_keys = [str(key) for key in meta_stats.get("seed_keys", []) if str(key).strip()]
             cand_key = str(info.get("key") or "") or None
@@ -1115,7 +1143,12 @@ def _rank_candidates(
                 support_count=hit.support_count,
                 title=str(info.get("title", "") or ""),
                 artist=str(info.get("artist", "") or ""),
-                bpm=float(info["bpm"]) if isinstance(info.get("bpm"), (int, float)) else None,
+                bpm=bpm_info.preferred_bpm,
+                rekordbox_bpm=bpm_info.rekordbox_bpm,
+                rbassist_bpm=bpm_info.rbassist_bpm,
+                bpm_delta=bpm_info.delta,
+                bpm_mismatch=bpm_info.large_mismatch,
+                bpm_source=bpm_info.preferred_source,
                 key=str(info.get("key", "") or "") or None,
                 mytags=[str(tag) for tag in (info.get("mytags", []) or []) if str(tag).strip()],
                 reasons=reasons,
@@ -1192,6 +1225,11 @@ def _apply_diversity_rerank(
                     title=candidate.title,
                     artist=candidate.artist,
                     bpm=candidate.bpm,
+                    rekordbox_bpm=candidate.rekordbox_bpm,
+                    rbassist_bpm=candidate.rbassist_bpm,
+                    bpm_delta=candidate.bpm_delta,
+                    bpm_mismatch=candidate.bpm_mismatch,
+                    bpm_source=candidate.bpm_source,
                     key=candidate.key,
                     mytags=list(candidate.mytags),
                     component_scores=component_scores,
@@ -1510,6 +1548,7 @@ def _build_prepared_candidate(
     vector = _select_candidate_vector(meta_tracks, path, info)
     if vector is None:
         return None
+    bpm_info = track_bpm_sources(path, info)
     candidate = PreparedCandidate(
         path=path,
         source_flags=set(source_flags),
@@ -1519,7 +1558,12 @@ def _build_prepared_candidate(
         vector=vector,
         title=str(info.get("title", "") or ""),
         artist=str(info.get("artist", "") or ""),
-        bpm=float(info["bpm"]) if isinstance(info.get("bpm"), (int, float)) else None,
+        bpm=bpm_info.preferred_bpm,
+        rekordbox_bpm=bpm_info.rekordbox_bpm,
+        rbassist_bpm=bpm_info.rbassist_bpm,
+        bpm_delta=bpm_info.delta,
+        bpm_mismatch=bpm_info.large_mismatch,
+        bpm_source=bpm_info.preferred_source,
         key=str(info.get("key", "") or "") or None,
         mytags=[str(tag) for tag in (info.get("mytags", []) or []) if str(tag).strip()],
     )
@@ -1807,6 +1851,11 @@ def rerank_playlist_expansion(
                     title=candidate.title,
                     artist=candidate.artist,
                     bpm=candidate.bpm,
+                    rekordbox_bpm=candidate.rekordbox_bpm,
+                    rbassist_bpm=candidate.rbassist_bpm,
+                    bpm_delta=candidate.bpm_delta,
+                    bpm_mismatch=candidate.bpm_mismatch,
+                    bpm_source=candidate.bpm_source,
                     key=candidate.key,
                     mytags=list(candidate.mytags),
                     component_scores=repeat_component_scores,

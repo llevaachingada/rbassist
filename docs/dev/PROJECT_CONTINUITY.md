@@ -67,3 +67,10 @@ Interpretation:
 ## Master Execution Roadmap
 The current product-winning sequence is now captured in `docs/dev/MASTER_PRODUCT_EXECUTION_PLAN_2026-03-02.md`.
 Work should follow that phase order unless a new blocker changes the operational truth.
+
+## March 30 Backend Truth
+- My Tags / AI-tag learning now has a safer backend baseline:
+  - AI profile learning and existing-tag evaluation should use the effective confirmed tag set across `data/meta.json`, `config/tags.yml`, and `config/my_tags.yml`, instead of relying only on raw `meta["mytags"]`.
+  - Rekordbox XML My Tag import should honor `only_existing=True` instead of silently writing unknown tracks into metadata.
+- Cue generation now has an explicit template backend seam in `rbassist/cue_templates.py`, with profile-driven overrides sourced from `config/cue_templates.yml`.
+- Follow-up work should prefer backend-first hardening and focused tests before widening UI copy or adding new workflow complexity.

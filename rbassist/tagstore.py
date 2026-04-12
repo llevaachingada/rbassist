@@ -166,6 +166,4 @@ def import_rekordbox_tags(xml_path: str, only_existing: bool = True) -> int:
         mapping[path] = tags
     if not mapping:
         return 0
-    # Allow tags to create meta entries even if the track has not been seen
-    # by rbassist yet; this makes Rekordbox XML imports more forgiving.
-    return bulk_set_track_tags(mapping, only_existing=False)
+    return bulk_set_track_tags(mapping, only_existing=only_existing)

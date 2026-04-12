@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable
 from nicegui import ui
 
+from rbassist.bpm_sources import track_bpm_sources
 from ..state import get_state
 
 
@@ -25,7 +26,10 @@ class SeedCard:
                 self.artist_label = ui.label("No track selected").classes("text-xl text-white font-medium")
                 self.title_label = ui.label("").classes("text-lg text-gray-300")
                 with ui.row().classes("gap-4 mt-2"):
-                    self.bpm_badge = ui.badge("--", color="gray").classes("text-sm")
+                    self.bpm_badge = ui.badge("BPM --", color="gray").classes("text-sm")
+                    self.rekordbox_bpm_badge = ui.badge("RB --", color="gray").classes("text-sm")
+                    self.rbassist_bpm_badge = ui.badge("Assist --", color="gray").classes("text-sm")
+                    self.bpm_alert_badge = ui.badge("-", color="gray").classes("text-sm")
                     self.key_badge = ui.badge("--", color="gray").classes("text-sm")
 
             ui.separator().classes("my-3")
@@ -137,6 +141,7 @@ class SeedCard:
                 title = info.get("title", p.split("\\")[-1].split("/")[-1])
                 bpm = info.get("bpm")
                 key = info.get("key")
+                bpm_info = track_bpm_sources(p, info)
 
                 with ui.row().classes(
                     "w-full p-2 hover:bg-[#333] cursor-pointer items-center gap-2"
@@ -148,8 +153,14 @@ class SeedCard:
                             ui.label(title).classes("text-gray-200 text-sm")
 
                         with ui.row().classes("gap-1"):
-                            if bpm:
-                                ui.badge(f"{bpm:.0f}", color="indigo").classes("text-xs")
+                            if bpm_info.preferred_bpm:
+                                ui.badge(f"{bpm_info.preferred_bpm:.0f}", color="indigo").classes("text-xs")
+                            if bpm_info.rekordbox_bpm:
+                                ui.badge(f"RB {bpm_info.rekordbox_bpm:.0f}", color="blue").classes("text-xs")
+                            if bpm_info.rbassist_bpm:
+                                ui.badge(f"Assist {bpm_info.rbassist_bpm:.0f}", color="teal").classes("text-xs")
+                            if bpm_info.large_mismatch:
+                                ui.badge("Mismatch", color="red").classes("text-xs")
                             if key:
                                 ui.badge(key, color="purple").classes("text-xs")
 
@@ -169,18 +180,26 @@ class SeedCard:
 
         artist = info.get("artist", "Unknown Artist")
         title = info.get("title", path.split("\\")[-1].split("/")[-1])
-        bpm = info.get("bpm")
         key = info.get("key")
+        bpm_info = track_bpm_sources(path, info)
 
         self.artist_label.text = artist
         self.title_label.text = title
-        self.bpm_badge.text = f"{bpm:.0f} BPM" if bpm else "--"
+        self.bpm_badge.text = f"Using {bpm_info.preferred_bpm:.0f} BPM" if bpm_info.preferred_bpm else "BPM --"
+        self.rekordbox_bpm_badge.text = (
+            f"RB {bpm_info.rekordbox_bpm:.0f}" if bpm_info.rekordbox_bpm else "RB --"
+        )
+        self.rbassist_bpm_badge.text = (
+            f"Assist {bpm_info.rbassist_bpm:.0f}" if bpm_info.rbassist_bpm else "Assist --"
+        )
+        self.bpm_alert_badge.text = "Mismatch" if bpm_info.large_mismatch else "-"
         self.key_badge.text = key or "--"
 
-        if bpm:
-            self.bpm_badge.props("color=indigo")
-        if key:
-            self.key_badge.props("color=purple")
+        self.bpm_badge.props(f"color={'indigo' if bpm_info.preferred_bpm else 'gray'}")
+        self.rekordbox_bpm_badge.props(f"color={'blue' if bpm_info.rekordbox_bpm else 'gray'}")
+        self.rbassist_bpm_badge.props(f"color={'teal' if bpm_info.rbassist_bpm else 'gray'}")
+        self.bpm_alert_badge.props(f"color={'red' if bpm_info.large_mismatch else 'gray'}")
+        self.key_badge.props(f"color={'purple' if key else 'gray'}")
 
     def set_track_options(self, paths: list[str]) -> None:
         """Set available track options."""

@@ -110,6 +110,16 @@ def cmd_analyze(
     duration_s: int = typer.Option(90, help="Max seconds per track to analyze (0 = full)"),
     only_new: bool = typer.Option(True, help="Skip files already analyzed with same signature"),
     force: bool = typer.Option(False, help="Force re-analyze even if cached"),
+    cue_profile: str = typer.Option(
+        "",
+        "--cue-profile",
+        help="Optional cue template profile name from config/cue_templates.yml.",
+    ),
+    overwrite_cues: bool = typer.Option(
+        False,
+        "--overwrite-cues",
+        help="When auto-cues are enabled, replace existing cue data instead of preserving it.",
+    ),
     workers: int = typer.Option(12, help="Process workers for BPM/Key (0 = serial)"),
 ):
     files = walk_audio(paths)
@@ -121,6 +131,8 @@ def cmd_analyze(
         duration_s=duration_s,
         only_new=only_new,
         force=force,
+        cue_profile=(cue_profile or None),
+        overwrite_cues=overwrite_cues,
         workers=(workers if workers > 0 else None),
     )
 
@@ -725,10 +737,13 @@ def cmd_tags_auto(
     if apply:
         updates: Dict[str, List[str]] = {}
         tracks_meta = meta.get("tracks", {})
+        from . import safe_tagstore as _safe_tagstore
+
+        effective_current_tags = _safe_tagstore.load_effective_user_tags(meta=meta)
         affected_paths = set(suggestions.keys()) | set(low_confidence.keys())
         for path in affected_paths:
             info = tracks_meta.get(path, {})
-            current = set(info.get("mytags", []))
+            current = set(effective_current_tags.get(path, info.get("mytags", [])))
             add_tags = {tag for tag, _score, _thr in suggestions.get(path, [])}
             updated = current | add_tags
             if prune_margin > 0.0:
@@ -762,14 +777,30 @@ def cmd_djlink():
 
 
 @app.command("cues")
-def cmd_cues(path: str, duration: int = 120):
+def cmd_cues(
+    path: str,
+    duration: int = 120,
+    cue_profile: str = typer.Option(
+        "",
+        "--cue-profile",
+        help="Optional cue template profile name from config/cue_templates.yml.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Replace existing cue data for the target track.",
+    ),
+):
     from .cues import propose_cues
     from .analyze import _estimate_tempo
-    y, sr = librosa.load(path, sr=None, mono=True, duration=duration if duration > 0 else None)
-    bpm = _estimate_tempo(y, sr)
-    cues = propose_cues(y, sr, bpm=bpm)
     meta = load_meta()
     info = meta["tracks"].setdefault(path, {})
+    if info.get("cues") and not overwrite:
+        console.print("[yellow]Track already has cues. Re-run with --overwrite to replace them.")
+        return
+    y, sr = librosa.load(path, sr=None, mono=True, duration=duration if duration > 0 else None)
+    bpm = _estimate_tempo(y, sr)
+    cues = propose_cues(y, sr, bpm=bpm, cue_profile=(cue_profile or None))
     info.setdefault("bpm", round(float(bpm), 2))
     info["cues"] = cues
     save_meta(meta)

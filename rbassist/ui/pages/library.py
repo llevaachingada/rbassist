@@ -14,7 +14,7 @@ from nicegui import ui
 from rbassist.beatgrid import BeatgridConfig, analyze_file, analyze_paths as analyze_beatgrid_paths
 from rbassist.utils import ROOT, is_junk_path, resolve_track_path, walk_audio
 
-from ..jobs import complete_job, fail_job, get_job, latest_job, list_recent_jobs, start_job, update_job
+from ..jobs import complete_job, fail_job, latest_job, list_recent_jobs, resolve_active_job, start_job, update_job
 from ..components.health_summary import render_health_summary
 from ..components.track_table import TrackTable
 from ..state import get_state
@@ -308,7 +308,9 @@ def render() -> None:
             batch_history = ui.label('Recent beatgrid jobs: none yet.').classes('text-gray-500 text-xs')
 
             def _refresh_batch_job_view() -> None:
-                snapshot = get_job(beatgrid_job_id['value'])
+                snapshot = resolve_active_job(beatgrid_job_id['value'], kind='library_beatgrid')
+                if snapshot is not None:
+                    beatgrid_job_id['value'] = snapshot.job_id
                 if snapshot is None:
                     batch_progress.style('max-width: 240px; display: none;')
                     batch_progress.value = 0

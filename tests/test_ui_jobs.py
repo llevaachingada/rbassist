@@ -1,6 +1,6 @@
 import unittest
 
-from rbassist.ui.jobs import JobRegistry
+from rbassist.ui.jobs import JobRegistry, resolve_active_job
 
 
 class JobRegistryTests(unittest.TestCase):
@@ -40,6 +40,43 @@ class JobRegistryTests(unittest.TestCase):
         self.assertEqual(snapshot.progress, 1.0)
         registry.update(snapshot.job_id, progress=-1)
         self.assertEqual(registry.get(snapshot.job_id).progress, 0.0)
+
+    def test_resolve_active_job_prefers_local_job_id(self) -> None:
+        registry = JobRegistry()
+        snapshot = registry.start("settings_pipeline", message="active")
+        from rbassist.ui import jobs as ui_jobs
+
+        old_registry = ui_jobs._REGISTRY
+        ui_jobs._REGISTRY = registry
+        try:
+            self.assertEqual(resolve_active_job(snapshot.job_id, kind="settings_pipeline"), snapshot)
+        finally:
+            ui_jobs._REGISTRY = old_registry
+
+    def test_resolve_active_job_falls_back_to_latest_running_job_by_kind(self) -> None:
+        registry = JobRegistry()
+        snapshot = registry.start("settings_pipeline", message="active")
+        from rbassist.ui import jobs as ui_jobs
+
+        old_registry = ui_jobs._REGISTRY
+        ui_jobs._REGISTRY = registry
+        try:
+            self.assertEqual(resolve_active_job(None, kind="settings_pipeline"), snapshot)
+        finally:
+            ui_jobs._REGISTRY = old_registry
+
+    def test_resolve_active_job_ignores_completed_fallback_job(self) -> None:
+        registry = JobRegistry()
+        snapshot = registry.start("settings_pipeline", message="active")
+        registry.complete(snapshot.job_id, message="done")
+        from rbassist.ui import jobs as ui_jobs
+
+        old_registry = ui_jobs._REGISTRY
+        ui_jobs._REGISTRY = registry
+        try:
+            self.assertIsNone(resolve_active_job(None, kind="settings_pipeline"))
+        finally:
+            ui_jobs._REGISTRY = old_registry
 
 
 if __name__ == "__main__":

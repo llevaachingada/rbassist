@@ -64,6 +64,7 @@ archive_*/**
 config/ui_settings.json
 config/user_profile.json
 config/tags.yml
+config/cue_template.yml
 config/my_tags.yml
 config/ai_suggestions.json
 config/tag_corrections.json

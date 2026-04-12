@@ -10,7 +10,7 @@ import re
 from nicegui import ui
 
 from rbassist.health import list_embedding_gaps, normalize_meta_paths, resolve_bare_meta_paths
-from ..jobs import complete_job, fail_job, get_job, latest_job, list_recent_jobs, start_job, update_job
+from ..jobs import complete_job, fail_job, latest_job, list_recent_jobs, resolve_active_job, start_job, update_job
 from ..state import get_state
 from ..components.health_summary import render_health_summary
 from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
@@ -509,7 +509,9 @@ def render() -> None:
                 pipe_history = ui.label("Recent settings jobs: none yet.").classes("text-gray-500 text-xs")
 
                 def _refresh_pipeline_job_view() -> None:
-                    snapshot = get_job(pipeline_job_id["value"])
+                    snapshot = resolve_active_job(pipeline_job_id["value"], kind="settings_pipeline")
+                    if snapshot is not None:
+                        pipeline_job_id["value"] = snapshot.job_id
                     if snapshot is None:
                         pipe_progress.value = 0
                         pipe_label.text = "Idle"

@@ -93,6 +93,7 @@ def _analyze_single(
     path: str,
     duration_s: int = 90,
     add_cues: bool = True,
+    cue_profile: str | None = None,
 ) -> tuple[str, dict | None, str | None, str | None]:
     warn: str | None = None
     try:
@@ -108,7 +109,7 @@ def _analyze_single(
             try:
                 from .cues import propose_cues
 
-                result["cues"] = propose_cues(y, sr, bpm=result["bpm"])
+                result["cues"] = propose_cues(y, sr, bpm=result["bpm"], cue_profile=cue_profile)
             except Exception:
                 pass
         try:
@@ -134,12 +135,28 @@ def _analyze_single(
         return path, None, str(e), warn
 
 
+def _store_generated_cues(
+    info: dict,
+    cues: list[dict],
+    *,
+    overwrite_cues: bool = False,
+) -> bool:
+    if not cues:
+        return False
+    if info.get("cues") and not overwrite_cues:
+        return False
+    info["cues"] = cues
+    return True
+
+
 def analyze_bpm_key(
     paths: Iterable[str],
     duration_s: int = 90,
     only_new: bool = True,
     force: bool = False,
     add_cues: bool = True,
+    overwrite_cues: bool = False,
+    cue_profile: str | None = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     workers: int | None = None,
 ) -> None:
@@ -210,7 +227,11 @@ def analyze_bpm_key(
                 else:
                     info.setdefault("title", stem)
                 if add_cues and "cues" in result:
-                    info["cues"] = result["cues"]
+                    _store_generated_cues(
+                        info,
+                        result["cues"],
+                        overwrite_cues=overwrite_cues,
+                    )
                 if "features" in result:
                     feats = info.setdefault("features", {})
                     for k, v in result["features"].items():
@@ -222,7 +243,10 @@ def analyze_bpm_key(
             use_workers = workers if workers and workers > 1 else None
             if use_workers:
                 with ProcessPoolExecutor(max_workers=use_workers) as ex:
-                    future_map = {ex.submit(_analyze_single, p, duration_s, add_cues): p for p in to_do}
+                    future_map = {
+                        ex.submit(_analyze_single, p, duration_s, add_cues, cue_profile): p
+                        for p in to_do
+                    }
                     for fut in as_completed(future_map):
                         path = future_map[fut]
                         try:
@@ -233,7 +257,7 @@ def analyze_bpm_key(
                         _apply_result(path, result, warn, err)
             else:
                 for p in to_do:
-                    _path, result, err, warn = _analyze_single(p, duration_s, add_cues)
+                    _path, result, err, warn = _analyze_single(p, duration_s, add_cues, cue_profile)
                     _apply_result(p, result, warn, err)
 
             console.print(f"[green]Analyzed {len(to_do)} files (BPM + Key).")

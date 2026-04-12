@@ -97,6 +97,30 @@ class _FakeXml:
 
 
 class PlaylistExpandTests(TestCase):
+    def test_seed_track_from_meta_prefers_rekordbox_bpm_without_losing_rbassist_bpm(self) -> None:
+        meta_tracks = {
+            r"C:\Music\Sets\Track A.flac": {
+                "title": "Track A",
+                "artist": "Artist A",
+                "bpm": 123.05,
+                "embedding": "track-a.npy",
+            }
+        }
+
+        track = pe._seed_track_from_meta(
+            r"C:\Music\Sets\Track A.flac",
+            r"C:\Music\Sets\Track A.flac",
+            meta_tracks,
+            matched_by="path",
+            fallback_bpm=124.0,
+        )
+
+        self.assertEqual(track.bpm, 124.0)
+        self.assertEqual(track.rekordbox_bpm, 124.0)
+        self.assertEqual(track.rbassist_bpm, 123.05)
+        self.assertEqual(track.bpm_source, "rekordbox")
+        self.assertFalse(track.bpm_mismatch)
+
     def test_list_rekordbox_playlists_db_returns_full_paths(self) -> None:
         playlists = [
             SimpleNamespace(Name="Folder", ID=1, ParentID=None, is_folder=True, is_smart_playlist=False),

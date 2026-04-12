@@ -146,6 +146,7 @@ rbassist playlist-expand --playlist "DarkMoon" --target-total 30 --mode balanced
 This is read-only against Rekordbox and `data/meta.json`, and it fails closed if fewer than 3 mapped tracks with embeddings are available.
 Presets now include `tight`, `balanced`, and `adventurous`; advanced overrides include `--strategy blend|centroid|coverage`, `--key-mode off|soft|filter`, and weight flags such as `--w-ann-centroid`, `--w-group-match`, and `--w-tags`.
 The NiceGUI `Crate Expander` tab now uses the same shared backend with Rekordbox playlist loading, preset toggles, advanced sliders, quick role-tag lane buttons such as `Warm-up` and `Peak-time`, and cached reranking so slider changes reuse the prepared candidate pool instead of rebuilding ANN every time.
+The Crate Expander UI can also save the current expansion as a Rekordbox playlist XML file under `exports/crate_expander/`; this writes a playlist XML only and does not overwrite or mutate your Rekordbox library. After saving, the export folder opens so you can drag the XML into Rekordbox to import the new playlist.
 Added-track selection also applies a small anti-repetition penalty to reduce same-artist / same-version clustering in the appended crate.
 
 5) Import Bandcamp tags (update local meta for filtering later)

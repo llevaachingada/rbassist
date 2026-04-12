@@ -1,0 +1,25 @@
+cue_template_profile: dj_workflow
+profiles:
+  dj_workflow:
+    mix_in_gap_bars: 32
+    second_drop_bars_after_first: 32
+    mix_out_lead_bars: 48
+    end_guard_lead_bars: 16
+    roles:
+      hot_a:
+        bars: 16
+        slot: 0
+      hot_b:
+        bars: 16
+        slot: 1
+      hot_c:
+        bars: 16
+        slot: 2
+      hot_d:
+        slot: 3
+      mix_out_e:
+        bars: 16
+        slot: 4
+      mix_out_f:
+        bars: 16
+        slot: 5

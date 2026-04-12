@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from nicegui import ui
+from nicegui import background_tasks, ui
 
 from ..components.track_table import TrackTable
 from ..state import get_state
@@ -20,7 +24,9 @@ from rbassist.playlist_expand import (
     load_rekordbox_playlist,
     prepare_playlist_expansion,
     rerank_playlist_expansion,
+    write_expansion_xml,
 )
+from rbassist.utils import ROOT
 
 
 def _track_name(path: str) -> str:
@@ -28,6 +34,14 @@ def _track_name(path: str) -> str:
         return Path(path).stem or path
     except Exception:
         return path
+
+
+def _format_bpm_cell(value: float | None) -> str:
+    return f"{float(value):.0f}" if isinstance(value, (int, float)) and value else "-"
+
+
+def _format_bpm_metric(value: float | None) -> str:
+    return f"{float(value):.2f} BPM" if isinstance(value, (int, float)) and value else "-- BPM"
 
 
 def _format_count_label(mode: str, value: int, seed_count: int) -> str:
@@ -57,6 +71,19 @@ REQUIRED_TAG_PRESETS: list[tuple[str, str]] = [
     ("Closer", "Closer"),
 ]
 
+CRATE_EXPANDER_EXPORT_DIR = ROOT / "exports" / "crate_expander"
+
+
+def _safe_export_stem(value: str) -> str:
+    text = re.sub(r'[<>:"/\\|?*]+', "_", str(value or "").strip())
+    text = re.sub(r"\s+", " ", text).strip().rstrip(".")
+    return text or "crate_expander_export"
+
+
+def _open_folder(path: Path) -> None:
+    if hasattr(os, "startfile"):
+        os.startfile(str(path))
+
 
 class CrateExpander:
     """Expand a crate/playlist using the shared playlist expansion backend."""
@@ -78,6 +105,8 @@ class CrateExpander:
         self.detail_summary = None
         self.detail_metrics = None
         self.detail_note = None
+        self.export_status_label = None
+        self.last_export_path: Path | None = None
 
         preset = PLAYLIST_EXPANSION_PRESETS["balanced"]
         weights = preset["weights"].to_dict()
@@ -133,7 +162,7 @@ class CrateExpander:
                             {"db": "Rekordbox DB", "xml": "Rekordbox XML"},
                             value=self.rekordbox_source,
                         ).props("dark").classes("flex-1")
-                        ui.button("Refresh", icon="refresh", on_click=lambda: self._refresh_rekordbox_playlists()).props(
+                        ui.button("Refresh", icon="refresh", on_click=self._refresh_rekordbox_playlists).props(
                             "flat dense"
                         ).classes("bg-[#252525] hover:bg-[#333] text-gray-300")
 
@@ -156,7 +185,11 @@ class CrateExpander:
                     ).props("dark dense").classes("w-full mt-2")
 
                     with ui.row().classes("w-full gap-2 mt-2"):
-                        ui.button("Load Playlist As Seeds", icon="playlist_play", on_click=self._load_selected_rekordbox_playlist).props(
+                        ui.button(
+                            "Load Playlist As Seeds",
+                            icon="playlist_play",
+                            on_click=self._load_selected_rekordbox_playlist,
+                        ).props(
                             "flat"
                         ).classes("bg-indigo-600 hover:bg-indigo-500 flex-1")
                         ui.button("Use Manual Seeds", icon="queue_music", on_click=lambda: ui.notify("Manual seed search stays available below.", type="info")).props("flat").classes(
@@ -460,6 +493,18 @@ class CrateExpander:
                     ui.button("Clear All", icon="clear", on_click=self._clear_all).props("flat").classes(
                         "bg-[#252525] hover:bg-[#333] text-gray-300 w-full mt-2"
                     )
+                    ui.button(
+                        "Save Rekordbox Playlist XML",
+                        icon="download",
+                        on_click=self._save_rekordbox_xml,
+                    ).props("flat").classes("bg-teal-600 hover:bg-teal-500 text-white w-full mt-2")
+                    ui.label(
+                        "Saves a Rekordbox playlist XML file only. It does not save, change, or overwrite your Rekordbox library. "
+                        "After saving, the export folder opens so you can drag the XML into Rekordbox to import it as a new playlist."
+                    ).classes("text-gray-500 text-xs mt-2")
+                    self.export_status_label = ui.label(
+                        f"Default save folder: {CRATE_EXPANDER_EXPORT_DIR}"
+                    ).classes("text-gray-500 text-xs")
 
                 with ui.column().classes("flex-1 gap-4"):
                     with ui.row().classes("w-full items-center justify-between"):
@@ -474,6 +519,9 @@ class CrateExpander:
                         self.rec_table = TrackTable(
                             on_row_click=self._show_track_detail,
                             extra_columns=[
+                                {"name": "rekordbox_bpm", "label": "RB BPM", "field": "rekordbox_bpm", "sortable": True, "align": "right"},
+                                {"name": "rbassist_bpm", "label": "Assist BPM", "field": "rbassist_bpm", "sortable": True, "align": "right"},
+                                {"name": "bpm_alert", "label": "Tempo Note", "field": "bpm_alert", "sortable": True, "align": "left"},
                                 {"name": "score", "label": "Overall fit", "field": "score", "sortable": True, "align": "right"},
                                 {
                                     "name": "base_score",
@@ -520,7 +568,7 @@ class CrateExpander:
         update_seed_summary()
         update_count_hint()
         self._render_seeds_callback = render_seeds
-        self._refresh_rekordbox_playlists(notify=False)
+        background_tasks.create(self._refresh_rekordbox_playlists(notify=False), name="crate-expander-refresh")
 
     def _weight_slider_row(self, label: str, value: float):
         with ui.row().classes("w-full items-center gap-2"):
@@ -538,7 +586,7 @@ class CrateExpander:
         label.update()
 
     def _wire_control_events(self) -> None:
-        self.rekordbox_source_toggle.on("update:model-value", lambda e: self._on_rekordbox_source_change())
+        self.rekordbox_source_toggle.on("update:model-value", self._on_rekordbox_source_change)
         self.rekordbox_xml_input.on("update:model-value", lambda e: self._on_rekordbox_xml_change())
         self.rekordbox_filter_input.on("update:model-value", lambda e: self._filter_rekordbox_playlists())
         self.count_mode_toggle.on("update:model-value", lambda e: self._on_count_control_change())
@@ -561,11 +609,11 @@ class CrateExpander:
         self.key_match_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
         self.tag_match_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
 
-    def _on_rekordbox_source_change(self) -> None:
+    async def _on_rekordbox_source_change(self, _event: Any = None) -> None:
         self.rekordbox_source = str(self.rekordbox_source_toggle.value or "db")
         self.rekordbox_xml_input.visible = self.rekordbox_source == "xml"
         self.rekordbox_xml_input.update()
-        self._refresh_rekordbox_playlists()
+        await self._refresh_rekordbox_playlists()
 
     def _on_rekordbox_xml_change(self) -> None:
         self.rekordbox_xml_path = str(self.rekordbox_xml_input.value or "").strip()
@@ -588,7 +636,7 @@ class CrateExpander:
         self.rekordbox_status_label.text = f"{len(options)} playlists available"
         self.rekordbox_status_label.update()
 
-    def _refresh_rekordbox_playlists(self, *, notify: bool = True) -> None:
+    async def _refresh_rekordbox_playlists(self, *, notify: bool = True) -> None:
         try:
             source = str(self.rekordbox_source_toggle.value or self.rekordbox_source or "db")
             self.rekordbox_source = source
@@ -602,7 +650,10 @@ class CrateExpander:
                 self.rekordbox_status_label.text = "Enter a Rekordbox XML path to load playlists."
                 self.rekordbox_status_label.update()
                 return
-            self.rekordbox_playlist_items = list_rekordbox_playlists(
+            self.rekordbox_status_label.text = "Loading Rekordbox playlists..."
+            self.rekordbox_status_label.update()
+            self.rekordbox_playlist_items = await asyncio.to_thread(
+                list_rekordbox_playlists,
                 source=source,
                 xml_path=xml_path or None,
             )
@@ -619,13 +670,17 @@ class CrateExpander:
             if notify:
                 ui.notify(f"Rekordbox playlist load failed: {exc}", type="negative")
 
-    def _load_selected_rekordbox_playlist(self) -> None:
+    async def _load_selected_rekordbox_playlist(self) -> None:
         playlist_ref = self.rekordbox_playlist_select.value
         if not playlist_ref:
             ui.notify("Choose a Rekordbox playlist first", type="warning")
             return
         try:
-            seed_playlist = load_rekordbox_playlist(
+            if hasattr(self, "status_label"):
+                self.status_label.text = f"Loading playlist '{playlist_ref}'..."
+                self.status_label.update()
+            seed_playlist = await asyncio.to_thread(
+                load_rekordbox_playlist,
                 str(playlist_ref),
                 source=str(self.rekordbox_source_toggle.value or "db"),
                 xml_path=(str(self.rekordbox_xml_input.value or "").strip() or None),
@@ -813,6 +868,51 @@ class CrateExpander:
     def _generate(self) -> None:
         self._rerank_if_ready(rebuild=True)
 
+    def _default_export_playlist_name(self) -> str:
+        if self.loaded_playlist_name:
+            return f"{self.loaded_playlist_name} Expanded"
+        return "Crate Expander Export"
+
+    async def _save_rekordbox_xml(self) -> None:
+        if self.current_result is None:
+            ui.notify("Generate a crate first, then save the Rekordbox playlist XML.", type="warning")
+            return
+
+        playlist_name = self._default_export_playlist_name()
+        export_dir = CRATE_EXPANDER_EXPORT_DIR.resolve()
+        export_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = export_dir / f"{_safe_export_stem(playlist_name)}_{timestamp}.xml"
+
+        try:
+            await ui.run_worker(
+                lambda: write_expansion_xml(
+                    self.current_result,
+                    out_path=str(out_path),
+                    playlist_name=playlist_name,
+                )
+            )
+            self.last_export_path = out_path
+            if self.export_status_label is not None:
+                self.export_status_label.text = (
+                    f"Saved playlist XML only -> {out_path}. Rekordbox library unchanged. "
+                    "Drag this XML into Rekordbox to import the playlist."
+                )
+                self.export_status_label.update()
+            ui.notify(
+                f"Saved playlist XML -> {out_path.name}. Rekordbox library unchanged.",
+                type="positive",
+            )
+            try:
+                await ui.run_worker(lambda: _open_folder(export_dir))
+            except Exception:
+                pass
+        except Exception as exc:
+            if self.export_status_label is not None:
+                self.export_status_label.text = "Crate export failed."
+                self.export_status_label.update()
+            ui.notify(f"Crate export failed: {exc}", type="negative")
+
     def _clear_all(self) -> None:
         self.selected_seeds.clear()
         self.loaded_playlist_name = None
@@ -835,6 +935,9 @@ class CrateExpander:
         if hasattr(self, "loaded_playlist_label"):
             self.loaded_playlist_label.text = "No Rekordbox playlist loaded"
             self.loaded_playlist_label.update()
+        if self.export_status_label is not None:
+            self.export_status_label.text = f"Default save folder: {CRATE_EXPANDER_EXPORT_DIR}"
+            self.export_status_label.update()
         if hasattr(self, "status_label"):
             self.status_label.text = "Ready: add at least 3 mapped seeds, then generate"
             self.status_label.update()
@@ -864,7 +967,14 @@ class CrateExpander:
                     "path": track.path,
                     "artist": track.artist or "",
                     "title": track.title or _track_name(track.path),
-                    "bpm": f"{track.bpm:.0f}" if isinstance(track.bpm, (int, float)) and track.bpm else "-",
+                    "bpm": _format_bpm_cell(track.bpm),
+                    "bpm_value": track.bpm,
+                    "rekordbox_bpm": _format_bpm_cell(track.rekordbox_bpm),
+                    "rekordbox_bpm_value": track.rekordbox_bpm,
+                    "rbassist_bpm": _format_bpm_cell(track.rbassist_bpm),
+                    "rbassist_bpm_value": track.rbassist_bpm,
+                    "bpm_alert": "Large mismatch" if track.bpm_mismatch else "-",
+                    "bpm_source": track.bpm_source,
                     "key": track.key or "-",
                     "score": round(float(track.final_score or track.score), 6),
                     "base_score": round(float(track.base_score), 6),
@@ -910,10 +1020,16 @@ class CrateExpander:
                 f"seed support {int(track.get('support_count', 0) or 0)}."
             ),
             metrics=(
-                f"Tempo: {track.get('bpm', '-')} | Key: {track.get('key', '-')} | "
+                f"Tempo: Using {_format_bpm_metric(track.get('bpm_value'))}"
+                f" | Rekordbox: {_format_bpm_metric(track.get('rekordbox_bpm_value'))}"
+                f" | RB Assist: {_format_bpm_metric(track.get('rbassist_bpm_value'))}"
+                f" | Key: {track.get('key', '-')} | "
                 f"Why it matched: {track.get('detail_components', track.get('components', ''))}"
             ),
-            note="Overall fit is the final reranked score. Raw fit is before variety and repeat-protection nudges.",
+            note=(
+                "Overall fit is the final reranked score. Raw fit is before variety and repeat-protection nudges. "
+                "Tempo matching prefers Rekordbox BPM when it is available."
+            ),
         )
 
     def _set_detail_card(self, *, title: str, summary: str, metrics: str, note: str) -> None:

@@ -6,6 +6,8 @@ from threading import RLock
 from typing import Any
 from uuid import uuid4
 
+ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -192,3 +194,14 @@ def list_recent_jobs(*, kind: str | None = None, limit: int = 5) -> list[JobSnap
 
 def latest_job(*, kind: str | None = None) -> JobSnapshot | None:
     return _REGISTRY.latest(kind=kind)
+
+
+def resolve_active_job(job_id: str | None, *, kind: str) -> JobSnapshot | None:
+    """Return the current active job for a page, preferring the local job id."""
+    snapshot = get_job(job_id)
+    if snapshot is not None:
+        return snapshot
+    fallback = latest_job(kind=kind)
+    if fallback is not None and fallback.status in ACTIVE_JOB_STATUSES:
+        return fallback
+    return None

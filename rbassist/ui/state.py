@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from rbassist.bpm_sources import clear_rekordbox_bpm_cache
 from rbassist.health import audit_meta_health, default_music_roots, suggest_rewrite_pairs
 from rbassist.utils import load_meta, DATA, IDX, ROOT, pick_device
 
@@ -80,6 +81,7 @@ class AppState:
         return roots or default_music_roots()
 
     def refresh_meta(self) -> None:
+        clear_rekordbox_bpm_cache()
         self.meta = load_meta()
 
     def refresh_health(self) -> None:

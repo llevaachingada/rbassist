@@ -143,6 +143,13 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   7. benchmark suite
   Future agents should prefer this plan over treating `WISHLIST.md` as a flat backlog.
 
+- 2026-03-30: Crate Expander reconnect follow-up after the Rekordbox-first BPM UI smoke:
+  - problem: clicking `Load Playlist As Seeds` in the browser had been dropping the NiceGUI websocket with `Connection lost. Trying to reconnect...`
+  - confirmed fix: `rbassist/ui/pages/crate_expander.py` now offloads Rekordbox playlist refresh/load work with `asyncio.to_thread(...)` and starts the initial refresh via `nicegui.background_tasks.create(...)`, avoiding the UI-thread stall and the un-awaited async refresh warning
+  - validation: `.venv\Scripts\python.exe -m pytest tests/test_ui_crate_expander.py tests/test_ui_discover.py tests/test_playlist_expand.py tests/test_bpm_sources.py` passed (`23 passed`); `.venv\Scripts\python.exe -m compileall rbassist` passed; focused browser smoke confirmed `Refresh` no longer disconnects and loaded `352` playlists
+  - remaining risk: after the reconnect fix, playlist loading still failed for the selected DB playlist with `Playlist not found for source 'db': 135-165 last year 4 stars`, which looks like a selected-value / loader-identifier mismatch rather than the original event-loop crash
+  - next smallest slice: inspect the value stored in the Crate Expander playlist select after refresh, compare it with the identifier shape expected by `load_rekordbox_playlist(...)`, and add a focused regression test before changing either side
+
 - 2026-03-02: Began the richer bare/orphan review and safe-apply flow.
   - backend: `rbassist/health.py` now classifies bare rows as `high_confidence_unique`, `medium_confidence_unique`, `ambiguous`, or `not_found`
   - CLI: `scripts/resolve_bare_meta_paths.py` now supports `--min-confidence`, `--out-json`, and `--out-csv`
@@ -150,3 +157,13 @@ Health audit + path normalization, followed by UI health dashboard + import UX c
   - live dry-run outputs: `docs/dev/bare_meta_resolution_2026-03-02.json` and `docs/dev/bare_meta_resolution_2026-03-02.csv`
   - current live counts: `1457` bare rows, `2` high-confidence unique, `33` medium-confidence unique, `1052` ambiguous, `370` not found
   Important: ambiguity remains the dominant case because many filenames exist in multiple folders under the active root. This is expected and argues for duplicate/remediation and Rekordbox-safe relink work next.
+
+- 2026-03-30: Backend-first My Tags / AI-tag / cue hardening slice.
+  - added `rbassist/cue_templates.py` as the configurable cue-template seam used by `rbassist/cues.py`, with profile overrides coming from `config/cue_templates.yml`
+  - cue template defaults are now Rekordbox-aligned for the current tests and support partial per-role overrides such as rename, slot changes, bar-length changes, and role disablement
+  - `rbassist/tag_model.py` now learns/evaluates against the effective confirmed tag set, so existing library tags stored in `config/tags.yml` and `config/my_tags.yml` are usable for AI learning even when raw `meta["mytags"]` is incomplete
+  - `rbassist/cli.py` `tags-auto --apply` now preserves effective current tags instead of risking drops when config-backed tags have not yet been mirrored into meta
+  - `rbassist/tagstore.py` now respects `only_existing` during Rekordbox XML My Tag import
+  - `rbassist/safe_tagstore.py` migration now syncs from the effective confirmed tag set instead of referencing the broken `old_store` path
+  - focused validation: `pytest tests/test_cues.py tests/test_tagstore.py tests/test_tag_model.py` passed (`7 passed`); `python -m compileall rbassist` passed
+  - next smallest slices: add focused tests for `load_cue_template(...)` profile loading from disk, then audit UI copy/workflows so the frontend reflects the new backend truth without overpromising
