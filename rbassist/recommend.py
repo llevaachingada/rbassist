@@ -65,6 +65,8 @@ class HnswIndex:
 
 def load_embedding_safe(path: str, expected_dim: int | None = None) -> np.ndarray | None:
     """Load embedding with shape validation; returns None on failure."""
+    if not path:
+        return None
     try:
         arr = np.load(path)
     except Exception as e:
@@ -75,6 +77,28 @@ def load_embedding_safe(path: str, expected_dim: int | None = None) -> np.ndarra
         console.print(f"[yellow]Skip embedding {path}: expected dim {expected_dim}, got {vec.shape[0]}")
         return None
     return vec.astype(np.float32, copy=False)
+
+
+def _cosine_01(left: np.ndarray, right: np.ndarray) -> float:
+    if left.size == 0 or right.size == 0:
+        return 0.0
+    denom = float(np.linalg.norm(left) * np.linalg.norm(right))
+    if denom <= 0.0:
+        return 0.0
+    score = float(np.dot(left, right) / (denom + 1e-9))
+    return float(np.clip(score, 0.0, 1.0))
+
+
+def load_section_embeddings(
+    track_meta: dict,
+    expected_dim: int = DIM,
+) -> dict[str, np.ndarray | None]:
+    """Load optional intro/core/late section embeddings for a track."""
+    return {
+        "intro": load_embedding_safe(str(track_meta.get("embedding_intro") or ""), expected_dim),
+        "core": load_embedding_safe(str(track_meta.get("embedding_core") or ""), expected_dim),
+        "late": load_embedding_safe(str(track_meta.get("embedding_late") or ""), expected_dim),
+    }
 
 
 def build_index(incremental: bool = False, add_chunk_size: int = INDEX_ADD_CHUNK) -> None:
@@ -194,6 +218,7 @@ def recommend(
     allow_doubletime: bool = True,
     camelot_neighbors: bool = True,
     weights: Optional[Dict[str, float]] = None,
+    use_section_scores: bool = False,
 ):
     idxfile = IDX / "hnsw.idx"
     paths_map = json.load(open(IDX / "paths.json", "r", encoding="utf-8"))
@@ -211,6 +236,8 @@ def recommend(
 
     seed_bpm = seed_info.get("bpm")
     seed_key = seed_info.get("key")
+    seed_section = load_section_embeddings(seed_info, seed_vec.shape[0]) if use_section_scores else {}
+    seed_late = seed_section.get("late")
 
     # query ANN
     index = hnswlib.Index(space="cosine", dim=seed_vec.shape[0])
@@ -239,6 +266,7 @@ def recommend(
     w_samples = float(weights.get("samples", 0.0))
     w_bass = float(weights.get("bass", 0.0))
     w_rhythm = float(weights.get("rhythm", 0.0))
+    w_transition = float(weights.get("transition", 0.0))
 
     # load seed features for bass and rhythm
     seed_c = np.array(seed_info.get("features", {}).get("bass_contour", {}).get("contour", []), dtype=float)
@@ -274,10 +302,15 @@ def recommend(
             r_cont = np.array(info.get("features", {}).get("rhythm_contour", {}).get("contour", []), dtype=float)
             if seed_r.size and r_cont.size:
                 score += w_rhythm * float(rhythm_similarity(seed_r, r_cont))
+        if use_section_scores and w_transition and seed_late is not None:
+            cand_section = load_section_embeddings(info, seed_vec.shape[0])
+            cand_intro = cand_section.get("intro")
+            if cand_intro is not None:
+                score += w_transition * _cosine_01(seed_late, cand_intro)
         cands.append((path, info, cand_bpm, cand_key, rule_name, dist, score))
 
     # sort: if any weight provided, sort by score desc; else by ANN distance asc
-    if any([w_ann, w_samples, w_bass, w_rhythm]):
+    if any([w_ann, w_samples, w_bass, w_rhythm, w_transition]):
         cands.sort(key=lambda x: x[6], reverse=True)
     else:
         cands.sort(key=lambda x: x[5])

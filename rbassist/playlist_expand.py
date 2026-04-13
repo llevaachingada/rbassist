@@ -199,6 +199,7 @@ class PlaylistExpansionWeights:
     bpm_match: float = 0.12
     key_match: float = 0.08
     tag_match: float = 0.14
+    transition_outro_to_intro: float = 0.0
 
     def to_dict(self) -> dict[str, float]:
         return {
@@ -208,6 +209,7 @@ class PlaylistExpansionWeights:
             "bpm_match": float(self.bpm_match),
             "key_match": float(self.key_match),
             "tag_match": float(self.tag_match),
+            "transition_outro_to_intro": float(self.transition_outro_to_intro),
         }
 
     @classmethod
@@ -220,6 +222,12 @@ class PlaylistExpansionWeights:
             bpm_match=float(mapping.get("bpm_match", mapping.get("bpm", cls().bpm_match))),
             key_match=float(mapping.get("key_match", mapping.get("key", cls().key_match))),
             tag_match=float(mapping.get("tag_match", mapping.get("tags", cls().tag_match))),
+            transition_outro_to_intro=float(
+                mapping.get(
+                    "transition_outro_to_intro",
+                    mapping.get("transition", cls().transition_outro_to_intro),
+                )
+            ),
         )
 
     def normalized(self) -> "PlaylistExpansionWeights":
@@ -280,6 +288,7 @@ class PlaylistExpansionControls:
     diversity: float = 0.28
     filters: PlaylistExpansionFilters = field(default_factory=PlaylistExpansionFilters)
     candidate_pool: int = 250
+    use_section_scores: bool = False
 
     def normalized(self) -> "PlaylistExpansionControls":
         return PlaylistExpansionControls(
@@ -289,6 +298,7 @@ class PlaylistExpansionControls:
             diversity=max(0.0, min(1.0, float(self.diversity))),
             filters=self.filters,
             candidate_pool=max(1, int(self.candidate_pool)),
+            use_section_scores=bool(self.use_section_scores),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -299,6 +309,7 @@ class PlaylistExpansionControls:
             "diversity": float(self.diversity),
             "filters": self.filters.to_dict(),
             "candidate_pool": int(self.candidate_pool),
+            "use_section_scores": bool(self.use_section_scores),
         }
 
 
@@ -323,6 +334,7 @@ class PreparedCandidate:
     key: str | None = None
     mytags: list[str] = field(default_factory=list)
     component_scores: dict[str, float] = field(default_factory=dict)
+    section_intro: np.ndarray | None = None
 
     def source_rank(self) -> tuple[int, float, float, str]:
         source_score = 0
@@ -800,6 +812,13 @@ def _seed_embedding_vector(track: SeedTrack, meta_tracks: dict[str, dict[str, An
     return load_embedding_safe(str(emb_path))
 
 
+def _load_track_embedding(info: dict[str, Any], key: str) -> np.ndarray | None:
+    emb_path = info.get(key)
+    if not emb_path:
+        return None
+    return load_embedding_safe(str(emb_path))
+
+
 def _cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
     if left.size == 0 or right.size == 0:
         return 0.0
@@ -822,11 +841,21 @@ def _collect_meta_features(
     if not core_tags:
         core_tags = set(tag_counts)
     seed_vectors = []
+    seed_late_vectors = []
     for track in seed_tracks:
+        info = meta_tracks.get(track.meta_path or "", {})
         vec = _seed_embedding_vector(track, meta_tracks)
         if vec is not None:
             seed_vectors.append(vec)
+        late_vec = _load_track_embedding(info, "embedding_late")
+        if late_vec is not None:
+            seed_late_vectors.append(late_vec)
     centroid = np.mean(np.stack(seed_vectors, axis=0), axis=0).astype(np.float32) if seed_vectors else None
+    late_centroid = (
+        np.mean(np.stack(seed_late_vectors, axis=0), axis=0).astype(np.float32)
+        if seed_late_vectors
+        else None
+    )
     return {
         "seed_bpm_median": float(np.median(bpm_values)) if bpm_values else None,
         "seed_keys": seed_keys,
@@ -834,6 +863,8 @@ def _collect_meta_features(
         "seed_core_tags": core_tags,
         "seed_vectors": seed_vectors,
         "seed_centroid": centroid,
+        "seed_late_vectors": seed_late_vectors,
+        "seed_late_centroid": late_centroid,
     }
 
 
@@ -1265,6 +1296,7 @@ PLAYLIST_EXPANSION_PRESETS: dict[str, dict[str, Any]] = {
             bpm_match=0.18,
             key_match=0.12,
             tag_match=0.06,
+            transition_outro_to_intro=0.0,
         ),
         "diversity": 0.15,
         "filters": PlaylistExpansionFilters(tempo_pct=4.0, allow_doubletime=True, key_mode="filter"),
@@ -1277,6 +1309,7 @@ PLAYLIST_EXPANSION_PRESETS: dict[str, dict[str, Any]] = {
             bpm_match=0.12,
             key_match=0.08,
             tag_match=0.14,
+            transition_outro_to_intro=0.0,
         ),
         "diversity": 0.28,
         "filters": PlaylistExpansionFilters(tempo_pct=6.0, allow_doubletime=True, key_mode="soft"),
@@ -1289,6 +1322,7 @@ PLAYLIST_EXPANSION_PRESETS: dict[str, dict[str, Any]] = {
             bpm_match=0.08,
             key_match=0.04,
             tag_match=0.20,
+            transition_outro_to_intro=0.0,
         ),
         "diversity": 0.55,
         "filters": PlaylistExpansionFilters(tempo_pct=10.0, allow_doubletime=True, key_mode="off"),
@@ -1342,6 +1376,15 @@ def _overlay_playlist_expansion_weights(
     return PlaylistExpansionWeights.from_mapping(merged)
 
 
+def _weights_specify_transition(weights: PlaylistExpansionWeights | dict[str, Any] | None) -> bool:
+    if weights is None:
+        return False
+    if isinstance(weights, PlaylistExpansionWeights):
+        return float(weights.transition_outro_to_intro) != 0.0
+    keys = {"transition_outro_to_intro", "transition"}
+    return any(key in weights for key in keys)
+
+
 def _overlay_playlist_expansion_filters(
     base: PlaylistExpansionFilters,
     overrides: PlaylistExpansionFilters | dict[str, Any] | None,
@@ -1376,6 +1419,7 @@ def _resolve_playlist_expansion_controls(
             filters=_coerce_playlist_expansion_filters(controls.get("filters"))
             or PlaylistExpansionFilters.from_mapping(controls),
             candidate_pool=int(controls.get("candidate_pool", candidate_pool)),
+            use_section_scores=bool(controls.get("use_section_scores", controls.get("section_scores", False))),
         )
     else:
         resolved_mode = _normalize_playlist_expansion_mode(mode)
@@ -1387,8 +1431,10 @@ def _resolve_playlist_expansion_controls(
             diversity=float(preset["diversity"]),
             filters=preset["filters"],
             candidate_pool=int(candidate_pool),
+            use_section_scores=False,
         )
 
+    use_section_scores = bool(resolved.use_section_scores)
     resolved = PlaylistExpansionControls(
         mode=_normalize_playlist_expansion_mode(resolved.mode if resolved.mode else mode),
         strategy=_normalize_playlist_expansion_strategy(resolved.strategy if resolved.strategy else strategy),
@@ -1402,7 +1448,25 @@ def _resolve_playlist_expansion_controls(
             filters if filters is not None else resolved.filters,
         ),
         candidate_pool=max(1, int(candidate_pool if candidate_pool is not None else resolved.candidate_pool)),
+        use_section_scores=use_section_scores,
     )
+    if (
+        resolved.use_section_scores
+        and resolved.mode == "tight"
+        and float(resolved.weights.transition_outro_to_intro) == 0.0
+        and not _weights_specify_transition(weights)
+    ):
+        preset_weights = resolved.weights.to_dict()
+        preset_weights["transition_outro_to_intro"] = 0.18
+        resolved = PlaylistExpansionControls(
+            mode=resolved.mode,
+            strategy=resolved.strategy,
+            weights=PlaylistExpansionWeights.from_mapping(preset_weights),
+            diversity=resolved.diversity,
+            filters=resolved.filters,
+            candidate_pool=resolved.candidate_pool,
+            use_section_scores=resolved.use_section_scores,
+        )
     return resolved.normalized()
 
 
@@ -1460,6 +1524,7 @@ def _compute_component_scores(
         "bpm_match": 0.0,
         "key_match": 0.0,
         "tag_match": 0.0,
+        "transition_outro_to_intro": 0.0,
     }
     if candidate.vector is not None and candidate.vector.size and seed_centroid is not None:
         centroid_sim = _cosine_similarity(candidate.vector.astype(np.float32, copy=False), seed_centroid.astype(np.float32, copy=False))
@@ -1490,6 +1555,21 @@ def _compute_component_scores(
     seed_tags = set(str(tag) for tag in meta_stats.get("seed_core_tags", []) if str(tag).strip())
     candidate_tags = set(str(tag) for tag in candidate.mytags if str(tag).strip())
     scores["tag_match"] = _tag_overlap_score(seed_tags, candidate_tags)
+    if controls.use_section_scores:
+        seed_late = meta_stats.get("seed_late_centroid")
+        if seed_late is not None and candidate.section_intro is not None:
+            transition_score = max(
+                0.0,
+                min(
+                    1.0,
+                    _cosine_similarity(
+                        seed_late.astype(np.float32, copy=False),
+                        candidate.section_intro.astype(np.float32, copy=False),
+                    ),
+                ),
+            )
+            scores["transition_outro_to_intro"] = transition_score
+            scores["transition_score"] = transition_score
     return scores
 
 
@@ -1566,6 +1646,7 @@ def _build_prepared_candidate(
         bpm_source=bpm_info.preferred_source,
         key=str(info.get("key", "") or "") or None,
         mytags=[str(tag) for tag in (info.get("mytags", []) or []) if str(tag).strip()],
+        section_intro=_load_track_embedding(info, "embedding_intro") if controls.use_section_scores else None,
     )
     if meta_stats.get("seed_centroid") is not None:
         candidate.ann_distance = 1.0 - _cosine_similarity(vector, meta_stats["seed_centroid"].astype(np.float32, copy=False))

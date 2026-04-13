@@ -47,7 +47,9 @@ def _build_playlist_expansion_kwargs(
     w_bpm: Optional[float],
     w_key: Optional[float],
     w_tags: Optional[float],
+    w_transition: Optional[float],
     require_tags: Optional[List[str]],
+    section_scores: bool,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "mode": _normalize_playlist_expansion_choice(
@@ -98,8 +100,12 @@ def _build_playlist_expansion_kwargs(
         weights["key_match"] = float(w_key)
     if w_tags is not None:
         weights["tag_match"] = float(w_tags)
+    if w_transition is not None:
+        weights["transition_outro_to_intro"] = float(w_transition)
     if weights:
         kwargs["weights"] = weights
+    if section_scores:
+        kwargs["controls"] = {"use_section_scores": True}
 
     return kwargs
 
@@ -184,6 +190,25 @@ def cmd_embed(
     ),
     timbre: bool = typer.Option(False, help="Also write a timbre-only embedding using OpenL3"),
     timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
+    section_embed: bool = typer.Option(
+        False,
+        "--section-embed/--no-section-embed",
+        help="Also save intro/core/late MERT section embeddings for opt-in transition scoring.",
+    ),
+    layer_mix: bool = typer.Option(
+        False,
+        "--layer-mix/--no-layer-mix",
+        help="Also save an opt-in depth-mixed MERT embedding sidecar.",
+    ),
+    layer_mix_weights_path: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--layer-mix-weights",
+        file_okay=True,
+        dir_okay=False,
+        exists=True,
+        readable=True,
+        help="Optional .npz file with learned layer-mix weights.",
+    ),
     paths_file: Optional[pathlib.Path] = typer.Option(
         None,
         "--paths-file",
@@ -258,6 +283,9 @@ def cmd_embed(
         resume=resume,
         checkpoint_file=(str(checkpoint_file) if checkpoint_file else None),
         checkpoint_every=checkpoint_every,
+        section_embed=section_embed,
+        layer_mix=layer_mix,
+        layer_mix_weights_path=(str(layer_mix_weights_path) if layer_mix_weights_path else None),
     )
 
 
@@ -329,7 +357,9 @@ def cmd_recommend(
     camelot_neighbors: bool = typer.Option(True, help="Filter by Camelot compatibility"),
     w_ann: float = typer.Option(0.0, help="Weight: ANN base score"),
     w_samples: float = typer.Option(0.0, help="Weight: samples score (0..1)"),
-    w_bass: float = typer.Option(0.0, help="Weight: bass contour similarity (0..1)")
+    w_bass: float = typer.Option(0.0, help="Weight: bass contour similarity (0..1)"),
+    w_transition: float = typer.Option(0.0, help="Weight: outro-to-intro section transition score (0..1)"),
+    section_scores: bool = typer.Option(False, "--section-scores", help="Use section embeddings when present."),
 ):
     try:
         from .recommend import recommend as do_rec
@@ -342,7 +372,8 @@ def cmd_recommend(
         tempo_pct=tempo_pct,
         allow_doubletime=allow_doubletime,
         camelot_neighbors=camelot_neighbors,
-        weights={"ann": w_ann, "samples": w_samples, "bass": w_bass},
+        weights={"ann": w_ann, "samples": w_samples, "bass": w_bass, "transition": w_transition},
+        use_section_scores=section_scores,
     )
 
 
@@ -423,6 +454,12 @@ def cmd_playlist_expand(
     w_bpm: Optional[float] = typer.Option(None, help="Override weight: BPM match."),
     w_key: Optional[float] = typer.Option(None, help="Override weight: key match."),
     w_tags: Optional[float] = typer.Option(None, help="Override weight: tag match."),
+    w_transition: Optional[float] = typer.Option(None, help="Override weight: outro-to-intro transition match."),
+    section_scores: bool = typer.Option(
+        False,
+        "--section-scores",
+        help="Use intro/late section embeddings when available during reranking.",
+    ),
     require_tag: List[str] = typer.Option(
         None,
         "--require-tag",
@@ -503,7 +540,9 @@ def cmd_playlist_expand(
             w_bpm=w_bpm,
             w_key=w_key,
             w_tags=w_tags,
+            w_transition=w_transition,
             require_tags=require_tag,
+            section_scores=section_scores,
         )
         result = expand_playlist(
             seed_playlist,

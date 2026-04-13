@@ -1,5 +1,7 @@
 import types
 import unittest
+import subprocess
+import sys
 from unittest import mock
 
 from rbassist.ui import app as ui_app
@@ -73,6 +75,23 @@ class UiAppTests(unittest.TestCase):
             loader.ensure_loaded("discover")
         render_mock.assert_called_once_with(mount, spec)
         self.assertIn("discover", loader.loaded)
+
+    def test_library_page_imports_without_matplotlib(self) -> None:
+        script = r"""
+import importlib
+import sys
+
+class BlockMatplotlib:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "matplotlib" or fullname.startswith("matplotlib."):
+            raise ModuleNotFoundError("blocked matplotlib")
+        return None
+
+sys.meta_path.insert(0, BlockMatplotlib())
+importlib.import_module("rbassist.ui.pages.library")
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

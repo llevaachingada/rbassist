@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import numpy as np
 import librosa, soundfile as sf
 import warnings
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 from transformers import AutoModel, Wav2Vec2FeatureExtractor
 import torch
 from rich.progress import Progress
@@ -16,6 +16,7 @@ from .utils import console, EMB, load_meta, save_meta
 from .prefs import mode_for_path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from .sampling_profile import SamplingParams, pick_windows
+from .layer_mix import extract_layer_pools, fixed_weight_mix, learned_mix
 try:
     import openl3  # type: ignore
 except Exception:
@@ -99,12 +100,50 @@ def _is_cuda_runtime_error(err: Exception | str) -> bool:
 
 
 class MertEmbedder:
-    def __init__(self, model_name: str = DEFAULT_MODEL, device: str | None = None):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        device: str | None = None,
+        layer_mix: bool = False,
+        layer_mix_weights_path: str | None = None,
+    ):
         req = _resolve_device(device)
         self.device = req
+        self.layer_mix = bool(layer_mix)
+        self.layer_mix_weights = self._load_layer_mix_weights(layer_mix_weights_path)
         _configure_torch_runtime(self.device)
         self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(self.device)
         self.processor = Wav2Vec2FeatureExtractor.from_pretrained(model_name, trust_remote_code=True)
+
+    def _load_layer_mix_weights(self, weights_path: str | None) -> dict[str, np.ndarray] | None:
+        if not weights_path:
+            return None
+        try:
+            loaded = np.load(weights_path)
+            projection = loaded.get("projection_weights")
+            if projection is None:
+                projection = loaded.get("proj_w")
+            mix_weights = loaded.get("mix_weights")
+            if projection is None or mix_weights is None:
+                console.print(f"[yellow]Layer-mix weights missing required arrays; using fixed weights: {weights_path}")
+                return None
+            return {
+                "projection_weights": np.asarray(projection, dtype=np.float32),
+                "mix_weights": np.asarray(mix_weights, dtype=np.float32),
+            }
+        except Exception as e:
+            console.print(f"[yellow]Layer-mix weights unreadable ({weights_path}); using fixed weights: {e}")
+            return None
+
+    def _mix_hidden_states(self, hidden_states: tuple) -> np.ndarray:
+        pools = extract_layer_pools(hidden_states)
+        if self.layer_mix_weights is not None:
+            return learned_mix(
+                pools,
+                self.layer_mix_weights["projection_weights"],
+                self.layer_mix_weights["mix_weights"],
+            )
+        return fixed_weight_mix(pools)
 
     def encode_array(self, y: np.ndarray, sr: int) -> np.ndarray:
         if sr != SAMPLE_RATE:
@@ -113,9 +152,25 @@ class MertEmbedder:
         inputs = self.processor(y, sampling_rate=sr, return_tensors="pt")
         with torch.inference_mode():
             out = self.model(**{k: v.to(self.device) for k, v in inputs.items()}, output_hidden_states=True)
+        if self.layer_mix:
+            return self._mix_hidden_states(out.hidden_states)
         feats = out.hidden_states[-1].squeeze(0)  # [T, 1024]
         vec = feats.mean(dim=0).cpu().numpy().astype(np.float32)
         return vec
+
+    def encode_array_full(self, y: np.ndarray, sr: int) -> dict[str, np.ndarray]:
+        if sr != SAMPLE_RATE:
+            y = librosa.resample(y, orig_sr=sr, target_sr=SAMPLE_RATE)
+            sr = SAMPLE_RATE
+        inputs = self.processor(y, sampling_rate=sr, return_tensors="pt")
+        with torch.inference_mode():
+            out = self.model(**{k: v.to(self.device) for k, v in inputs.items()}, output_hidden_states=True)
+        feats = out.hidden_states[-1].squeeze(0)
+        standard = feats.mean(dim=0).cpu().numpy().astype(np.float32)
+        return {
+            "standard": standard,
+            "layer_mix": self._mix_hidden_states(out.hidden_states),
+        }
 
     def encode_batch(self, items: list[tuple[np.ndarray, int]]) -> list[np.ndarray]:
         """Batch version of encode_array; items are (audio, sr)."""
@@ -129,9 +184,48 @@ class MertEmbedder:
         inputs = self.processor(arrays, sampling_rate=SAMPLE_RATE, return_tensors="pt", padding=True)
         with torch.inference_mode():
             out = self.model(**{k: v.to(self.device) for k, v in inputs.items()}, output_hidden_states=True)
+        if self.layer_mix:
+            mixed: list[np.ndarray] = []
+            for idx in range(len(items)):
+                item_hidden_states = tuple(state[idx : idx + 1] for state in out.hidden_states)
+                mixed.append(self._mix_hidden_states(item_hidden_states))
+            return mixed
         feats = out.hidden_states[-1]  # [B, T, 1024]
         vecs = feats.mean(dim=1).cpu().numpy().astype(np.float32)
         return [vecs[i] for i in range(len(items))]
+
+    def encode_batch_full(self, items: list[tuple[np.ndarray, int]]) -> list[dict[str, np.ndarray]]:
+        if not items:
+            return []
+        arrays: list[np.ndarray] = []
+        for y, sr in items:
+            if sr != SAMPLE_RATE:
+                y = librosa.resample(y, orig_sr=sr, target_sr=SAMPLE_RATE)
+            arrays.append(y)
+        inputs = self.processor(arrays, sampling_rate=SAMPLE_RATE, return_tensors="pt", padding=True)
+        with torch.inference_mode():
+            out = self.model(**{k: v.to(self.device) for k, v in inputs.items()}, output_hidden_states=True)
+        feats = out.hidden_states[-1]
+        standard_vecs = feats.mean(dim=1).cpu().numpy().astype(np.float32)
+        results: list[dict[str, np.ndarray]] = []
+        for idx in range(len(items)):
+            item_hidden_states = tuple(state[idx : idx + 1] for state in out.hidden_states)
+            results.append(
+                {
+                    "standard": standard_vecs[idx],
+                    "layer_mix": self._mix_hidden_states(item_hidden_states),
+                }
+            )
+        return results
+
+    def encode_section_vectors(self, segments: list[tuple[np.ndarray, int]]) -> list[np.ndarray]:
+        """Encode each section independently, preserving input order."""
+        try:
+            return self.encode_batch(segments)
+        except Exception as e:
+            if _is_cuda_runtime_error(e):
+                raise
+            return [self.encode_array(y, sr) for y, sr in segments]
 
     def embed(self, audio_path: str, duration_s: int = 120) -> np.ndarray:
         y, sr = librosa.load(audio_path, sr=None, mono=True)
@@ -357,6 +451,74 @@ def embed_with_default_windows(
     return np.mean(np.stack(embs, axis=0), axis=0)
 
 
+def embed_with_section_vectors(
+    y: np.ndarray,
+    sr: int,
+    embedder: MertEmbedder,
+    windows: Optional[list[tuple[float, float]]] = None,
+) -> dict[str, np.ndarray]:
+    """Compute intro/core/late section vectors plus the existing combined vector."""
+    if windows is None:
+        windows = _default_windows(y, sr)
+    slices = _window_slices(y, sr, windows)
+    if not slices:
+        vec = embedder.encode_array(y, sr)
+        return {"intro": vec, "core": vec, "late": vec, "combined": vec}
+
+    try:
+        embs = embedder.encode_section_vectors([(seg, sr) for seg in slices])
+    except Exception as e:
+        if _is_cuda_runtime_error(e):
+            raise
+        embs = [embedder.encode_array(seg, sr) for seg in slices]
+    if not embs:
+        vec = embedder.encode_array(y, sr)
+        return {"intro": vec, "core": vec, "late": vec, "combined": vec}
+
+    combined = np.mean(np.stack(embs, axis=0), axis=0).astype(np.float32)
+    if len(embs) == 1:
+        intro = core = late = embs[0]
+    elif len(embs) == 2:
+        intro = embs[0]
+        core = embs[0]
+        late = embs[1]
+    else:
+        intro = embs[0]
+        core = embs[1]
+        late = embs[-1]
+    return {
+        "intro": np.asarray(intro, dtype=np.float32),
+        "core": np.asarray(core, dtype=np.float32),
+        "late": np.asarray(late, dtype=np.float32),
+        "combined": combined,
+    }
+
+
+def embed_with_default_windows_full(
+    y: np.ndarray,
+    sr: int,
+    embedder: MertEmbedder,
+    windows: Optional[list[tuple[float, float]]] = None,
+) -> dict[str, np.ndarray]:
+    if windows is None:
+        windows = _default_windows(y, sr)
+    slices = _window_slices(y, sr, windows)
+    if not slices:
+        return embedder.encode_array_full(y, sr)
+    try:
+        rows = embedder.encode_batch_full([(seg, sr) for seg in slices])
+    except Exception as e:
+        if _is_cuda_runtime_error(e):
+            raise
+        rows = [embedder.encode_array_full(seg, sr) for seg in slices]
+    standard = np.mean(np.stack([row["standard"] for row in rows], axis=0), axis=0).astype(np.float32)
+    layer_mixed = np.mean(np.stack([row["layer_mix"] for row in rows], axis=0), axis=0).astype(np.float32)
+    layer_norm = float(np.linalg.norm(layer_mixed))
+    if layer_norm > 0.0:
+        layer_mixed = (layer_mixed / layer_norm).astype(np.float32, copy=False)
+    return {"standard": standard, "layer_mix": layer_mixed}
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -403,9 +565,15 @@ def build_embeddings(
     resume: bool = False,
     checkpoint_file: Optional[str] = None,
     checkpoint_every: int = 100,
+    section_embed: bool = False,
+    layer_mix: bool = False,
+    layer_mix_weights_path: Optional[str] = None,
 ) -> None:
     meta = load_meta()
-    emb = MertEmbedder(model_name=model_name, device=device)
+    embedder_kwargs: dict[str, Any] = {}
+    if layer_mix_weights_path:
+        embedder_kwargs["layer_mix_weights_path"] = layer_mix_weights_path
+    emb = MertEmbedder(model_name=model_name, device=device, **embedder_kwargs)
     timbre_emb: TimbreEmbedder | None = None
     if timbre:
         try:
@@ -585,7 +753,7 @@ def build_embeddings(
                 torch.cuda.ipc_collect()
             except Exception:
                 pass
-        emb = MertEmbedder(model_name=model_name, device="cuda")
+        emb = MertEmbedder(model_name=model_name, device="cuda", **embedder_kwargs)
 
     if total == 0:
         console.print("[green]No embedding work to do.")
@@ -637,10 +805,22 @@ def build_embeddings(
                 if sampling is not None:
                     vec = embed_with_sampling(src_path, active_emb, sampling)
                     mert_vec = vec
+                elif layer_mix:
+                    full_vecs = embed_with_default_windows_full(y, sr, active_emb, windows=windows)
+                    vec = full_vecs["standard"]
+                    mert_vec = vec
+                    _save_embedding(orig, full_vecs["layer_mix"], used, kind="embedding_layer_mix")
                 else:
                     vec = embed_with_default_windows(y, sr, active_emb, windows=windows)
                     mert_vec = vec
                 _save_embedding(orig, vec, used, kind="embedding_mert")
+
+                if section_embed:
+                    section_vecs = embed_with_section_vectors(y, sr, active_emb, windows=windows)
+                    _save_embedding(orig, section_vecs["intro"], used, kind="embedding_intro")
+                    _save_embedding(orig, section_vecs["core"], used, kind="embedding_core")
+                    _save_embedding(orig, section_vecs["late"], used, kind="embedding_late")
+                    meta["tracks"].setdefault(orig, {})["embedding_version"] = "v2_section"
 
                 if timbre_emb is not None:
                     try:

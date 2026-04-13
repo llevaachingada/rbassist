@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Optional
 
 import librosa
-import matplotlib.pyplot as plt
 import numpy as np
 from nicegui import ui
 
@@ -159,6 +158,15 @@ def render() -> None:
                     _, result, err, warns = analyze_file(path, cfg)
                     if err or result is None or not result.get('beats'):
                         return None, err or 'no beats detected', warns, None
+                    try:
+                        import matplotlib.pyplot as plt
+                    except ModuleNotFoundError:
+                        return (
+                            None,
+                            'Waveform preview requires matplotlib; install matplotlib or skip preview.',
+                            warns,
+                            result,
+                        )
                     beats = np.array(result['beats'], dtype=float)
                     downbeats = np.array(result.get('downbeats', []), dtype=float)
                     max_beats = 64
