@@ -139,6 +139,7 @@ Outputs:
 - small table preview
 - read-only Overview / Library / Discover preview tabs
 - shared job status summary
+- read-only Library health issue summary
 - Discover readiness message based on read-only library counts
 - no writes
 
@@ -210,4 +211,4 @@ As of 2026-04-12:
 - `Settings` delegates folder input parsing, pipeline preflight/status text, result payload shaping, and progress panel view modeling to `rbassist/ui_services/settings.py`.
 - shared job snapshots live in `rbassist/runtime/jobs.py`, with `rbassist/ui/jobs.py` kept as a compatibility export.
 - `rbassist/ui/__init__.py` lazily exposes `run` and `main` so importing `rbassist.ui.jobs` no longer loads the NiceGUI app.
-- `rbassist/desktop/app.py` is a read-only shell with Overview, shared job summary, Library preview, and Discover readiness tabs.
+- `rbassist/desktop/app.py` is a read-only shell with Overview, shared job summary, Library preview plus health issue summary, and Discover readiness tabs.

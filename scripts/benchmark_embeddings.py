@@ -32,6 +32,39 @@ ROW_DESCRIPTIONS = {
 }
 
 
+def embedding_coverage(meta: dict[str, Any]) -> dict[str, int]:
+    tracks = meta.get("tracks", {})
+    primary = 0
+    section_complete = 0
+    layer_mix = 0
+    case_buckets: dict[str, list[str]] = {}
+    for path, info in tracks.items():
+        case_buckets.setdefault(str(path).lower(), []).append(str(path))
+        emb = info.get("embedding")
+        has_primary = bool(emb and Path(str(emb)).exists())
+        if has_primary:
+            primary += 1
+            if all(
+                info.get(key) and Path(str(info.get(key))).exists()
+                for key in ("embedding_intro", "embedding_core", "embedding_late")
+            ):
+                section_complete += 1
+        layer_path = info.get("embedding_layer_mix")
+        if layer_path and Path(str(layer_path)).exists():
+            layer_mix += 1
+    case_collision_keys = sum(1 for values in case_buckets.values() if len(values) > 1)
+    case_collision_rows = sum(max(0, len(values) - 1) for values in case_buckets.values())
+    return {
+        "tracks_total": len(tracks),
+        "primary_embedding_count": primary,
+        "section_embedding_complete_count": section_complete,
+        "section_embedding_missing_count": max(0, primary - section_complete),
+        "layer_mix_embedding_count": layer_mix,
+        "case_collision_key_count": case_collision_keys,
+        "case_collision_extra_row_count": case_collision_rows,
+    }
+
+
 def _cosine(left: np.ndarray, right: np.ndarray) -> float:
     if left.size == 0 or right.size == 0:
         return 0.0
@@ -72,9 +105,6 @@ def _load_seed_list(args: argparse.Namespace) -> list[str]:
     config_path = Path("config/benchmark_seeds.txt")
     if not seeds and config_path.exists():
         seeds.extend(_read_seed_file(config_path))
-    if seeds and not config_path.exists():
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text("\n".join(seeds) + "\n", encoding="utf-8")
     return list(dict.fromkeys(seeds))
 
 
@@ -243,7 +273,7 @@ def run_benchmark(
             values = [metrics[key] for metrics in per_seed_metrics if metrics.get(key) is not None]
             averaged[key] = float(np.mean(values)) if values else None
         row_results[row_name] = averaged
-    return {"seeds": resolved, "rows": row_results}
+    return {"seeds": resolved, "rows": row_results, "coverage": embedding_coverage(meta)}
 
 
 def compute_deltas(current: dict[str, Any], prior: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "run_id": datetime.now(timezone.utc).isoformat(),
         "seeds": result["seeds"],
+        "coverage": result["coverage"],
         "rows": result["rows"],
         "deltas_vs_prior": None,
     }

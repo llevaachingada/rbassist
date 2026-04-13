@@ -1,4 +1,6 @@
+import argparse
 import json
+import os
 import pathlib
 import tempfile
 import unittest
@@ -46,6 +48,9 @@ class BenchmarkEmbeddingTests(unittest.TestCase):
 
         self.assertEqual(set(result["rows"]), {"A", "B", "C"})
         self.assertIn("camelot_compat_rate", result["rows"]["A"])
+        self.assertEqual(result["coverage"]["primary_embedding_count"], 3)
+        self.assertEqual(result["coverage"]["section_embedding_complete_count"], 0)
+        self.assertEqual(result["coverage"]["layer_mix_embedding_count"], 0)
 
     def test_benchmark_output_json_valid_and_compare_deltas(self) -> None:
         current = {
@@ -76,6 +81,50 @@ class BenchmarkEmbeddingTests(unittest.TestCase):
             )
 
         self.assertTrue(result["rows"]["D"]["skipped"])
+
+    def test_embedding_coverage_counts_section_and_case_collisions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            emb = base / "emb"
+            emb.mkdir()
+            paths = {}
+            for stem in ("track", "track_intro", "track_core", "track_late", "track_layer"):
+                path = emb / f"{stem}.npy"
+                np.save(path, np.ones(bench.DIM, dtype=np.float32))
+                paths[stem] = path
+            meta = {
+                "tracks": {
+                    "C:/Music/Track.flac": {
+                        "embedding": str(paths["track"]),
+                        "embedding_intro": str(paths["track_intro"]),
+                        "embedding_core": str(paths["track_core"]),
+                        "embedding_late": str(paths["track_late"]),
+                        "embedding_layer_mix": str(paths["track_layer"]),
+                    },
+                    "c:/music/track.flac": {"embedding": str(paths["track"])},
+                }
+            }
+
+            coverage = bench.embedding_coverage(meta)
+
+        self.assertEqual(coverage["tracks_total"], 2)
+        self.assertEqual(coverage["primary_embedding_count"], 2)
+        self.assertEqual(coverage["section_embedding_complete_count"], 1)
+        self.assertEqual(coverage["section_embedding_missing_count"], 1)
+        self.assertEqual(coverage["layer_mix_embedding_count"], 1)
+        self.assertEqual(coverage["case_collision_key_count"], 1)
+        self.assertEqual(coverage["case_collision_extra_row_count"], 1)
+
+    def test_explicit_seeds_do_not_create_default_config(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd = pathlib.Path.cwd()
+            os.chdir(td)
+            try:
+                seeds = bench._load_seed_list(argparse.Namespace(seeds=["seed"], seeds_file=None))
+                self.assertEqual(seeds, ["seed"])
+                self.assertFalse(pathlib.Path("config/benchmark_seeds.txt").exists())
+            finally:
+                os.chdir(cwd)
 
 
 if __name__ == "__main__":

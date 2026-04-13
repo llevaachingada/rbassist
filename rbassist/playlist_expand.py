@@ -1783,6 +1783,11 @@ def prepare_playlist_expansion(
     )[:candidate_limit]
 
     candidates = _merge_candidate_maps(centroid_hits, coverage_hits, meta_tracks, meta_stats, resolved_controls)
+    transition_candidate_scores = [
+        float(candidate.component_scores["transition_score"])
+        for candidate in candidates
+        if "transition_score" in candidate.component_scores
+    ]
     diagnostics = {
         **seed_diagnostics,
         "seed_loader_diagnostics": dict(getattr(seed_paths, "diagnostics", {})) if isinstance(seed_paths, SeedPlaylist) else {},
@@ -1799,6 +1804,13 @@ def prepare_playlist_expansion(
         "clean_seed_tracks_total": len(resolved_seed_paths),
         "seed_embedding_count": len(meta_stats["seed_vectors"]),
         "core_seed_tag_count": len(meta_stats["seed_core_tags"]),
+        "section_scores_requested": bool(resolved_controls.use_section_scores),
+        "seed_section_late_count": len(meta_stats.get("seed_late_vectors", [])),
+        "candidate_section_intro_count": sum(1 for candidate in candidates if candidate.section_intro is not None),
+        "transition_candidate_score_count": len(transition_candidate_scores),
+        "transition_candidate_score_mean": (
+            round(float(np.mean(transition_candidate_scores)), 6) if transition_candidate_scores else None
+        ),
     }
     return ExpansionWorkspace(
         seed_tracks=list(seed_tracks),
@@ -1958,6 +1970,11 @@ def rerank_playlist_expansion(
 
     selected.sort(key=lambda item: (-item.final_score, item.path.lower()))
     combined_tracks = [track.meta_path for track in workspace.seed_tracks if track.meta_path] + [track.path for track in selected]
+    selected_transition_scores = [
+        float(track.component_scores["transition_score"])
+        for track in selected
+        if "transition_score" in track.component_scores
+    ]
     diagnostics = {
         **workspace.diagnostics,
         "controls_applied": resolved_controls.to_dict(),
@@ -1973,6 +1990,10 @@ def rerank_playlist_expansion(
         "combined_tracks_total": len(combined_tracks),
         "anti_repetition_penalty_total": round(float(repeat_penalty_total), 6),
         "anti_repetition_reason_counts": dict(repeat_reason_counts),
+        "selected_transition_score_count": len(selected_transition_scores),
+        "selected_transition_score_mean": (
+            round(float(np.mean(selected_transition_scores)), 6) if selected_transition_scores else None
+        ),
     }
     return ExpansionResult(
         seed_tracks=list(workspace.seed_tracks),

@@ -620,20 +620,35 @@ def build_embeddings(
         num_workers = 0
 
     # Resolve source paths (respect folder mode/stems) before optional parallel load
-    jobs: list[tuple[str, str, str]] = []  # (original_path, src_for_embed, used_label)
+    jobs: list[tuple[str, str, str, bool, bool]] = []
+    # (original_path, src_for_embed, used_label, write_primary, allow_section_overwrite)
+    section_keys = ("embedding_intro", "embedding_core", "embedding_late")
+
+    def _track_has_vector_file(track_info: dict | None, key: str) -> bool:
+        if not track_info:
+            return False
+        value = track_info.get(key)
+        return bool(value and pathlib.Path(value).exists())
+
     for p in paths:
-        if resume and p in completed_paths:
+        info = meta.get("tracks", {}).get(p)
+        existing_embedding = _track_has_vector_file(info, "embedding")
+        needs_section_backfill = bool(
+            section_embed
+            and existing_embedding
+            and any(not _track_has_vector_file(info, key) for key in section_keys)
+        )
+        if resume and p in completed_paths and not needs_section_backfill:
             counters["skipped_checkpoint"] += 1
             continue
-        info = meta.get("tracks", {}).get(p)
-        existing_embedding = bool(
-            info and info.get("embedding") and pathlib.Path(info["embedding"]).exists()
-        )
-        if existing_embedding and (resume or not overwrite):
+        if existing_embedding and (resume or not overwrite) and not needs_section_backfill:
             counters["skipped_existing"] += 1
             if resume:
                 completed_paths.add(p)
             continue
+        backfill_sections_only = bool(needs_section_backfill and (resume or not overwrite))
+        write_primary = bool((not existing_embedding) or (overwrite and not backfill_sections_only))
+        allow_section_overwrite = bool(overwrite and not backfill_sections_only)
         src_path = p
         used = "baseline"
         try:
@@ -649,7 +664,7 @@ def build_embeddings(
                     console.print(f"[yellow]Stems skipped for {p}: {se}")
         except Exception as e:
             console.print(f"[yellow]Mode check failed for {p}: {e}")
-        jobs.append((p, src_path, used))
+        jobs.append((p, src_path, used, write_primary, allow_section_overwrite))
     counters["queued"] = len(jobs)
     total = len(jobs)
 
@@ -781,27 +796,55 @@ def build_embeddings(
             if progress is not None and task_id is not None:
                 progress.advance(task_id)
 
-        def _save_embedding(orig: str, vec: np.ndarray, used: str, kind: str = "embedding") -> None:
-            suffix = "" if kind == "embedding" else f"_{kind}"
-            out = EMB / (pathlib.Path(orig).stem + f"{suffix}.npy")
-            vec_fp16 = vec.astype(np.float16)
-            np.save(out, vec_fp16)
+        def _save_embedding(
+            orig: str,
+            vec: np.ndarray,
+            used: str,
+            kind: str = "embedding",
+            allow_overwrite: bool = True,
+        ) -> None:
             info = meta["tracks"].setdefault(orig, {})
+            section_suffixes = {
+                "embedding_intro": "_intro",
+                "embedding_core": "_core",
+                "embedding_late": "_late",
+            }
+            suffix = section_suffixes.get(kind, "" if kind == "embedding" else f"_{kind}")
+            out = EMB / (pathlib.Path(orig).stem + f"{suffix}.npy")
+            existing = info.get(kind)
+            existing_path = pathlib.Path(existing) if existing else None
+            target = out
+            if existing_path is not None and existing_path.exists() and not allow_overwrite:
+                target = existing_path
+            elif out.exists() and not allow_overwrite:
+                target = out
+            else:
+                vec_fp16 = vec.astype(np.float16)
+                np.save(out, vec_fp16)
             info.setdefault("artist", pathlib.Path(orig).stem.split(" - ")[0] if " - " in pathlib.Path(orig).stem else "")
             info.setdefault("title", pathlib.Path(orig).stem.split(" - ")[-1])
-            info[kind] = str(out)
+            info[kind] = str(target)
             if kind == "embedding":
                 info["embedding_source"] = used
 
         # Parallelize I/O + decode; keep model inference batched to reduce GPU overhead
         workers = max(0, int(num_workers))
         done = 0
-        def _process_one(orig: str, src_path: str, y: np.ndarray, sr: int, used: str) -> None:
+        def _process_one(
+            orig: str,
+            src_path: str,
+            y: np.ndarray,
+            sr: int,
+            used: str,
+            write_primary: bool,
+            allow_section_overwrite: bool,
+        ) -> None:
             nonlocal done
             def _run_once(active_emb: MertEmbedder) -> None:
                 windows: list[tuple[float, float]] = _default_windows(y, sr)
                 mert_vec: np.ndarray | None = None
                 timbre_vec: np.ndarray | None = None
+                section_vecs: dict[str, np.ndarray] | None = None
                 if sampling is not None:
                     vec = embed_with_sampling(src_path, active_emb, sampling)
                     mert_vec = vec
@@ -809,24 +852,70 @@ def build_embeddings(
                     full_vecs = embed_with_default_windows_full(y, sr, active_emb, windows=windows)
                     vec = full_vecs["standard"]
                     mert_vec = vec
-                    _save_embedding(orig, full_vecs["layer_mix"], used, kind="embedding_layer_mix")
+                    _save_embedding(
+                        orig,
+                        full_vecs["layer_mix"],
+                        used,
+                        kind="embedding_layer_mix",
+                        allow_overwrite=overwrite,
+                    )
                 else:
-                    vec = embed_with_default_windows(y, sr, active_emb, windows=windows)
+                    if section_embed:
+                        section_vecs = embed_with_section_vectors(y, sr, active_emb, windows=windows)
+                        vec = section_vecs["combined"]
+                    else:
+                        vec = embed_with_default_windows(y, sr, active_emb, windows=windows)
                     mert_vec = vec
-                _save_embedding(orig, vec, used, kind="embedding_mert")
+                if write_primary:
+                    _save_embedding(
+                        orig,
+                        vec,
+                        used,
+                        kind="embedding_mert",
+                        allow_overwrite=overwrite,
+                    )
 
                 if section_embed:
-                    section_vecs = embed_with_section_vectors(y, sr, active_emb, windows=windows)
-                    _save_embedding(orig, section_vecs["intro"], used, kind="embedding_intro")
-                    _save_embedding(orig, section_vecs["core"], used, kind="embedding_core")
-                    _save_embedding(orig, section_vecs["late"], used, kind="embedding_late")
-                    meta["tracks"].setdefault(orig, {})["embedding_version"] = "v2_section"
+                    if section_vecs is None:
+                        section_vecs = embed_with_section_vectors(y, sr, active_emb, windows=windows)
+                    _save_embedding(
+                        orig,
+                        section_vecs["intro"],
+                        used,
+                        kind="embedding_intro",
+                        allow_overwrite=allow_section_overwrite,
+                    )
+                    _save_embedding(
+                        orig,
+                        section_vecs["core"],
+                        used,
+                        kind="embedding_core",
+                        allow_overwrite=allow_section_overwrite,
+                    )
+                    _save_embedding(
+                        orig,
+                        section_vecs["late"],
+                        used,
+                        kind="embedding_late",
+                        allow_overwrite=allow_section_overwrite,
+                    )
+                    section_complete = all(
+                        _track_has_vector_file(meta["tracks"].get(orig), key) for key in section_keys
+                    )
+                    if section_complete:
+                        meta["tracks"].setdefault(orig, {})["embedding_version"] = "v2_section"
 
-                if timbre_emb is not None:
+                if timbre_emb is not None and write_primary:
                     try:
                         timbre_vec = timbre_embedding_from_windows(y, sr, windows, timbre_emb)
                         if timbre_vec is not None:
-                            _save_embedding(orig, timbre_vec, used, kind="embedding_timbre")
+                            _save_embedding(
+                                orig,
+                                timbre_vec,
+                                used,
+                                kind="embedding_timbre",
+                                allow_overwrite=overwrite,
+                            )
                     except Exception as te:
                         console.print(f"[yellow]Timbre embed failed for {orig}: {te}")
 
@@ -840,8 +929,14 @@ def build_embeddings(
                         combined = timbre_vec
                         source_label = "timbre_only"
 
-                if combined is not None:
-                    _save_embedding(orig, combined, source_label, kind="embedding")
+                if combined is not None and write_primary:
+                    _save_embedding(
+                        orig,
+                        combined,
+                        source_label,
+                        kind="embedding",
+                        allow_overwrite=overwrite,
+                    )
 
             try:
                 _run_once(emb)
@@ -895,20 +990,28 @@ def build_embeddings(
                 def _submit_more() -> None:
                     while len(in_flight) < max_in_flight:
                         try:
-                            orig, src_path, used = next(jobs_iter)
+                            orig, src_path, used, write_primary, allow_section_overwrite = next(jobs_iter)
                         except StopIteration:
                             break
                         fut = ex.submit(_load, src_path)
-                        in_flight[fut] = (orig, src_path, used)
+                        in_flight[fut] = (orig, src_path, used, write_primary, allow_section_overwrite)
 
                 _submit_more()
                 while in_flight:
                     completed, _ = wait(tuple(in_flight.keys()), return_when=FIRST_COMPLETED)
                     for fut in completed:
-                        orig, src_path, used = in_flight.pop(fut)
+                        orig, src_path, used, write_primary, allow_section_overwrite = in_flight.pop(fut)
                         try:
                             y, sr = fut.result()
-                            _process_one(orig, src_path, y, sr, used)
+                            _process_one(
+                                orig,
+                                src_path,
+                                y,
+                                sr,
+                                used,
+                                write_primary,
+                                allow_section_overwrite,
+                            )
                         except Exception as e:
                             _log_failure(orig, src_path, "decode", e)
                             done += 1
@@ -918,11 +1021,11 @@ def build_embeddings(
                                 _tick()
                     _submit_more()
         else:
-            for orig, src, used in jobs:
+            for orig, src, used, write_primary, allow_section_overwrite in jobs:
                 try:
                     if sampling is not None:
                         vec = embed_with_sampling(src, emb, sampling)
-                        _save_embedding(orig, vec, used)
+                        _save_embedding(orig, vec, used, allow_overwrite=overwrite)
                         _mark_completed(orig)
                         done += 1
                         if progress_callback is not None:
@@ -931,7 +1034,7 @@ def build_embeddings(
                             _tick()
                         continue
                     y, sr = _load(src)
-                    _process_one(orig, src, y, sr, used)
+                    _process_one(orig, src, y, sr, used, write_primary, allow_section_overwrite)
                 except Exception as e:
                     _log_failure(orig, src, "serial", e)
                     done += 1

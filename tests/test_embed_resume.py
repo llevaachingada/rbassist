@@ -161,6 +161,64 @@ class EmbedResumeTests(unittest.TestCase):
             self.assertEqual(checkpoint_data.get("recovery", {}).get("cuda_retries"), 1)
             self.assertEqual(checkpoint_data.get("recovery", {}).get("cuda_retry_successes"), 1)
 
+    def test_resume_backfills_sections_for_completed_track_with_existing_primary(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            emb_dir = base / "embeddings"
+            checkpoint = base / "embed_checkpoint.json"
+            emb_dir.mkdir(parents=True, exist_ok=True)
+            track = str(base / "Artist - Title.wav")
+            primary = emb_dir / "Artist - Title.npy"
+            np.save(primary, np.full(8, 5.0, dtype=np.float16))
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "completed_paths": [track],
+                        "failed_paths": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            meta_store: dict = {"tracks": {track: {"embedding": str(primary)}}}
+            load_calls: list[str] = []
+
+            def fake_load_meta() -> dict:
+                return meta_store
+
+            def fake_save_meta(meta: dict) -> None:
+                saved = json.loads(json.dumps(meta))
+                meta_store.clear()
+                meta_store.update(saved)
+
+            def fake_librosa_load(path: str, sr=None, mono=True):
+                load_calls.append(path)
+                return np.ones(24000, dtype=np.float32), 24000
+
+            with mock.patch.object(embed_mod, "MertEmbedder", _FakeEmbedder), \
+                mock.patch.object(embed_mod, "load_meta", side_effect=fake_load_meta), \
+                mock.patch.object(embed_mod, "save_meta", side_effect=fake_save_meta), \
+                mock.patch.object(embed_mod, "mode_for_path", return_value="baseline"), \
+                mock.patch.object(embed_mod, "EMB", emb_dir), \
+                mock.patch.object(embed_mod.librosa, "load", side_effect=fake_librosa_load):
+                embed_mod.build_embeddings(
+                    [track],
+                    num_workers=0,
+                    checkpoint_file=str(checkpoint),
+                    checkpoint_every=1,
+                    resume=True,
+                    section_embed=True,
+                )
+
+            info = meta_store["tracks"][track]
+            self.assertEqual(load_calls, [track])
+            self.assertEqual(info["embedding"], str(primary))
+            self.assertIn("embedding_intro", info)
+            self.assertIn("embedding_core", info)
+            self.assertIn("embedding_late", info)
+            self.assertTrue(info["embedding_intro"].endswith("_intro.npy"))
+            self.assertTrue(info["embedding_core"].endswith("_core.npy"))
+            self.assertTrue(info["embedding_late"].endswith("_late.npy"))
+
 
 if __name__ == "__main__":
     unittest.main()

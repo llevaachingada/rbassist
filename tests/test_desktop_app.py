@@ -203,8 +203,42 @@ class DesktopAppTests(unittest.TestCase):
         self.assertEqual(len(model.job_summary.rows), 2)
         self.assertEqual(model.job_summary.rows[0]["kind"], "discover")
         self.assertEqual(model.job_summary.rows[0]["progress"], "50%")
+        self.assertEqual(model.library_health.issue_rows_total, 1)
+        self.assertIn("missing cues: 1", model.library_health.top_issues)
         self.assertTrue(model.discover_readiness.ready)
         self.assertIn("preview-ready", model.discover_placeholder)
+
+    def test_library_health_summary_reports_clean_and_issue_rows(self) -> None:
+        desktop_app = _fresh_desktop_app()
+
+        clean = desktop_app.build_library_health_summary(
+            {
+                "tracks": {
+                    "C:/Music/Ready.mp3": {
+                        "artist": "A",
+                        "title": "Ready",
+                        "embedding": "ready.npy",
+                        "bpm": 123,
+                        "key": "8A",
+                        "cues": [{"pos": 1}],
+                    }
+                }
+            }
+        )
+        self.assertIn("missing_embedding", clean.issue_counts)
+
+        issue = desktop_app.build_library_health_summary(
+            {
+                "tracks": {
+                    "Bare.mp3": {
+                        "artist": "B",
+                        "title": "Needs Work",
+                    }
+                }
+            }
+        )
+        self.assertEqual(issue.issue_rows_total, 1)
+        self.assertTrue(any("missing embedding" in text for text in issue.top_issues))
 
     def test_run_builds_three_tab_shell_with_stubbed_pyside(self) -> None:
         desktop_app = _fresh_desktop_app()
@@ -217,6 +251,11 @@ class DesktopAppTests(unittest.TestCase):
                 {"artist": "A", "title": "Alpha", "bpm": "122", "key": "8A", "path": "C:/Music/A.mp3"},
                 {"artist": "B", "title": "Beta", "bpm": "124", "key": "9A", "path": "C:/Music/B.mp3"},
             ],
+            library_health=desktop_app.LibraryHealthSummary(
+                issue_rows_total=2,
+                issue_counts={"missing_embedding": 2},
+                top_issues=["missing embedding: 2"],
+            ),
             job_summary=desktop_app.JobStatusSummary(
                 active_total=1,
                 rows=[
@@ -256,6 +295,11 @@ class DesktopAppTests(unittest.TestCase):
         discover_labels = [widget.text for widget in discover_tab.layout.widgets if hasattr(widget, "text")]
         self.assertTrue(any("preview-ready" in text for text in discover_labels))
         self.assertTrue(any("2 tracks" in text for text in discover_labels))
+
+        library_tab = tabs_widget.tabs[1][1]
+        library_labels = [widget.text for widget in library_tab.layout.widgets if hasattr(widget, "text")]
+        self.assertTrue(any("2 row(s)" in text for text in library_labels))
+        self.assertTrue(any("missing embedding: 2" in text for text in library_labels))
 
         tables = state["tables"]
         self.assertEqual(len(tables), 2)

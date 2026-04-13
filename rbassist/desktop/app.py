@@ -8,10 +8,12 @@ __all__ = [
     "DesktopShellModel",
     "DiscoverReadiness",
     "JobStatusSummary",
+    "LibraryHealthSummary",
     "build_desktop_overview",
     "build_discover_readiness",
     "build_desktop_shell_model",
     "build_job_status_summary",
+    "build_library_health_summary",
     "main",
     "run",
 ]
@@ -39,9 +41,17 @@ class DiscoverReadiness:
 
 
 @dataclass(frozen=True, slots=True)
+class LibraryHealthSummary:
+    issue_rows_total: int
+    issue_counts: dict[str, int]
+    top_issues: list[str]
+
+
+@dataclass(frozen=True, slots=True)
 class DesktopShellModel:
     overview: DesktopOverview
     library_preview_rows: list[dict[str, Any]]
+    library_health: LibraryHealthSummary
     job_summary: JobStatusSummary
     discover_readiness: DiscoverReadiness
     discover_placeholder: str
@@ -128,6 +138,37 @@ def build_discover_readiness(overview: DesktopOverview) -> DiscoverReadiness:
     )
 
 
+def build_library_health_summary(meta: Mapping[str, Any]) -> LibraryHealthSummary:
+    """Build read-only Library health counts for the desktop shell."""
+    from rbassist.ui_services.library import build_library_page_model
+
+    page_model = build_library_page_model(meta)
+    issue_rows_total = sum(1 for row in page_model.rows if row.get("issues") != "-")
+    labels = {
+        "missing_embedding": "missing embedding",
+        "missing_analysis": "missing analysis",
+        "missing_cues": "missing cues",
+        "stale_path": "stale path",
+        "bare_path": "bare path",
+        "junk_path": "junk path",
+    }
+    top_issues = [
+        f"{labels.get(key, key.replace('_', ' '))}: {count}"
+        for key, count in sorted(
+            page_model.issue_counts.items(),
+            key=lambda item: (-int(item[1]), item[0]),
+        )
+        if count
+    ][:4]
+    if not top_issues:
+        top_issues = ["No current health issues in the preview model."]
+    return LibraryHealthSummary(
+        issue_rows_total=issue_rows_total,
+        issue_counts=dict(page_model.issue_counts),
+        top_issues=top_issues,
+    )
+
+
 def build_desktop_shell_model(
     meta: Mapping[str, Any] | None = None,
     *,
@@ -135,12 +176,18 @@ def build_desktop_shell_model(
     job_limit: int = 5,
 ) -> DesktopShellModel:
     """Build the pure-data model used by the read-only desktop shell."""
+    if meta is None:
+        from rbassist.utils import load_meta
+
+        meta = load_meta()
     overview = build_desktop_overview(meta=meta, preview_limit=preview_limit)
+    library_health = build_library_health_summary(meta)
     job_summary = build_job_status_summary(limit=job_limit)
     discover_readiness = build_discover_readiness(overview)
     return DesktopShellModel(
         overview=overview,
         library_preview_rows=overview.preview_rows,
+        library_health=library_health,
         job_summary=job_summary,
         discover_readiness=discover_readiness,
         discover_placeholder=discover_readiness.message,
@@ -221,6 +268,17 @@ def _build_tab_widget(QtWidgets: Any, QtCore: Any, model: DesktopShellModel) -> 
     library_title = QtWidgets.QLabel("Library preview")
     library_title.setWordWrap(True)
     library_layout.addWidget(library_title)
+
+    library_health_summary = QtWidgets.QLabel(
+        f"{model.library_health.issue_rows_total} row(s) currently have Library health notes."
+    )
+    library_health_summary.setWordWrap(True)
+    library_layout.addWidget(library_health_summary)
+
+    for issue in model.library_health.top_issues:
+        issue_label = QtWidgets.QLabel(issue)
+        issue_label.setWordWrap(True)
+        library_layout.addWidget(issue_label)
 
     library_rows = list(model.library_preview_rows)
     library_table = _make_read_only_table(
