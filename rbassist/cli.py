@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, List, Optional
 import typer
 from .analyze import analyze_bpm_key
-from .utils import load_meta, save_meta, console, walk_audio, pick_device, read_paths_file
+from .utils import load_meta, save_meta, console, walk_audio, pick_device, read_paths_file, make_path_aliases
 from .sampling_profile import load_sampling_params
 from .beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 
@@ -22,6 +22,65 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="RBassist com
 def _read_paths_file(paths_file: pathlib.Path) -> list[str]:
     """Backward-compatible wrapper around shared paths-file parsing."""
     return read_paths_file(paths_file)
+
+
+def _track_vector_file_exists(info: dict[str, Any] | None, key: str) -> bool:
+    if not isinstance(info, dict):
+        return False
+    value = info.get(key)
+    if not value:
+        return False
+    try:
+        return pathlib.Path(str(value)).exists()
+    except OSError:
+        return False
+
+
+def _missing_section_sidecar_paths(
+    meta: dict[str, Any],
+    candidate_paths: list[str] | None = None,
+) -> tuple[list[str], dict[str, int]]:
+    """Return primary-embedded tracks missing at least one section sidecar."""
+    tracks = meta.get("tracks", {})
+    if not isinstance(tracks, dict):
+        tracks = {}
+    section_keys = ("embedding_intro", "embedding_core", "embedding_late")
+    candidate_aliases: set[str] | None = None
+    if candidate_paths is not None:
+        candidate_aliases = set()
+        for path in candidate_paths:
+            candidate_aliases.update(make_path_aliases(path))
+    stats = {
+        "tracks_total": len(tracks),
+        "candidate_scope_count": len(candidate_paths or []),
+        "outside_scope_count": 0,
+        "missing_primary_embedding_count": 0,
+        "section_complete_count": 0,
+        "missing_audio_count": 0,
+        "selected_count": 0,
+    }
+    selected: list[str] = []
+    for path, info in sorted(tracks.items(), key=lambda item: str(item[0]).lower()):
+        clean_path = str(path)
+        if candidate_aliases is not None and not (make_path_aliases(clean_path) & candidate_aliases):
+            stats["outside_scope_count"] += 1
+            continue
+        if not _track_vector_file_exists(info, "embedding"):
+            stats["missing_primary_embedding_count"] += 1
+            continue
+        if all(_track_vector_file_exists(info, key) for key in section_keys):
+            stats["section_complete_count"] += 1
+            continue
+        try:
+            audio_exists = pathlib.Path(clean_path).exists()
+        except OSError:
+            audio_exists = False
+        if not audio_exists:
+            stats["missing_audio_count"] += 1
+            continue
+        selected.append(clean_path)
+    stats["selected_count"] = len(selected)
+    return selected, stats
 
 
 def _normalize_playlist_expansion_choice(value: str, allowed: set[str], *, label: str) -> str:
@@ -218,6 +277,15 @@ def cmd_embed(
         readable=True,
         help="Optional text file with one file/folder path per line.",
     ),
+    missing_section_sidecars: bool = typer.Option(
+        False,
+        "--missing-section-sidecars",
+        help=(
+            "Queue primary-embedded tracks that are missing intro/core/late section sidecars. "
+            "With paths or --paths-file, restrict to that scope; otherwise scan all metadata. "
+            "Implies --section-embed and --resume."
+        ),
+    ),
     resume: bool = typer.Option(
         False,
         "--resume",
@@ -261,16 +329,43 @@ def cmd_embed(
         else:
             console.print(f"[cyan]Loaded {len(from_file)} path entries from {paths_file}")
             input_paths.extend(from_file)
-    if not input_paths:
+    if not input_paths and not missing_section_sidecars:
         console.print("[red]Provide at least one path argument or --paths-file.")
         raise typer.Exit(1)
-    files = walk_audio(input_paths)
-    if not files:
+    files = walk_audio(input_paths) if input_paths else []
+    if input_paths and not files:
         console.print("[yellow]No audio files found.")
         raise typer.Exit(1)
     # Keep deterministic order and remove duplicates when both positional paths
     # and --paths-file overlap.
     files = list(dict.fromkeys(files))
+    if missing_section_sidecars:
+        if not section_embed:
+            console.print("[cyan]--missing-section-sidecars implies --section-embed.")
+            section_embed = True
+        if not resume:
+            console.print("[cyan]--missing-section-sidecars implies --resume to avoid rewriting primary embeddings.")
+            resume = True
+        files, gap_stats = _missing_section_sidecar_paths(load_meta(), files if input_paths else None)
+        console.print(
+            "[cyan]"
+            f"Selected {gap_stats['selected_count']} primary-embedded track(s) missing section sidecars "
+            f"from {gap_stats['tracks_total']} metadata track(s)."
+        )
+        if gap_stats["missing_audio_count"]:
+            console.print(
+                "[yellow]"
+                f"Skipped {gap_stats['missing_audio_count']} section-gap track(s) whose audio path was missing."
+            )
+        if input_paths and gap_stats["outside_scope_count"]:
+            console.print(
+                "[cyan]"
+                f"Scoped to {gap_stats['candidate_scope_count']} audio file(s); "
+                f"{gap_stats['outside_scope_count']} metadata track(s) were outside that scope."
+            )
+        if not files:
+            console.print("[green]No primary-embedded tracks missing section sidecars found for this scope.")
+            return
     build_embeddings(
         files,
         model_name=model or DEFAULT_MODEL,

@@ -92,12 +92,19 @@ rbassist embed --paths-file .\.tmp\pending_embedding_paths.part001.txt --checkpo
 
 # Resume after interruption (default checkpoint: data/embed_checkpoint.json)
 rbassist embed --paths-file .\.tmp\pending_embedding_paths.part001.txt --resume --checkpoint-every 50
+
+# Backfill intro/core/late sidecars for already-primary-embedded tracks
+rbassist embed --missing-section-sidecars --section-embed --resume --checkpoint-file data\runlogs\section_embed_backfill_checkpoint.json --checkpoint-every 25
+
+# Restrict the same backfill to a reviewed crate or path list
+rbassist embed "C:\Users\you\Music\BREAKS" --missing-section-sidecars --section-embed --resume --checkpoint-file data\runlogs\section_embed_breaks_checkpoint.json --checkpoint-every 25
 ```
 
 Notes:
 - `--paths-file` accepts one file/folder path per line (`# comments` and blank lines allowed).
 - `--checkpoint-file` lets you override the checkpoint location.
 - Failed tracks are written to a structured JSONL log next to the checkpoint file.
+- `--missing-section-sidecars` scans `data/meta.json` for tracks with an existing primary embedding file but missing one of `embedding_intro`, `embedding_core`, or `embedding_late`; with paths or `--paths-file`, it restricts the scan to that scope and implies `--resume` so primary embeddings are not rewritten.
 
 Library health and path repair workflow:
 ```powershell

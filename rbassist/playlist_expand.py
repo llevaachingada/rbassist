@@ -443,12 +443,44 @@ def _playlist_path_segments(playlist_path: str | None) -> list[str]:
     return [segment for segment in text.split("/") if segment]
 
 
+def _query_rows(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if hasattr(value, "all"):
+        return list(value.all())
+    if hasattr(value, "ID") or hasattr(value, "Songs"):
+        return [value]
+    return list(value)
+
+
+def _resolve_single_playlist(value: Any, description: str) -> Any | None:
+    matches = _query_rows(value)
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ValueError(f"Multiple Rekordbox playlists matched {description}. Use a more specific reference.")
+    return matches[0]
+
+
+def _db_playlist_id_from_ref(seed_ref: Any) -> int | None:
+    if isinstance(seed_ref, int):
+        return seed_ref
+    if isinstance(seed_ref, str):
+        text = seed_ref.strip()
+        if text.lower().startswith("db:"):
+            raw_id = text.split(":", 1)[1].strip()
+            if not raw_id.isdigit():
+                raise ValueError(f"Invalid Rekordbox DB playlist ID reference: {seed_ref}")
+            return int(raw_id)
+    return None
+
+
 def _resolve_db_playlist(db: Any, seed_ref: Any, playlist_path: str | None = None) -> Any:
     if hasattr(seed_ref, "is_playlist") or hasattr(seed_ref, "Songs"):
         return seed_ref
-    if isinstance(seed_ref, int):
-        found = db.get_playlist(ID=seed_ref)
-        return found
+    playlist_id = _db_playlist_id_from_ref(seed_ref)
+    if playlist_id is not None:
+        return _resolve_single_playlist(db.get_playlist(ID=playlist_id), f"ID {playlist_id}")
 
     segments = _playlist_path_segments(playlist_path)
     if not segments:
@@ -461,7 +493,7 @@ def _resolve_db_playlist(db: Any, seed_ref: Any, playlist_path: str | None = Non
         current = None
         for segment in segments:
             query = db.get_playlist(Name=segment) if current is None else db.get_playlist(Name=segment, ParentID=current.ID)
-            matches = list(query.all()) if hasattr(query, "all") else list(query)
+            matches = _query_rows(query)
             if not matches:
                 return None
             if len(matches) > 1:
@@ -476,7 +508,7 @@ def _resolve_db_playlist(db: Any, seed_ref: Any, playlist_path: str | None = Non
         return None
 
     query = db.get_playlist(Name=seed_ref)
-    matches = list(query.all()) if hasattr(query, "all") else list(query)
+    matches = _query_rows(query)
     if not matches:
         return None
     if len(matches) > 1:

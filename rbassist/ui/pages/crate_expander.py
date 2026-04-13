@@ -85,6 +85,18 @@ def _open_folder(path: Path) -> None:
         os.startfile(str(path))
 
 
+def _playlist_item_label(item: dict[str, Any]) -> str:
+    return str(item.get("path") or item.get("name") or item.get("id") or "").strip()
+
+
+def _playlist_item_value(item: dict[str, Any]) -> str:
+    source = str(item.get("source") or "").lower().strip()
+    playlist_id = item.get("id")
+    if source == "db" and playlist_id not in (None, ""):
+        return f"db:{playlist_id}"
+    return _playlist_item_label(item)
+
+
 class CrateExpander:
     """Expand a crate/playlist using the shared playlist expansion backend."""
 
@@ -622,12 +634,14 @@ class CrateExpander:
         self.rekordbox_playlist_query = str(self.rekordbox_filter_input.value or "").strip().lower()
         options: dict[str, str] = {}
         for item in self.rekordbox_playlist_items:
-            path = str(item.get("path", "") or "")
+            path = _playlist_item_label(item)
             name = str(item.get("name", "") or "")
             haystack = f"{path} {name}".lower()
             if self.rekordbox_playlist_query and self.rekordbox_playlist_query not in haystack:
                 continue
-            options[path] = path
+            value = _playlist_item_value(item)
+            if value:
+                options[value] = path or value
         current_value = self.rekordbox_playlist_select.value
         self.rekordbox_playlist_select.options = options
         if current_value not in options:
@@ -670,20 +684,47 @@ class CrateExpander:
             if notify:
                 ui.notify(f"Rekordbox playlist load failed: {exc}", type="negative")
 
+    def _selected_rekordbox_playlist_ref(self) -> tuple[Any, str]:
+        playlist_value = self.rekordbox_playlist_select.value
+        playlist_label = str(playlist_value or "")
+        for item in self.rekordbox_playlist_items:
+            if _playlist_item_value(item) != playlist_value:
+                continue
+            playlist_label = _playlist_item_label(item) or playlist_label
+            source = str(item.get("source") or self.rekordbox_source_toggle.value or "db").lower().strip()
+            playlist_id = item.get("id")
+            if source == "db" and playlist_id not in (None, ""):
+                try:
+                    return int(playlist_id), playlist_label
+                except (TypeError, ValueError):
+                    return f"db:{playlist_id}", playlist_label
+            return playlist_label, playlist_label
+
+        value_text = str(playlist_value or "").strip()
+        if value_text.lower().startswith("db:"):
+            raw_id = value_text.split(":", 1)[1].strip()
+            if raw_id.isdigit():
+                return int(raw_id), value_text
+        return playlist_value, playlist_label
+
     async def _load_selected_rekordbox_playlist(self) -> None:
         playlist_ref = self.rekordbox_playlist_select.value
         if not playlist_ref:
             ui.notify("Choose a Rekordbox playlist first", type="warning")
             return
+        playlist_ref, playlist_label = self._selected_rekordbox_playlist_ref()
+        source = str(self.rekordbox_source_toggle.value or "db").lower().strip()
+        xml_path = str(self.rekordbox_xml_input.value or "").strip() or None
         try:
             if hasattr(self, "status_label"):
-                self.status_label.text = f"Loading playlist '{playlist_ref}'..."
+                self.status_label.text = f"Loading playlist '{playlist_label}'..."
                 self.status_label.update()
             seed_playlist = await asyncio.to_thread(
                 load_rekordbox_playlist,
-                str(playlist_ref),
-                source=str(self.rekordbox_source_toggle.value or "db"),
-                xml_path=(str(self.rekordbox_xml_input.value or "").strip() or None),
+                playlist_ref,
+                source=source,
+                playlist_path=playlist_label if source == "db" else None,
+                xml_path=xml_path,
             )
             self.selected_seeds = [track.meta_path or track.rekordbox_path for track in seed_playlist.tracks]
             self.loaded_playlist_name = seed_playlist.name

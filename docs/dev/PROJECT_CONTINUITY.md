@@ -74,3 +74,7 @@ Work should follow that phase order unless a new blocker changes the operational
   - Rekordbox XML My Tag import should honor `only_existing=True` instead of silently writing unknown tracks into metadata.
 - Cue generation now has an explicit template backend seam in `rbassist/cue_templates.py`, with profile-driven overrides sourced from `config/cue_templates.yml`.
 - Follow-up work should prefer backend-first hardening and focused tests before widening UI copy or adding new workflow complexity.
+
+## April 13 Rekordbox Boundary Truth
+- Crate Expander DB playlist selection now uses Rekordbox playlist IDs internally while keeping readable playlist paths as labels, avoiding path/name ambiguity when playlist names contain slashes or duplicate names.
+- Rekordbox playlist XML export writes are folder-creating and atomic: exports are written to a temp file in the destination directory and then swapped into place. This still writes playlist XML only and does not mutate the Rekordbox library.

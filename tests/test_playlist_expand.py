@@ -180,6 +180,29 @@ class PlaylistExpandTests(TestCase):
             with self.assertRaises(ValueError):
                 pe.load_rekordbox_playlist("Warmup", source="db")
 
+    def test_load_rekordbox_playlist_db_uses_id_for_names_with_slashes(self) -> None:
+        playlists = [
+            SimpleNamespace(Name="DOWNLOAD CHUNX", ID=1, ParentID=None, is_folder=True, is_smart_playlist=False),
+            SimpleNamespace(Name="radio 10/22", ID=42, ParentID=1, is_folder=False, is_smart_playlist=False),
+        ]
+        rows = [
+            SimpleNamespace(FolderPath="c:/music/sets/track a.flac", Title="Track A", ArtistName="Artist A"),
+        ]
+        meta = {
+            "tracks": {
+                r"C:\Music\Sets\Track A.flac": {"title": "Track A", "artist": "Artist A", "embedding": "track-a.npy"},
+            }
+        }
+
+        with mock.patch.object(pe, "Rekordbox6Database", lambda: _FakeDb(playlists, rows)), mock.patch.object(
+            pe, "load_meta", return_value=meta
+        ):
+            playlist = pe.load_rekordbox_playlist(42, source="db")
+
+        self.assertEqual(playlist.playlist_name, "radio 10/22")
+        self.assertEqual(playlist.tracks[0].meta_path, r"C:\Music\Sets\Track A.flac")
+        self.assertEqual(playlist.diagnostics["matched_total"], 1)
+
     def test_load_rekordbox_playlist_xml_reads_nested_playlist_by_leaf_name(self) -> None:
         meta = {
             "tracks": {
@@ -581,7 +604,7 @@ class PlaylistExpandTests(TestCase):
         )
 
         with tempfile.TemporaryDirectory() as td:
-            out_path = pathlib.Path(td) / "expanded.xml"
+            out_path = pathlib.Path(td) / "nested" / "expanded.xml"
             pe.write_expansion_xml(result, out_path=str(out_path), playlist_name="Expanded", meta=meta)
             root = ET.parse(out_path).getroot()
 

@@ -64,6 +64,108 @@ class EmbedResumeTests(unittest.TestCase):
             self.assertEqual(out[1], str((base / "crate").resolve()))
             self.assertEqual(out[2], abs_path)
 
+    def test_missing_section_sidecar_paths_selects_safe_backfill_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            emb_dir = base / "embeddings"
+            emb_dir.mkdir()
+            gap_track = base / "gap.mp3"
+            complete_track = base / "complete.mp3"
+            no_primary_track = base / "no_primary.mp3"
+            stale_track = base / "stale.mp3"
+            for track in (gap_track, complete_track, no_primary_track):
+                track.touch()
+            primary = emb_dir / "primary.npy"
+            intro = emb_dir / "intro.npy"
+            core = emb_dir / "core.npy"
+            late = emb_dir / "late.npy"
+            for path in (primary, intro, core, late):
+                np.save(path, np.ones(8, dtype=np.float16))
+            meta = {
+                "tracks": {
+                    str(gap_track): {
+                        "embedding": str(primary),
+                        "embedding_intro": str(intro),
+                    },
+                    str(complete_track): {
+                        "embedding": str(primary),
+                        "embedding_intro": str(intro),
+                        "embedding_core": str(core),
+                        "embedding_late": str(late),
+                    },
+                    str(no_primary_track): {},
+                    str(stale_track): {"embedding": str(primary)},
+                }
+            }
+
+            selected, stats = cli._missing_section_sidecar_paths(meta)
+
+        self.assertEqual(selected, [str(gap_track)])
+        self.assertEqual(stats["selected_count"], 1)
+        self.assertEqual(stats["section_complete_count"], 1)
+        self.assertEqual(stats["missing_primary_embedding_count"], 1)
+        self.assertEqual(stats["missing_audio_count"], 1)
+
+    def test_missing_section_sidecar_paths_can_be_scoped_to_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            emb_dir = base / "embeddings"
+            emb_dir.mkdir()
+            first = base / "first.mp3"
+            second = base / "second.mp3"
+            first.touch()
+            second.touch()
+            primary = emb_dir / "primary.npy"
+            np.save(primary, np.ones(8, dtype=np.float16))
+            meta = {
+                "tracks": {
+                    str(first): {"embedding": str(primary)},
+                    str(second): {"embedding": str(primary)},
+                }
+            }
+
+            selected, stats = cli._missing_section_sidecar_paths(meta, [str(second)])
+
+        self.assertEqual(selected, [str(second)])
+        self.assertEqual(stats["selected_count"], 1)
+        self.assertEqual(stats["outside_scope_count"], 1)
+
+    def test_missing_section_sidecar_cli_implies_resume_and_section_embed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            track = base / "gap.mp3"
+            track.touch()
+            primary = base / "gap.npy"
+            np.save(primary, np.ones(8, dtype=np.float16))
+            meta_store = {"tracks": {str(track): {"embedding": str(primary)}}}
+
+            with mock.patch.object(cli, "load_meta", return_value=meta_store), \
+                mock.patch.object(embed_mod, "build_embeddings") as build_embeddings:
+                cli.cmd_embed(
+                    paths=None,
+                    duration_s=120,
+                    model=embed_mod.DEFAULT_MODEL,
+                    device=None,
+                    num_workers=0,
+                    batch_size=None,
+                    timbre=False,
+                    timbre_size=512,
+                    section_embed=False,
+                    layer_mix=False,
+                    layer_mix_weights_path=None,
+                    paths_file=None,
+                    missing_section_sidecars=True,
+                    resume=False,
+                    checkpoint_file=base / "checkpoint.json",
+                    checkpoint_every=25,
+                )
+
+            build_embeddings.assert_called_once()
+            args, kwargs = build_embeddings.call_args
+            self.assertEqual(args[0], [str(track)])
+            self.assertTrue(kwargs["section_embed"])
+            self.assertTrue(kwargs["resume"])
+
     def test_build_embeddings_writes_checkpoint_and_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = pathlib.Path(td)

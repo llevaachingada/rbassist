@@ -1,5 +1,6 @@
 from __future__ import annotations
 import pathlib, urllib.parse
+import tempfile
 from typing import Optional
 from xml.etree.ElementTree import Element, SubElement, ElementTree
 from .versions import __version__
@@ -9,6 +10,9 @@ def _as_location_uri(path: str) -> str:
     return "file://localhost/" + urllib.parse.quote(p.as_posix())
 
 def write_rekordbox_xml(meta: dict, out_path: str, playlist_name: Optional[str] = None) -> None:
+    out_file = pathlib.Path(out_path)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+
     root = Element("DJ_PLAYLISTS", Version="1.0.0")
     SubElement(root, "PRODUCT", Name="rbassist", Version=__version__, Company="You")
 
@@ -78,4 +82,17 @@ def write_rekordbox_xml(meta: dict, out_path: str, playlist_name: Optional[str] 
             SubElement(pnode, "TRACK", Key=_as_location_uri(path))
         rootnode.set("Count", "1")
 
-    ElementTree(root).write(out_path, encoding="UTF-8", xml_declaration=True)
+    temp_handle = tempfile.NamedTemporaryFile(
+        prefix=f".{out_file.name}.",
+        suffix=".tmp",
+        dir=str(out_file.parent),
+        delete=False,
+    )
+    temp_path = pathlib.Path(temp_handle.name)
+    temp_handle.close()
+    try:
+        ElementTree(root).write(temp_path, encoding="UTF-8", xml_declaration=True)
+        temp_path.replace(out_file)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
