@@ -104,12 +104,13 @@ rbassist embed --paths-file .\.tmp\profile_slice.txt --section-embed --resume --
 ```
 
 Notes:
+- Before any large backfill that will update `data/meta.json`, make or verify a fresh metadata backup in `data/backups` and start with a reviewed crate or paths file before scaling to the full library.
 - `--paths-file` accepts one file/folder path per line (`# comments` and blank lines allowed).
 - `--checkpoint-file` lets you override the checkpoint location.
 - Failed tracks are written to a structured JSONL log next to the checkpoint file.
 - `--missing-section-sidecars` scans `data/meta.json` for tracks with an existing primary embedding file but missing one of `embedding_intro`, `embedding_core`, or `embedding_late`; with paths or `--paths-file`, it restricts the scan to that scope and implies `--resume` so primary embeddings are not rewritten.
 - When `--missing-section-sidecars --resume` finds failed paths in the checkpoint, it skips them by default so one bad file cannot stop a full-library backfill again. Use `--retry-checkpoint-failures` only when intentionally retrying quarantined failures.
-- `--profile-embed-out` is opt-in and records per-track JSONL timing for audio decode, sample counts, MERT encode shape/batch size, save/checkpoint/meta writes, device, and embedding mode flags. Use it on a small fixed slice before changing loader or batching behavior.
+- `--profile-embed-out` is opt-in and records per-track JSONL timing for audio decode, sample counts, MERT flattened item count, actual MERT batch size, save/checkpoint/meta writes, device, and embedding mode flags. Use it on a small fixed slice before changing loader or batching behavior.
 
 Library health and path repair workflow:
 ```powershell

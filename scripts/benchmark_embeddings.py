@@ -150,6 +150,17 @@ def _score_candidate(seed_info: dict[str, Any], row: dict[str, Any], *, use_sect
     return float(score)
 
 
+def _empty_row_metrics() -> dict[str, float | int | bool | None]:
+    return {
+        **{key: None for key in METRIC_KEYS},
+        "section_scores_requested": False,
+        "section_scores_enabled": False,
+        "seed_section_late_count": 0,
+        "selected_candidate_intro_count": 0,
+        "transition_pairs_scored": 0,
+    }
+
+
 def _run_row_for_seed(
     tracks: dict[str, dict[str, Any]],
     seed_path: str,
@@ -195,9 +206,16 @@ def _run_row_for_seed(
     return filtered[:top], None
 
 
-def _metrics_for_results(seed_info: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, float | None]:
+def _metrics_for_results(
+    seed_info: dict[str, Any],
+    results: list[dict[str, Any]],
+    *,
+    use_section_scores: bool,
+) -> dict[str, float | int | bool | None]:
+    metrics = _empty_row_metrics()
+    metrics["section_scores_requested"] = bool(use_section_scores)
     if not results:
-        return {key: None for key in METRIC_KEYS}
+        return metrics
     key_ok = [camelot_relation(seed_info.get("key"), row["info"].get("key"))[0] for row in results]
     bpm_ok = [tempo_match(seed_info.get("bpm"), row["info"].get("bpm"), pct=6.0, allow_doubletime=True) for row in results]
     seed_tags = {str(tag) for tag in (seed_info.get("mytags", []) or []) if str(tag).strip()}
@@ -211,19 +229,26 @@ def _metrics_for_results(seed_info: dict[str, Any], results: list[dict[str, Any]
             diversity_values.append(1.0 - _cosine(left["vector"], right["vector"]))
     seed_late = load_section_embeddings(seed_info).get("late")
     transition_scores = []
-    if seed_late is not None:
+    if use_section_scores and seed_late is not None:
+        metrics["seed_section_late_count"] = 1
         for row in results:
             cand_intro = load_section_embeddings(row["info"]).get("intro")
             if cand_intro is not None:
+                metrics["selected_candidate_intro_count"] = int(metrics["selected_candidate_intro_count"]) + 1
                 transition_scores.append(_cosine_01(seed_late, cand_intro))
-    return {
-        "camelot_compat_rate": float(np.mean(key_ok)),
-        "bpm_compat_rate": float(np.mean(bpm_ok)),
-        "tag_overlap_mean": float(np.mean(tag_scores)),
-        "intra_list_diversity": float(np.mean(diversity_values)) if diversity_values else 0.0,
-        "transition_score_mean": float(np.mean(transition_scores)) if transition_scores else None,
-        "ann_distance_mean": float(np.mean([float(row["ann_distance"]) for row in results])),
-    }
+    metrics["transition_pairs_scored"] = len(transition_scores)
+    metrics["section_scores_enabled"] = bool(use_section_scores and transition_scores)
+    metrics.update(
+        {
+            "camelot_compat_rate": float(np.mean(key_ok)),
+            "bpm_compat_rate": float(np.mean(bpm_ok)),
+            "tag_overlap_mean": float(np.mean(tag_scores)),
+            "intra_list_diversity": float(np.mean(diversity_values)) if diversity_values else 0.0,
+            "transition_score_mean": float(np.mean(transition_scores)) if transition_scores else None,
+            "ann_distance_mean": float(np.mean([float(row["ann_distance"]) for row in results])),
+        }
+    )
+    return metrics
 
 
 def run_benchmark(
@@ -242,6 +267,7 @@ def run_benchmark(
         raise ValueError("No benchmark seeds matched tracks in metadata.")
     row_results: dict[str, Any] = {}
     for row_name in rows:
+        use_section_scores = row_name in {"D", "F"}
         if row_name in {"D", "F"} and not allow_section_rows:
             row_results[row_name] = {"skipped": True, "reason": "section rows require --section-embeds"}
             console.print(f"[yellow]Skipping row {row_name}: section rows require --section-embeds")
@@ -263,15 +289,55 @@ def run_benchmark(
             if skip_reason:
                 skips.append(f"{seed_path}: {skip_reason}")
                 continue
-            per_seed_metrics.append(_metrics_for_results(tracks.get(seed_path, {}), results))
+            per_seed_metrics.append(
+                _metrics_for_results(
+                    tracks.get(seed_path, {}),
+                    results,
+                    use_section_scores=use_section_scores,
+                )
+            )
         if not per_seed_metrics:
             row_results[row_name] = {"skipped": True, "reason": "; ".join(skips) or "no usable results"}
             console.print(f"[yellow]Skipping row {row_name}: {row_results[row_name]['reason']}")
             continue
+        if use_section_scores:
+            section_pairs_scored = sum(int(metrics.get("transition_pairs_scored") or 0) for metrics in per_seed_metrics)
+            if section_pairs_scored <= 0:
+                row_results[row_name] = {
+                    "skipped": True,
+                    "reason": "section rows require usable seed late + candidate intro sidecars",
+                    "section_scores_requested": True,
+                    "section_scores_enabled": False,
+                    "seed_section_late_count": sum(int(metrics.get("seed_section_late_count") or 0) for metrics in per_seed_metrics),
+                    "selected_candidate_intro_count": sum(
+                        int(metrics.get("selected_candidate_intro_count") or 0) for metrics in per_seed_metrics
+                    ),
+                    "transition_pairs_scored": 0,
+                }
+                console.print(
+                    f"[yellow]Skipping row {row_name}: {row_results[row_name]['reason']}"
+                )
+                continue
         averaged: dict[str, float | None] = {}
         for key in METRIC_KEYS:
             values = [metrics[key] for metrics in per_seed_metrics if metrics.get(key) is not None]
             averaged[key] = float(np.mean(values)) if values else None
+        if use_section_scores:
+            averaged.update(
+                {
+                    "section_scores_requested": True,
+                    "section_scores_enabled": True,
+                    "seed_section_late_count": sum(
+                        int(metrics.get("seed_section_late_count") or 0) for metrics in per_seed_metrics
+                    ),
+                    "selected_candidate_intro_count": sum(
+                        int(metrics.get("selected_candidate_intro_count") or 0) for metrics in per_seed_metrics
+                    ),
+                    "transition_pairs_scored": sum(
+                        int(metrics.get("transition_pairs_scored") or 0) for metrics in per_seed_metrics
+                    ),
+                }
+            )
         row_results[row_name] = averaged
     return {"seeds": resolved, "rows": row_results, "coverage": embedding_coverage(meta)}
 

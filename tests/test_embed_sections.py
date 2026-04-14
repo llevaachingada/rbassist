@@ -253,6 +253,7 @@ class EmbedSectionTests(unittest.TestCase):
             self.assertEqual(row["duration_cap_s"], 1)
             self.assertEqual(row["mert_flattened_item_count"], 1)
             self.assertEqual(row["actual_mert_batch_size"], 1)
+            self.assertEqual(row["device"], "cpu")
             self.assertTrue(row["section_embed"])
             self.assertFalse(row["layer_mix"])
             self.assertFalse(row["timbre"])

@@ -97,6 +97,29 @@ class _FakeXml:
 
 
 class PlaylistExpandTests(TestCase):
+    def test_resolve_controls_keeps_tight_preset_when_section_scores_are_enabled(self) -> None:
+        controls = pe._resolve_playlist_expansion_controls(
+            mode="tight",
+            controls={"use_section_scores": True},
+        )
+
+        raw_weights = {
+            "ann_centroid": 0.26,
+            "ann_seed_coverage": 0.20,
+            "group_match": 0.18,
+            "bpm_match": 0.18,
+            "key_match": 0.12,
+            "tag_match": 0.06,
+            "transition_outro_to_intro": 0.18,
+        }
+        total = sum(raw_weights.values())
+
+        self.assertEqual(controls.mode, "tight")
+        self.assertTrue(controls.use_section_scores)
+        self.assertEqual(controls.filters.key_mode, "filter")
+        for key, raw_value in raw_weights.items():
+            self.assertAlmostEqual(getattr(controls.weights, key), raw_value / total)
+
     def test_seed_track_from_meta_prefers_rekordbox_bpm_without_losing_rbassist_bpm(self) -> None:
         meta_tracks = {
             r"C:\Music\Sets\Track A.flac": {

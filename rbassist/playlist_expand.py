@@ -1396,6 +1396,42 @@ def _coerce_playlist_expansion_filters(
     return PlaylistExpansionFilters.from_mapping(filters)
 
 
+def _extract_explicit_weight_overrides(mapping: dict[str, Any]) -> PlaylistExpansionWeights | None:
+    keys = {
+        "ann_centroid",
+        "ann",
+        "ann_seed_coverage",
+        "group_match",
+        "bpm_match",
+        "bpm",
+        "key_match",
+        "key",
+        "tag_match",
+        "tags",
+        "transition_outro_to_intro",
+        "transition",
+    }
+    explicit = {key: mapping[key] for key in keys if key in mapping}
+    if not explicit:
+        return None
+    return PlaylistExpansionWeights.from_mapping(explicit)
+
+
+def _extract_explicit_filter_overrides(mapping: dict[str, Any]) -> PlaylistExpansionFilters | None:
+    keys = {
+        "tempo_pct",
+        "allow_doubletime",
+        "doubletime",
+        "key_mode",
+        "camelot_filter",
+        "require_tags",
+    }
+    explicit = {key: mapping[key] for key in keys if key in mapping}
+    if not explicit:
+        return None
+    return PlaylistExpansionFilters.from_mapping(explicit)
+
+
 def _overlay_playlist_expansion_weights(
     base: PlaylistExpansionWeights,
     overrides: PlaylistExpansionWeights | dict[str, Any] | None,
@@ -1439,17 +1475,25 @@ def _resolve_playlist_expansion_controls(
     weights: PlaylistExpansionWeights | dict[str, Any] | None = None,
     controls: PlaylistExpansionControls | dict[str, Any] | None = None,
 ) -> PlaylistExpansionControls:
+    control_weight_overrides: PlaylistExpansionWeights | None = None
+    control_filter_overrides: PlaylistExpansionFilters | None = None
     if isinstance(controls, PlaylistExpansionControls):
         resolved = controls
+        control_weight_overrides = controls.weights
+        control_filter_overrides = controls.filters
     elif isinstance(controls, dict):
+        control_weight_overrides = _coerce_playlist_expansion_weights(controls.get("weights"))
+        if control_weight_overrides is None:
+            control_weight_overrides = _extract_explicit_weight_overrides(controls)
+        control_filter_overrides = _coerce_playlist_expansion_filters(controls.get("filters"))
+        if control_filter_overrides is None:
+            control_filter_overrides = _extract_explicit_filter_overrides(controls)
         resolved = PlaylistExpansionControls(
             mode=str(controls.get("mode", mode) or mode),
             strategy=str(controls.get("strategy", strategy) or strategy),
-            weights=_coerce_playlist_expansion_weights(controls.get("weights"))
-            or PlaylistExpansionWeights.from_mapping(controls),
+            weights=control_weight_overrides or PlaylistExpansionWeights(),
             diversity=float(controls.get("diversity", diversity if diversity is not None else 0.28)),
-            filters=_coerce_playlist_expansion_filters(controls.get("filters"))
-            or PlaylistExpansionFilters.from_mapping(controls),
+            filters=control_filter_overrides or PlaylistExpansionFilters(),
             candidate_pool=int(controls.get("candidate_pool", candidate_pool)),
             use_section_scores=bool(controls.get("use_section_scores", controls.get("section_scores", False))),
         )
@@ -1472,12 +1516,12 @@ def _resolve_playlist_expansion_controls(
         strategy=_normalize_playlist_expansion_strategy(resolved.strategy if resolved.strategy else strategy),
         weights=_overlay_playlist_expansion_weights(
             PLAYLIST_EXPANSION_PRESETS[_normalize_playlist_expansion_mode(resolved.mode if resolved.mode else mode)]["weights"],
-            weights if weights is not None else resolved.weights,
+            weights if weights is not None else control_weight_overrides,
         ),
         diversity=float(diversity if diversity is not None else resolved.diversity),
         filters=_overlay_playlist_expansion_filters(
             PLAYLIST_EXPANSION_PRESETS[_normalize_playlist_expansion_mode(resolved.mode if resolved.mode else mode)]["filters"],
-            filters if filters is not None else resolved.filters,
+            filters if filters is not None else control_filter_overrides,
         ),
         candidate_pool=max(1, int(candidate_pool if candidate_pool is not None else resolved.candidate_pool)),
         use_section_scores=use_section_scores,
@@ -1820,6 +1864,7 @@ def prepare_playlist_expansion(
         for candidate in candidates
         if "transition_score" in candidate.component_scores
     ]
+    section_scores_applied = bool(transition_candidate_scores)
     diagnostics = {
         **seed_diagnostics,
         "seed_loader_diagnostics": dict(getattr(seed_paths, "diagnostics", {})) if isinstance(seed_paths, SeedPlaylist) else {},
@@ -1837,8 +1882,10 @@ def prepare_playlist_expansion(
         "seed_embedding_count": len(meta_stats["seed_vectors"]),
         "core_seed_tag_count": len(meta_stats["seed_core_tags"]),
         "section_scores_requested": bool(resolved_controls.use_section_scores),
+        "section_scores_seed_ready": meta_stats.get("seed_late_centroid") is not None,
         "seed_section_late_count": len(meta_stats.get("seed_late_vectors", [])),
         "candidate_section_intro_count": sum(1 for candidate in candidates if candidate.section_intro is not None),
+        "section_scores_applied": section_scores_applied,
         "transition_candidate_score_count": len(transition_candidate_scores),
         "transition_candidate_score_mean": (
             round(float(np.mean(transition_candidate_scores)), 6) if transition_candidate_scores else None
@@ -2022,6 +2069,7 @@ def rerank_playlist_expansion(
         "combined_tracks_total": len(combined_tracks),
         "anti_repetition_penalty_total": round(float(repeat_penalty_total), 6),
         "anti_repetition_reason_counts": dict(repeat_reason_counts),
+        "selected_section_scores_applied": bool(selected_transition_scores),
         "selected_transition_score_count": len(selected_transition_scores),
         "selected_transition_score_mean": (
             round(float(np.mean(selected_transition_scores)), 6) if selected_transition_scores else None

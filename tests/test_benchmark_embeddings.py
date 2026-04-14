@@ -33,6 +33,14 @@ class BenchmarkEmbeddingTests(unittest.TestCase):
             }
         return {"tracks": tracks}
 
+    def _add_section_sidecars(self, meta: dict, base: pathlib.Path, names: list[str]) -> None:
+        emb = base / "emb"
+        for name in names:
+            for suffix in ("intro", "core", "late"):
+                path = emb / f"{name}_{suffix}.npy"
+                np.save(path, np.ones(bench.DIM, dtype=np.float32))
+                meta["tracks"][name][f"embedding_{suffix}"] = str(path)
+
     def test_benchmark_runs_row_abc(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             meta = self._fixture_meta(pathlib.Path(td))
@@ -81,6 +89,51 @@ class BenchmarkEmbeddingTests(unittest.TestCase):
             )
 
         self.assertTrue(result["rows"]["D"]["skipped"])
+
+    def test_benchmark_skips_section_rows_when_section_sidecars_unusable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            meta = self._fixture_meta(pathlib.Path(td))
+            result = bench.run_benchmark(
+                meta,
+                ["seed"],
+                rows=["D"],
+                top=2,
+                candidate_pool=2,
+                allow_section_rows=True,
+                allow_layer_mix_rows=False,
+            )
+
+        self.assertTrue(result["rows"]["D"]["skipped"])
+        self.assertEqual(
+            result["rows"]["D"]["reason"],
+            "section rows require usable seed late + candidate intro sidecars",
+        )
+        self.assertEqual(result["rows"]["D"]["transition_pairs_scored"], 0)
+        self.assertEqual(result["rows"]["D"]["section_scores_enabled"], False)
+
+    def test_benchmark_section_row_reports_diagnostics_when_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            meta = self._fixture_meta(base)
+            self._add_section_sidecars(meta, base, ["seed", "a", "b"])
+            result = bench.run_benchmark(
+                meta,
+                ["seed"],
+                rows=["D"],
+                top=2,
+                candidate_pool=2,
+                allow_section_rows=True,
+                allow_layer_mix_rows=False,
+            )
+
+        row = result["rows"]["D"]
+        self.assertFalse(row.get("skipped", False))
+        self.assertEqual(row["section_scores_requested"], True)
+        self.assertEqual(row["section_scores_enabled"], True)
+        self.assertEqual(row["seed_section_late_count"], 1)
+        self.assertEqual(row["selected_candidate_intro_count"], 2)
+        self.assertEqual(row["transition_pairs_scored"], 2)
+        self.assertIsNotNone(row["transition_score_mean"])
 
     def test_embedding_coverage_counts_section_and_case_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as td:
