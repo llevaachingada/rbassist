@@ -14,6 +14,10 @@ from .bpm_sources import normalize_rekordbox_bpm, track_bpm_sources
 from .export_xml import write_rekordbox_xml
 from .recommend import IDX, load_embedding_safe
 from .utils import camelot_relation, load_meta, make_path_aliases, normalize_path_string, tempo_match
+try:
+    from .features import harmonic_compatibility_from_features
+except Exception:  # pragma: no cover - optional analysis dependency handling
+    harmonic_compatibility_from_features = None  # type: ignore
 
 try:
     from pyrekordbox import Rekordbox6Database  # type: ignore
@@ -289,6 +293,7 @@ class PlaylistExpansionControls:
     filters: PlaylistExpansionFilters = field(default_factory=PlaylistExpansionFilters)
     candidate_pool: int = 250
     use_section_scores: bool = False
+    use_harmonic_key_scores: bool = False
 
     def normalized(self) -> "PlaylistExpansionControls":
         return PlaylistExpansionControls(
@@ -299,6 +304,7 @@ class PlaylistExpansionControls:
             filters=self.filters,
             candidate_pool=max(1, int(self.candidate_pool)),
             use_section_scores=bool(self.use_section_scores),
+            use_harmonic_key_scores=bool(self.use_harmonic_key_scores),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -310,6 +316,7 @@ class PlaylistExpansionControls:
             "filters": self.filters.to_dict(),
             "candidate_pool": int(self.candidate_pool),
             "use_section_scores": bool(self.use_section_scores),
+            "use_harmonic_key_scores": bool(self.use_harmonic_key_scores),
         }
 
 
@@ -335,6 +342,7 @@ class PreparedCandidate:
     mytags: list[str] = field(default_factory=list)
     component_scores: dict[str, float] = field(default_factory=dict)
     section_intro: np.ndarray | None = None
+    info: dict[str, Any] = field(default_factory=dict)
 
     def source_rank(self) -> tuple[int, float, float, str]:
         source_score = 0
@@ -874,8 +882,11 @@ def _collect_meta_features(
         core_tags = set(tag_counts)
     seed_vectors = []
     seed_late_vectors = []
+    seed_infos = []
     for track in seed_tracks:
         info = meta_tracks.get(track.meta_path or "", {})
+        if info:
+            seed_infos.append(info)
         vec = _seed_embedding_vector(track, meta_tracks)
         if vec is not None:
             seed_vectors.append(vec)
@@ -894,6 +905,7 @@ def _collect_meta_features(
         "seed_tag_counts": tag_counts,
         "seed_core_tags": core_tags,
         "seed_vectors": seed_vectors,
+        "seed_infos": seed_infos,
         "seed_centroid": centroid,
         "seed_late_vectors": seed_late_vectors,
         "seed_late_centroid": late_centroid,
@@ -1496,6 +1508,7 @@ def _resolve_playlist_expansion_controls(
             filters=control_filter_overrides or PlaylistExpansionFilters(),
             candidate_pool=int(controls.get("candidate_pool", candidate_pool)),
             use_section_scores=bool(controls.get("use_section_scores", controls.get("section_scores", False))),
+            use_harmonic_key_scores=bool(controls.get("use_harmonic_key_scores", controls.get("harmonic_key_scores", False))),
         )
     else:
         resolved_mode = _normalize_playlist_expansion_mode(mode)
@@ -1508,9 +1521,11 @@ def _resolve_playlist_expansion_controls(
             filters=preset["filters"],
             candidate_pool=int(candidate_pool),
             use_section_scores=False,
+            use_harmonic_key_scores=False,
         )
 
     use_section_scores = bool(resolved.use_section_scores)
+    use_harmonic_key_scores = bool(resolved.use_harmonic_key_scores)
     resolved = PlaylistExpansionControls(
         mode=_normalize_playlist_expansion_mode(resolved.mode if resolved.mode else mode),
         strategy=_normalize_playlist_expansion_strategy(resolved.strategy if resolved.strategy else strategy),
@@ -1525,6 +1540,7 @@ def _resolve_playlist_expansion_controls(
         ),
         candidate_pool=max(1, int(candidate_pool if candidate_pool is not None else resolved.candidate_pool)),
         use_section_scores=use_section_scores,
+        use_harmonic_key_scores=use_harmonic_key_scores,
     )
     if (
         resolved.use_section_scores
@@ -1542,6 +1558,7 @@ def _resolve_playlist_expansion_controls(
             filters=resolved.filters,
             candidate_pool=resolved.candidate_pool,
             use_section_scores=resolved.use_section_scores,
+            use_harmonic_key_scores=resolved.use_harmonic_key_scores,
         )
     return resolved.normalized()
 
@@ -1621,13 +1638,24 @@ def _compute_component_scores(
         controls.filters.allow_doubletime,
     )
     if controls.filters.key_mode != "off":
-        seed_keys = [str(key) for key in meta_stats.get("seed_keys", []) if str(key).strip()]
-        cand_key = str(candidate.key or "").strip() or None
-        if seed_keys and cand_key:
-            key_scores = [_camelot_relation_score(seed_key, cand_key) for seed_key in seed_keys]
-            scores["key_match"] = max(key_scores) if key_scores else 0.0
+        harmonic_scores: list[float] = []
+        if controls.use_harmonic_key_scores and harmonic_compatibility_from_features is not None:
+            harmonic_scores = [
+                float(harmonic_compatibility_from_features(seed_info, candidate.info))
+                for seed_info in meta_stats.get("seed_infos", [])
+            ]
+            harmonic_scores = [score for score in harmonic_scores if score > 0.0]
+        if harmonic_scores:
+            scores["key_match"] = max(harmonic_scores)
+            scores["harmonic_key_score"] = scores["key_match"]
         else:
-            scores["key_match"] = 0.0
+            seed_keys = [str(key) for key in meta_stats.get("seed_keys", []) if str(key).strip()]
+            cand_key = str(candidate.key or "").strip() or None
+            if seed_keys and cand_key:
+                key_scores = [_camelot_relation_score(seed_key, cand_key) for seed_key in seed_keys]
+                scores["key_match"] = max(key_scores) if key_scores else 0.0
+            else:
+                scores["key_match"] = 0.0
     seed_tags = set(str(tag) for tag in meta_stats.get("seed_core_tags", []) if str(tag).strip())
     candidate_tags = set(str(tag) for tag in candidate.mytags if str(tag).strip())
     scores["tag_match"] = _tag_overlap_score(seed_tags, candidate_tags)
@@ -1723,6 +1751,7 @@ def _build_prepared_candidate(
         key=str(info.get("key", "") or "") or None,
         mytags=[str(tag) for tag in (info.get("mytags", []) or []) if str(tag).strip()],
         section_intro=_load_track_embedding(info, "embedding_intro") if controls.use_section_scores else None,
+        info=dict(info),
     )
     if meta_stats.get("seed_centroid") is not None:
         candidate.ann_distance = 1.0 - _cosine_similarity(vector, meta_stats["seed_centroid"].astype(np.float32, copy=False))
@@ -1864,6 +1893,11 @@ def prepare_playlist_expansion(
         for candidate in candidates
         if "transition_score" in candidate.component_scores
     ]
+    harmonic_key_scores = [
+        float(candidate.component_scores["harmonic_key_score"])
+        for candidate in candidates
+        if "harmonic_key_score" in candidate.component_scores
+    ]
     section_scores_applied = bool(transition_candidate_scores)
     diagnostics = {
         **seed_diagnostics,
@@ -1889,6 +1923,11 @@ def prepare_playlist_expansion(
         "transition_candidate_score_count": len(transition_candidate_scores),
         "transition_candidate_score_mean": (
             round(float(np.mean(transition_candidate_scores)), 6) if transition_candidate_scores else None
+        ),
+        "harmonic_key_scores_requested": bool(resolved_controls.use_harmonic_key_scores),
+        "harmonic_key_score_count": len(harmonic_key_scores),
+        "harmonic_key_score_mean": (
+            round(float(np.mean(harmonic_key_scores)), 6) if harmonic_key_scores else None
         ),
     }
     return ExpansionWorkspace(
@@ -2054,6 +2093,11 @@ def rerank_playlist_expansion(
         for track in selected
         if "transition_score" in track.component_scores
     ]
+    selected_harmonic_key_scores = [
+        float(track.component_scores["harmonic_key_score"])
+        for track in selected
+        if "harmonic_key_score" in track.component_scores
+    ]
     diagnostics = {
         **workspace.diagnostics,
         "controls_applied": resolved_controls.to_dict(),
@@ -2073,6 +2117,10 @@ def rerank_playlist_expansion(
         "selected_transition_score_count": len(selected_transition_scores),
         "selected_transition_score_mean": (
             round(float(np.mean(selected_transition_scores)), 6) if selected_transition_scores else None
+        ),
+        "selected_harmonic_key_score_count": len(selected_harmonic_key_scores),
+        "selected_harmonic_key_score_mean": (
+            round(float(np.mean(selected_harmonic_key_scores)), 6) if selected_harmonic_key_scores else None
         ),
     }
     return ExpansionResult(

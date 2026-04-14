@@ -5,10 +5,11 @@ import hnswlib
 from rich.table import Table
 from .utils import EMB, IDX, META, console, camelot_relation, tempo_match, load_meta
 try:
-    from .features import bass_similarity, rhythm_similarity
+    from .features import bass_similarity, rhythm_similarity, harmonic_compatibility_from_features
 except Exception:
     bass_similarity = None  # type: ignore
     rhythm_similarity = None  # type: ignore
+    harmonic_compatibility_from_features = None  # type: ignore
 
 DIM = 1024
 INDEX_ADD_CHUNK = 2000
@@ -266,6 +267,7 @@ def recommend(
     w_samples = float(weights.get("samples", 0.0))
     w_bass = float(weights.get("bass", 0.0))
     w_rhythm = float(weights.get("rhythm", 0.0))
+    w_harmony = float(weights.get("harmony", 0.0))
     w_transition = float(weights.get("transition", 0.0))
 
     # load seed features for bass and rhythm
@@ -302,6 +304,8 @@ def recommend(
             r_cont = np.array(info.get("features", {}).get("rhythm_contour", {}).get("contour", []), dtype=float)
             if seed_r.size and r_cont.size:
                 score += w_rhythm * float(rhythm_similarity(seed_r, r_cont))
+        if w_harmony and harmonic_compatibility_from_features is not None:
+            score += w_harmony * float(harmonic_compatibility_from_features(seed_info, info))
         if use_section_scores and w_transition and seed_late is not None:
             cand_section = load_section_embeddings(info, seed_vec.shape[0])
             cand_intro = cand_section.get("intro")
@@ -310,7 +314,7 @@ def recommend(
         cands.append((path, info, cand_bpm, cand_key, rule_name, dist, score))
 
     # sort: if any weight provided, sort by score desc; else by ANN distance asc
-    if any([w_ann, w_samples, w_bass, w_rhythm, w_transition]):
+    if any([w_ann, w_samples, w_bass, w_rhythm, w_harmony, w_transition]):
         cands.sort(key=lambda x: x[6], reverse=True)
     else:
         cands.sort(key=lambda x: x[5])

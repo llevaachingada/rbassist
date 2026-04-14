@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import librosa
-from typing import Tuple
+from typing import Any, Tuple
 
 
 def _stft_bandpass(S: np.ndarray, sr: int, hop: int, fmin: float, fmax: float) -> np.ndarray:
@@ -121,4 +121,68 @@ def rhythm_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
     # Convert distance to similarity, scale is tunable
     return float(np.exp(-d / 2.0))
+
+
+def chroma_tonnetz_profiles(y: np.ndarray, sr: int) -> dict[str, list[float]]:
+    """Return cached harmonic profiles for later no-audio scoring."""
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=512, n_chroma=12).mean(axis=1)
+    chroma = np.nan_to_num(chroma.astype(np.float32, copy=False), copy=False)
+    chroma_total = float(np.sum(np.maximum(chroma, 0.0)))
+    if chroma_total > 0.0:
+        chroma = np.maximum(chroma, 0.0) / chroma_total
+    else:
+        chroma = np.zeros(12, dtype=np.float32)
+
+    harmonic_y = librosa.effects.harmonic(y)
+    tonnetz = librosa.feature.tonnetz(y=harmonic_y, sr=sr).mean(axis=1)
+    tonnetz = np.nan_to_num(tonnetz.astype(np.float32, copy=False), copy=False)
+    return {
+        "chroma_profile": chroma.astype(float).tolist(),
+        "tonnetz_profile": tonnetz.astype(float).tolist(),
+    }
+
+
+def _profile_array(container: dict[str, Any], key: str, size: int) -> np.ndarray:
+    features = container.get("features") if isinstance(container.get("features"), dict) else {}
+    value = features.get(key, container.get(key))
+    try:
+        arr = np.asarray(value if value is not None else [], dtype=np.float32)
+    except (TypeError, ValueError):
+        return np.asarray([], dtype=np.float32)
+    if arr.shape != (size,) or not np.all(np.isfinite(arr)):
+        return np.asarray([], dtype=np.float32)
+    return arr
+
+
+def harmonic_compatibility(
+    seed_chroma: np.ndarray,
+    seed_tonnetz: np.ndarray,
+    cand_chroma: np.ndarray,
+    cand_tonnetz: np.ndarray,
+) -> float:
+    """Continuous harmonic compatibility score in [0, 1]."""
+    if seed_chroma.shape != (12,) or cand_chroma.shape != (12,):
+        return 0.0
+    if seed_tonnetz.shape != (6,) or cand_tonnetz.shape != (6,):
+        return 0.0
+
+    def cos(left: np.ndarray, right: np.ndarray) -> float:
+        denom = float(np.linalg.norm(left) * np.linalg.norm(right))
+        if denom <= 0.0:
+            return 0.0
+        return float(np.dot(left, right) / (denom + 1e-9))
+
+    chroma_sim = cos(seed_chroma, cand_chroma)
+    tonnetz_sim = cos(seed_tonnetz, cand_tonnetz)
+    score = 0.4 * chroma_sim + 0.6 * tonnetz_sim
+    return float(np.clip(score, 0.0, 1.0))
+
+
+def harmonic_compatibility_from_features(seed_info: dict[str, Any], cand_info: dict[str, Any]) -> float:
+    """Score cached harmonic profiles from track metadata or nested features."""
+    seed_chroma = _profile_array(seed_info, "chroma_profile", 12)
+    seed_tonnetz = _profile_array(seed_info, "tonnetz_profile", 6)
+    cand_chroma = _profile_array(cand_info, "chroma_profile", 12)
+    cand_tonnetz = _profile_array(cand_info, "tonnetz_profile", 6)
+    return harmonic_compatibility(seed_chroma, seed_tonnetz, cand_chroma, cand_tonnetz)
 

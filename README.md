@@ -101,6 +101,9 @@ rbassist embed "C:\Users\you\Music\BREAKS" --missing-section-sidecars --section-
 
 # Optional profiling for future tuning; writes one JSON object per processed track
 rbassist embed --paths-file .\.tmp\profile_slice.txt --section-embed --resume --profile-embed-out data\runlogs\embed_profile_slice.jsonl
+
+# Optional harmonic profile cache for continuous key scoring experiments
+rbassist analyze "D:\Music\YourCrate" --duration-s 60 --harmonic-profiles
 ```
 
 Notes:
@@ -111,6 +114,7 @@ Notes:
 - `--missing-section-sidecars` scans `data/meta.json` for tracks with an existing primary embedding file but missing one of `embedding_intro`, `embedding_core`, or `embedding_late`; with paths or `--paths-file`, it restricts the scan to that scope and implies `--resume` so primary embeddings are not rewritten.
 - When `--missing-section-sidecars --resume` finds failed paths in the checkpoint, it skips them by default so one bad file cannot stop a full-library backfill again. Use `--retry-checkpoint-failures` only when intentionally retrying quarantined failures.
 - `--profile-embed-out` is opt-in and records per-track JSONL timing for audio decode, sample counts, MERT flattened item count, actual MERT batch size, save/checkpoint/meta writes, device, and embedding mode flags. Use it on a small fixed slice before changing loader or batching behavior.
+- `--harmonic-profiles` is opt-in and additive: it stores cached `chroma_profile` and `tonnetz_profile` values under each track's `features` without changing the default Camelot key behavior.
 
 Library health and path repair workflow:
 ```powershell
@@ -158,6 +162,7 @@ rbassist playlist-expand --playlist "DarkMoon" --target-total 30 --mode balanced
 ```
 This is read-only against Rekordbox and `data/meta.json`, and it fails closed if fewer than 3 mapped tracks with embeddings are available.
 Presets now include `tight`, `balanced`, and `adventurous`; advanced overrides include `--strategy blend|centroid|coverage`, `--key-mode off|soft|filter`, and weight flags such as `--w-ann-centroid`, `--w-group-match`, and `--w-tags`.
+Use `--harmonic-key-score` only after harmonic profiles have been cached; it replaces the soft `key_match` component with continuous chroma/tonnetz compatibility where profiles exist and falls back to Camelot when they do not.
 The NiceGUI `Crate Expander` tab now uses the same shared backend with Rekordbox playlist loading, preset toggles, advanced sliders, quick role-tag lane buttons such as `Warm-up` and `Peak-time`, and cached reranking so slider changes reuse the prepared candidate pool instead of rebuilding ANN every time.
 The Crate Expander UI can also save the current expansion as a Rekordbox playlist XML file under `exports/crate_expander/`; this writes a playlist XML only and does not overwrite or mutate your Rekordbox library. After saving, the export folder opens so you can drag the XML into Rekordbox to import the new playlist.
 Added-track selection also applies a small anti-repetition penalty to reduce same-artist / same-version clustering in the appended crate.

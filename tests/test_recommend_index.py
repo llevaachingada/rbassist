@@ -57,6 +57,17 @@ class _FakeIndex:
         self.saved_path = path
 
 
+class _FakeSearchIndex:
+    def load_index(self, path):
+        self.loaded_path = path
+
+    def set_ef(self, value):
+        self.ef = value
+
+    def knn_query(self, query, k):
+        return np.array([[0, 1, 2]], dtype=np.int64), np.array([[0.0, 0.2, 0.1]], dtype=np.float32)
+
+
 class RecommendIndexTests(unittest.TestCase):
     def test_build_index_incremental_resizes_and_chunks_adds(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -87,6 +98,48 @@ class RecommendIndexTests(unittest.TestCase):
             updated_paths = json.loads(mapfile.read_text(encoding='utf-8'))
             self.assertEqual(len(updated_paths), 7)
             self.assertEqual(updated_paths[:2], existing_paths)
+
+    def test_recommend_harmony_weight_can_rerank_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            idx_dir = base / 'index'
+            idx_dir.mkdir(parents=True)
+            (idx_dir / 'hnsw.idx').write_text('idx', encoding='utf-8')
+            paths = ['seed-track', 'low-harmony', 'high-harmony']
+            (idx_dir / 'paths.json').write_text(json.dumps(paths), encoding='utf-8')
+
+            embed_dir = base / 'embeddings'
+            embed_dir.mkdir()
+            tracks = {}
+            for i, path in enumerate(paths):
+                emb_path = embed_dir / f'{i}.npy'
+                vec = np.zeros(4, dtype=np.float32)
+                vec[i % 4] = 1.0
+                np.save(emb_path, vec)
+                tracks[path] = {'embedding': str(emb_path), 'bpm': 128.0, 'key': '8A', 'features': {}}
+
+            def fake_harmony(seed_info, cand_info):
+                for path, info in tracks.items():
+                    if info is cand_info:
+                        return 0.9 if path == 'high-harmony' else 0.1
+                return 0.0
+
+            printed = []
+            with mock.patch.object(recommend, 'IDX', idx_dir), \
+                    mock.patch.object(recommend, 'load_meta', return_value={'tracks': tracks}), \
+                    mock.patch.object(recommend, 'load_embedding_safe', side_effect=lambda path, expected_dim=None: np.load(path)), \
+                    mock.patch.object(recommend.hnswlib, 'Index', side_effect=lambda *args, **kwargs: _FakeSearchIndex()), \
+                    mock.patch.object(recommend, 'harmonic_compatibility_from_features', side_effect=fake_harmony), \
+                    mock.patch.object(recommend.console, 'print', side_effect=printed.append):
+                recommend.recommend(
+                    'seed-track',
+                    top=2,
+                    camelot_neighbors=False,
+                    weights={'harmony': 1.0},
+                )
+
+            table = printed[0]
+            self.assertEqual(list(table.columns[1]._cells)[:2], ['high-harmony', 'low-harmony'])
 
 
 if __name__ == '__main__':

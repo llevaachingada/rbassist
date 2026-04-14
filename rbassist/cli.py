@@ -132,6 +132,7 @@ def _build_playlist_expansion_kwargs(
     w_transition: Optional[float],
     require_tags: Optional[List[str]],
     section_scores: bool,
+    harmonic_key_scores: bool,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "mode": _normalize_playlist_expansion_choice(
@@ -188,6 +189,10 @@ def _build_playlist_expansion_kwargs(
         kwargs["weights"] = weights
     if section_scores:
         kwargs["controls"] = {"use_section_scores": True}
+    if harmonic_key_scores:
+        controls = dict(kwargs.get("controls", {}))
+        controls["use_harmonic_key_scores"] = True
+        kwargs["controls"] = controls
 
     return kwargs
 
@@ -208,6 +213,11 @@ def cmd_analyze(
         "--overwrite-cues",
         help="When auto-cues are enabled, replace existing cue data instead of preserving it.",
     ),
+    harmonic_profiles: bool = typer.Option(
+        False,
+        "--harmonic-profiles/--no-harmonic-profiles",
+        help="Also cache chroma/tonnetz profiles under features for opt-in harmonic scoring.",
+    ),
     workers: int = typer.Option(12, help="Process workers for BPM/Key (0 = serial)"),
 ):
     files = walk_audio(paths)
@@ -221,6 +231,7 @@ def cmd_analyze(
         force=force,
         cue_profile=(cue_profile or None),
         overwrite_cues=overwrite_cues,
+        harmonic_profiles=harmonic_profiles,
         workers=(workers if workers > 0 else None),
     )
 
@@ -276,6 +287,11 @@ def cmd_embed(
         False,
         "--section-embed/--no-section-embed",
         help="Also save intro/core/late MERT section embeddings for opt-in transition scoring.",
+    ),
+    harmonic_profiles: bool = typer.Option(
+        False,
+        "--harmonic-profiles/--no-harmonic-profiles",
+        help="Also cache chroma/tonnetz profiles under features for opt-in harmonic scoring.",
     ),
     layer_mix: bool = typer.Option(
         False,
@@ -430,6 +446,7 @@ def cmd_embed(
         checkpoint_file=(str(checkpoint_file) if checkpoint_file else None),
         checkpoint_every=checkpoint_every,
         section_embed=section_embed,
+        harmonic_profiles=harmonic_profiles,
         layer_mix=layer_mix,
         layer_mix_weights_path=(str(layer_mix_weights_path) if layer_mix_weights_path else None),
         profile_embed_out=(str(profile_embed_out) if profile_embed_out else None),
@@ -448,6 +465,11 @@ def cmd_reanalyze(
     analyze_workers: int = typer.Option(12, help="Process workers for BPM/Key (0 = serial)"),
     timbre: bool = typer.Option(False, help="Also write timbre embeddings (OpenL3) and blend them into main embeddings"),
     timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
+    harmonic_profiles: bool = typer.Option(
+        False,
+        "--harmonic-profiles/--no-harmonic-profiles",
+        help="Also cache chroma/tonnetz profiles under features during analysis.",
+    ),
 ):
     from .embed import build_embeddings
 
@@ -466,6 +488,7 @@ def cmd_reanalyze(
         overwrite=overwrite,
         timbre=timbre,
         timbre_size=timbre_size,
+        harmonic_profiles=harmonic_profiles,
     )
     if analyze_bpm:
         analyze_bpm_key(
@@ -473,6 +496,7 @@ def cmd_reanalyze(
             duration_s=90,
             only_new=not overwrite,
             force=overwrite,
+            harmonic_profiles=harmonic_profiles,
             workers=(analyze_workers if analyze_workers > 0 else None),
         )
     if rebuild_index:
@@ -505,6 +529,7 @@ def cmd_recommend(
     w_ann: float = typer.Option(0.0, help="Weight: ANN base score"),
     w_samples: float = typer.Option(0.0, help="Weight: samples score (0..1)"),
     w_bass: float = typer.Option(0.0, help="Weight: bass contour similarity (0..1)"),
+    w_harmony: float = typer.Option(0.0, help="Weight: cached chroma/tonnetz harmonic compatibility (0..1)"),
     w_transition: float = typer.Option(0.0, help="Weight: outro-to-intro section transition score (0..1)"),
     section_scores: bool = typer.Option(False, "--section-scores", help="Use section embeddings when present."),
 ):
@@ -519,7 +544,7 @@ def cmd_recommend(
         tempo_pct=tempo_pct,
         allow_doubletime=allow_doubletime,
         camelot_neighbors=camelot_neighbors,
-        weights={"ann": w_ann, "samples": w_samples, "bass": w_bass, "transition": w_transition},
+        weights={"ann": w_ann, "samples": w_samples, "bass": w_bass, "harmony": w_harmony, "transition": w_transition},
         use_section_scores=section_scores,
     )
 
@@ -607,6 +632,11 @@ def cmd_playlist_expand(
         "--section-scores",
         help="Use intro/late section embeddings when available during reranking.",
     ),
+    harmonic_key_scores: bool = typer.Option(
+        False,
+        "--harmonic-key-score",
+        help="Use cached chroma/tonnetz profiles for the soft key_match score when available.",
+    ),
     require_tag: List[str] = typer.Option(
         None,
         "--require-tag",
@@ -690,6 +720,7 @@ def cmd_playlist_expand(
             w_transition=w_transition,
             require_tags=require_tag,
             section_scores=section_scores,
+            harmonic_key_scores=harmonic_key_scores,
         )
         result = expand_playlist(
             seed_playlist,

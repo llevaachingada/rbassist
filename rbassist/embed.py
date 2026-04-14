@@ -18,6 +18,7 @@ from .prefs import mode_for_path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from .sampling_profile import SamplingParams, pick_windows
 from .layer_mix import extract_layer_pools, fixed_weight_mix, learned_mix
+from .features import chroma_tonnetz_profiles
 try:
     import openl3  # type: ignore
 except Exception:
@@ -571,6 +572,7 @@ def build_embeddings(
     checkpoint_file: Optional[str] = None,
     checkpoint_every: int = 100,
     section_embed: bool = False,
+    harmonic_profiles: bool = False,
     layer_mix: bool = False,
     layer_mix_weights_path: Optional[str] = None,
     profile_embed_out: Optional[str] = None,
@@ -703,6 +705,28 @@ def build_embeddings(
             "duration_cap_s": int(duration_s or 0),
             "source_sample_rate": int(sr),
         }
+
+    def _save_harmonic_profiles(orig: str, y: np.ndarray, sr: int) -> None:
+        if not harmonic_profiles:
+            return
+        info = meta["tracks"].setdefault(orig, {})
+        feats = info.setdefault("features", {})
+        if not isinstance(feats, dict):
+            feats = {}
+            info["features"] = feats
+        if (
+            isinstance(feats.get("chroma_profile"), list)
+            and len(feats.get("chroma_profile", [])) == 12
+            and isinstance(feats.get("tonnetz_profile"), list)
+            and len(feats.get("tonnetz_profile", [])) == 6
+            and not overwrite
+        ):
+            return
+        profiles = chroma_tonnetz_profiles(y, sr)
+        if overwrite or "chroma_profile" not in feats:
+            feats["chroma_profile"] = profiles["chroma_profile"]
+        if overwrite or "tonnetz_profile" not in feats:
+            feats["tonnetz_profile"] = profiles["tonnetz_profile"]
 
     def _checkpoint_payload(status: str) -> dict:
         return {
@@ -1016,6 +1040,10 @@ def build_embeddings(
                         kind="embedding",
                         allow_overwrite=overwrite,
                     )
+                if harmonic_profiles:
+                    started = time.perf_counter()
+                    _save_harmonic_profiles(orig, y, sr)
+                    save_s += time.perf_counter() - started
                 return {
                     "mert_flattened_item_count": flattened_item_count,
                     "actual_mert_batch_size": actual_mert_batch_size,
@@ -1036,6 +1064,7 @@ def build_embeddings(
                             "source_label": used,
                             "device": emb.device,
                             "section_embed": bool(section_embed),
+                            "harmonic_profiles": bool(harmonic_profiles),
                             "layer_mix": bool(layer_mix),
                             "timbre": bool(timbre_emb is not None),
                             "sampling": bool(sampling is not None),
@@ -1074,6 +1103,7 @@ def build_embeddings(
                                         "source_label": used,
                                         "device": emb.device,
                                         "section_embed": bool(section_embed),
+                                        "harmonic_profiles": bool(harmonic_profiles),
                                         "layer_mix": bool(layer_mix),
                                         "timbre": bool(timbre_emb is not None),
                                         "sampling": bool(sampling is not None),
@@ -1152,6 +1182,9 @@ def build_embeddings(
                     if sampling is not None:
                         vec = embed_with_sampling(src, emb, sampling)
                         _save_embedding(orig, vec, used, allow_overwrite=overwrite)
+                        if harmonic_profiles:
+                            y, sr = librosa.load(src, sr=None, mono=True)
+                            _save_harmonic_profiles(orig, y, sr)
                         _mark_completed(orig)
                         done += 1
                         if progress_callback is not None:
