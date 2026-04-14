@@ -158,6 +158,7 @@ class EmbedResumeTests(unittest.TestCase):
                     resume=False,
                     checkpoint_file=base / "checkpoint.json",
                     checkpoint_every=25,
+                    profile_embed_out=None,
                 )
 
             build_embeddings.assert_called_once()
@@ -165,6 +166,100 @@ class EmbedResumeTests(unittest.TestCase):
             self.assertEqual(args[0], [str(track)])
             self.assertTrue(kwargs["section_embed"])
             self.assertTrue(kwargs["resume"])
+
+    def test_missing_section_sidecar_cli_skips_checkpoint_failed_paths_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            keep = base / "keep.mp3"
+            failed = base / "failed.mp3"
+            keep.touch()
+            failed.touch()
+            primary = base / "primary.npy"
+            checkpoint = base / "checkpoint.json"
+            np.save(primary, np.ones(8, dtype=np.float16))
+            checkpoint.write_text(
+                json.dumps({"failed_paths": [str(failed)], "completed_paths": []}),
+                encoding="utf-8",
+            )
+            meta_store = {
+                "tracks": {
+                    str(keep): {"embedding": str(primary)},
+                    str(failed): {"embedding": str(primary)},
+                }
+            }
+
+            with mock.patch.object(cli, "load_meta", return_value=meta_store), \
+                mock.patch.object(embed_mod, "build_embeddings") as build_embeddings:
+                cli.cmd_embed(
+                    paths=None,
+                    duration_s=120,
+                    model=embed_mod.DEFAULT_MODEL,
+                    device=None,
+                    num_workers=0,
+                    batch_size=None,
+                    timbre=False,
+                    timbre_size=512,
+                    section_embed=True,
+                    layer_mix=False,
+                    layer_mix_weights_path=None,
+                    paths_file=None,
+                    missing_section_sidecars=True,
+                    retry_checkpoint_failures=False,
+                    resume=True,
+                    checkpoint_file=checkpoint,
+                    checkpoint_every=25,
+                    profile_embed_out=None,
+                )
+
+            args, _ = build_embeddings.call_args
+            self.assertEqual(args[0], [str(keep)])
+
+    def test_missing_section_sidecar_cli_can_retry_checkpoint_failed_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            keep = base / "keep.mp3"
+            failed = base / "failed.mp3"
+            keep.touch()
+            failed.touch()
+            primary = base / "primary.npy"
+            checkpoint = base / "checkpoint.json"
+            np.save(primary, np.ones(8, dtype=np.float16))
+            checkpoint.write_text(
+                json.dumps({"failed_paths": [str(failed)], "completed_paths": []}),
+                encoding="utf-8",
+            )
+            meta_store = {
+                "tracks": {
+                    str(failed): {"embedding": str(primary)},
+                    str(keep): {"embedding": str(primary)},
+                }
+            }
+
+            with mock.patch.object(cli, "load_meta", return_value=meta_store), \
+                mock.patch.object(embed_mod, "build_embeddings") as build_embeddings:
+                cli.cmd_embed(
+                    paths=None,
+                    duration_s=120,
+                    model=embed_mod.DEFAULT_MODEL,
+                    device=None,
+                    num_workers=0,
+                    batch_size=None,
+                    timbre=False,
+                    timbre_size=512,
+                    section_embed=True,
+                    layer_mix=False,
+                    layer_mix_weights_path=None,
+                    paths_file=None,
+                    missing_section_sidecars=True,
+                    retry_checkpoint_failures=True,
+                    resume=True,
+                    checkpoint_file=checkpoint,
+                    checkpoint_every=25,
+                    profile_embed_out=None,
+                )
+
+            args, _ = build_embeddings.call_args
+            self.assertEqual(args[0], [str(failed), str(keep)])
 
     def test_build_embeddings_writes_checkpoint_and_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as td:

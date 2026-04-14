@@ -4,6 +4,7 @@ import gc
 import json
 import os
 import pathlib
+import time
 from datetime import datetime, timezone
 import numpy as np
 import librosa, soundfile as sf
@@ -550,6 +551,10 @@ def _write_checkpoint_state(path: pathlib.Path, state: dict) -> None:
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+def _elapsed_since(start: float) -> float:
+    return round(time.perf_counter() - start, 6)
+
+
 def build_embeddings(
     paths: List[str],
     model_name: str = DEFAULT_MODEL,
@@ -568,6 +573,7 @@ def build_embeddings(
     section_embed: bool = False,
     layer_mix: bool = False,
     layer_mix_weights_path: Optional[str] = None,
+    profile_embed_out: Optional[str] = None,
 ) -> None:
     meta = load_meta()
     embedder_kwargs: dict[str, Any] = {}
@@ -585,6 +591,7 @@ def build_embeddings(
     checkpoint_every = max(1, int(checkpoint_every))
     checkpoint_path = _resolve_runtime_path(checkpoint_file, EMB.parent / "embed_checkpoint.json")
     failed_log_path = checkpoint_path.with_name(f"{checkpoint_path.stem}_failed.jsonl")
+    profile_path = _resolve_runtime_path(profile_embed_out, pathlib.Path("embed_profile.jsonl")) if profile_embed_out else None
 
     checkpoint_seed = _load_checkpoint_state(checkpoint_path) if resume else {}
     completed_paths: set[str] = set()
@@ -668,11 +675,34 @@ def build_embeddings(
     counters["queued"] = len(jobs)
     total = len(jobs)
 
-    def _load(audio_path: str) -> tuple[np.ndarray, int]:
+    def _append_profile(event: dict[str, Any]) -> None:
+        if profile_path is None:
+            return
+        event = {
+            "timestamp": _utc_now_iso(),
+            "run_id": run_id,
+            **event,
+        }
+        try:
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+            with profile_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except Exception as profile_err:
+            console.print(f"[yellow]Failed to append embed profile ({profile_path}): {profile_err}")
+
+    def _load(audio_path: str) -> tuple[np.ndarray, int, dict[str, Any]]:
+        started = time.perf_counter()
         y, sr = librosa.load(audio_path, sr=None, mono=True)
+        decoded_samples = int(y.shape[0])
         if duration_s and y.shape[0] > sr * duration_s:
             y = y[: sr * duration_s]
-        return y, sr
+        return y, sr, {
+            "load_audio_s": _elapsed_since(started),
+            "decoded_samples": decoded_samples,
+            "trimmed_samples": int(y.shape[0]),
+            "duration_cap_s": int(duration_s or 0),
+            "source_sample_rate": int(sr),
+        }
 
     def _checkpoint_payload(status: str) -> dict:
         return {
@@ -698,18 +728,29 @@ def build_embeddings(
             "failed_log": str(failed_log_path),
         }
 
-    def _flush_checkpoint(force: bool = False, status: str = "running") -> None:
+    def _flush_checkpoint(force: bool = False, status: str = "running") -> dict[str, Any]:
         nonlocal checkpoint_mutations, meta_mutations
         write_checkpoint = force or checkpoint_mutations >= checkpoint_every
         write_meta = force or meta_mutations >= meta_flush_every
+        timings = {
+            "checkpoint_written": bool(write_checkpoint),
+            "meta_written": bool(write_meta),
+            "checkpoint_write_s": 0.0,
+            "meta_write_s": 0.0,
+        }
         if not write_checkpoint and not write_meta:
-            return
+            return timings
         if write_checkpoint:
+            started = time.perf_counter()
             _write_checkpoint_state(checkpoint_path, _checkpoint_payload(status=status))
+            timings["checkpoint_write_s"] = _elapsed_since(started)
             checkpoint_mutations = 0
         if write_meta:
+            started = time.perf_counter()
             save_meta(meta)
+            timings["meta_write_s"] = _elapsed_since(started)
             meta_mutations = 0
+        return timings
 
     def _log_failure(path: str, src_path: str, phase: str, err: Exception | str) -> None:
         nonlocal checkpoint_mutations, meta_mutations
@@ -738,14 +779,14 @@ def build_embeddings(
         meta_mutations += 1
         _flush_checkpoint()
 
-    def _mark_completed(path: str) -> None:
+    def _mark_completed(path: str) -> dict[str, Any]:
         nonlocal checkpoint_mutations, meta_mutations
         counters["succeeded"] += 1
         completed_paths.add(path)
         failed_paths.discard(path)
         checkpoint_mutations += 1
         meta_mutations += 1
-        _flush_checkpoint()
+        return _flush_checkpoint()
 
     def _rebuild_cuda_embedder() -> None:
         nonlocal emb
@@ -835,6 +876,7 @@ def build_embeddings(
             src_path: str,
             y: np.ndarray,
             sr: int,
+            load_profile: dict[str, Any],
             used: str,
             write_primary: bool,
             allow_section_overwrite: bool,
@@ -842,17 +884,46 @@ def build_embeddings(
             nonlocal done
             def _run_once(active_emb: MertEmbedder) -> None:
                 windows: list[tuple[float, float]] = _default_windows(y, sr)
+                flattened_item_count = len(_window_slices(y, sr, windows)) if sampling is None else None
+                actual_mert_batch_size = flattened_item_count if sampling is None else None
                 mert_vec: np.ndarray | None = None
                 timbre_vec: np.ndarray | None = None
                 section_vecs: dict[str, np.ndarray] | None = None
+                mert_encode_s = 0.0
+                timbre_encode_s = 0.0
+                save_s = 0.0
+
+                def _save_profiled(
+                    save_orig: str,
+                    save_vec: np.ndarray,
+                    save_used: str,
+                    *,
+                    kind: str = "embedding",
+                    allow_overwrite: bool = True,
+                ) -> None:
+                    nonlocal save_s
+                    started = time.perf_counter()
+                    _save_embedding(
+                        save_orig,
+                        save_vec,
+                        save_used,
+                        kind=kind,
+                        allow_overwrite=allow_overwrite,
+                    )
+                    save_s += time.perf_counter() - started
+
                 if sampling is not None:
+                    started = time.perf_counter()
                     vec = embed_with_sampling(src_path, active_emb, sampling)
+                    mert_encode_s += time.perf_counter() - started
                     mert_vec = vec
                 elif layer_mix:
+                    started = time.perf_counter()
                     full_vecs = embed_with_default_windows_full(y, sr, active_emb, windows=windows)
+                    mert_encode_s += time.perf_counter() - started
                     vec = full_vecs["standard"]
                     mert_vec = vec
-                    _save_embedding(
+                    _save_profiled(
                         orig,
                         full_vecs["layer_mix"],
                         used,
@@ -861,13 +932,17 @@ def build_embeddings(
                     )
                 else:
                     if section_embed:
+                        started = time.perf_counter()
                         section_vecs = embed_with_section_vectors(y, sr, active_emb, windows=windows)
+                        mert_encode_s += time.perf_counter() - started
                         vec = section_vecs["combined"]
                     else:
+                        started = time.perf_counter()
                         vec = embed_with_default_windows(y, sr, active_emb, windows=windows)
+                        mert_encode_s += time.perf_counter() - started
                     mert_vec = vec
                 if write_primary:
-                    _save_embedding(
+                    _save_profiled(
                         orig,
                         vec,
                         used,
@@ -877,22 +952,24 @@ def build_embeddings(
 
                 if section_embed:
                     if section_vecs is None:
+                        started = time.perf_counter()
                         section_vecs = embed_with_section_vectors(y, sr, active_emb, windows=windows)
-                    _save_embedding(
+                        mert_encode_s += time.perf_counter() - started
+                    _save_profiled(
                         orig,
                         section_vecs["intro"],
                         used,
                         kind="embedding_intro",
                         allow_overwrite=allow_section_overwrite,
                     )
-                    _save_embedding(
+                    _save_profiled(
                         orig,
                         section_vecs["core"],
                         used,
                         kind="embedding_core",
                         allow_overwrite=allow_section_overwrite,
                     )
-                    _save_embedding(
+                    _save_profiled(
                         orig,
                         section_vecs["late"],
                         used,
@@ -907,9 +984,11 @@ def build_embeddings(
 
                 if timbre_emb is not None and write_primary:
                     try:
+                        started = time.perf_counter()
                         timbre_vec = timbre_embedding_from_windows(y, sr, windows, timbre_emb)
+                        timbre_encode_s += time.perf_counter() - started
                         if timbre_vec is not None:
-                            _save_embedding(
+                            _save_profiled(
                                 orig,
                                 timbre_vec,
                                 used,
@@ -930,17 +1009,43 @@ def build_embeddings(
                         source_label = "timbre_only"
 
                 if combined is not None and write_primary:
-                    _save_embedding(
+                    _save_profiled(
                         orig,
                         combined,
                         source_label,
                         kind="embedding",
                         allow_overwrite=overwrite,
                     )
+                return {
+                    "mert_flattened_item_count": flattened_item_count,
+                    "actual_mert_batch_size": actual_mert_batch_size,
+                    "mert_encode_s": round(mert_encode_s, 6),
+                    "timbre_encode_s": round(timbre_encode_s, 6),
+                    "save_s": round(save_s, 6),
+                }
 
             try:
-                _run_once(emb)
-                _mark_completed(orig)
+                profile_event = _run_once(emb)
+                checkpoint_profile = _mark_completed(orig)
+                if profile_path is not None:
+                    _append_profile(
+                        {
+                            "event": "track",
+                            "path": orig,
+                            "source_path": src_path,
+                            "source_label": used,
+                            "device": emb.device,
+                            "section_embed": bool(section_embed),
+                            "layer_mix": bool(layer_mix),
+                            "timbre": bool(timbre_emb is not None),
+                            "sampling": bool(sampling is not None),
+                            "write_primary": bool(write_primary),
+                            "allow_section_overwrite": bool(allow_section_overwrite),
+                            **load_profile,
+                            **profile_event,
+                            **checkpoint_profile,
+                        }
+                    )
             except Exception as e:
                 if emb.device == "cuda" and _is_cuda_runtime_error(e):
                     recovery["cuda_retries"] += 1
@@ -956,10 +1061,30 @@ def build_embeddings(
                         )
                     else:
                         try:
-                            _run_once(emb)
+                            profile_event = _run_once(emb)
                             recovery["cuda_retry_successes"] += 1
                             console.print(f"[yellow]Recovered CUDA embedder and retried {orig}")
-                            _mark_completed(orig)
+                            checkpoint_profile = _mark_completed(orig)
+                            if profile_path is not None:
+                                _append_profile(
+                                    {
+                                        "event": "track",
+                                        "path": orig,
+                                        "source_path": src_path,
+                                        "source_label": used,
+                                        "device": emb.device,
+                                        "section_embed": bool(section_embed),
+                                        "layer_mix": bool(layer_mix),
+                                        "timbre": bool(timbre_emb is not None),
+                                        "sampling": bool(sampling is not None),
+                                        "write_primary": bool(write_primary),
+                                        "allow_section_overwrite": bool(allow_section_overwrite),
+                                        "cuda_retried": True,
+                                        **load_profile,
+                                        **profile_event,
+                                        **checkpoint_profile,
+                                    }
+                                )
                             return
                         except Exception as retry_err:
                             recovery["cuda_retry_failures"] += 1
@@ -1002,12 +1127,13 @@ def build_embeddings(
                     for fut in completed:
                         orig, src_path, used, write_primary, allow_section_overwrite = in_flight.pop(fut)
                         try:
-                            y, sr = fut.result()
+                            y, sr, load_profile = fut.result()
                             _process_one(
                                 orig,
                                 src_path,
                                 y,
                                 sr,
+                                load_profile,
                                 used,
                                 write_primary,
                                 allow_section_overwrite,
@@ -1033,8 +1159,8 @@ def build_embeddings(
                         else:
                             _tick()
                         continue
-                    y, sr = _load(src)
-                    _process_one(orig, src, y, sr, used, write_primary, allow_section_overwrite)
+                    y, sr, load_profile = _load(src)
+                    _process_one(orig, src, y, sr, load_profile, used, write_primary, allow_section_overwrite)
                 except Exception as e:
                     _log_failure(orig, src, "serial", e)
                     done += 1

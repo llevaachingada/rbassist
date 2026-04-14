@@ -98,6 +98,9 @@ rbassist embed --missing-section-sidecars --section-embed --resume --checkpoint-
 
 # Restrict the same backfill to a reviewed crate or path list
 rbassist embed "C:\Users\you\Music\BREAKS" --missing-section-sidecars --section-embed --resume --checkpoint-file data\runlogs\section_embed_breaks_checkpoint.json --checkpoint-every 25
+
+# Optional profiling for future tuning; writes one JSON object per processed track
+rbassist embed --paths-file .\.tmp\profile_slice.txt --section-embed --resume --profile-embed-out data\runlogs\embed_profile_slice.jsonl
 ```
 
 Notes:
@@ -105,6 +108,8 @@ Notes:
 - `--checkpoint-file` lets you override the checkpoint location.
 - Failed tracks are written to a structured JSONL log next to the checkpoint file.
 - `--missing-section-sidecars` scans `data/meta.json` for tracks with an existing primary embedding file but missing one of `embedding_intro`, `embedding_core`, or `embedding_late`; with paths or `--paths-file`, it restricts the scan to that scope and implies `--resume` so primary embeddings are not rewritten.
+- When `--missing-section-sidecars --resume` finds failed paths in the checkpoint, it skips them by default so one bad file cannot stop a full-library backfill again. Use `--retry-checkpoint-failures` only when intentionally retrying quarantined failures.
+- `--profile-embed-out` is opt-in and records per-track JSONL timing for audio decode, sample counts, MERT encode shape/batch size, save/checkpoint/meta writes, device, and embedding mode flags. Use it on a small fixed slice before changing loader or batching behavior.
 
 Library health and path repair workflow:
 ```powershell

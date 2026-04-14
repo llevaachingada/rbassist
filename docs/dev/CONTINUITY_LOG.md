@@ -50,7 +50,13 @@
 - Next recommended step: build an apply-safe pass for the high-confidence bare matches and then feed the large ambiguous set into duplicate/remediation and Rekordbox-safe relink planning.
 ### 2026-03-02
 - Goal: Push the NiceGUI surface closer to completion with a focused library/tagging usability pass.
-- Changes made: Made bassist/ui/state.py root-aware for health refreshes, expanded bassist/ui/components/health_summary.py with scope-aware counts, upgraded bassist/ui/components/track_table.py with stronger pagination defaults, added quick issue filters plus fixed-fallback beatgrid actions in bassist/ui/pages/library.py, improved in-app suggestion preview controls in bassist/ui/pages/tagging.py, and cleaned up the instructions/review text in bassist/ui/pages/ai_tagging.py.
+- Changes made: Made
+bassist/ui/state.py root-aware for health refreshes, expanded
+bassist/ui/components/health_summary.py with scope-aware counts, upgraded
+bassist/ui/components/track_table.py with stronger pagination defaults, added quick issue filters plus fixed-fallback beatgrid actions in
+bassist/ui/pages/library.py, improved in-app suggestion preview controls in
+bassist/ui/pages/tagging.py, and cleaned up the instructions/review text in
+bassist/ui/pages/ai_tagging.py.
 - Evidence / outputs: python -m compileall passed for the touched UI files, and pytest -q tests/test_ui_state.py tests/test_resolve_bare_meta_paths.py passed (5 passed).
 - Current blockers or risks: docs/design/spec_1_rbassist_local_ai_dj_toolkit_architecture.md is still an unrelated tracked change and remains intentionally untouched. The richer bare/orphan resolver work is still uncommitted local work alongside this GUI batch.
 - Next recommended step: either commit just the GUI + bare/orphan files together, or continue into the next UI completion slice for beatgrid review polish, tags workflow depth, and large-library table ergonomics.
@@ -205,9 +211,8 @@
 ### 2026-04-13
 - Goal: Move the read-only desktop shell closer to a useful Windows GUI without touching existing NiceGUI workflows.
 - Changes made: expanded `rbassist/desktop/app.py` to include a read-only Library health summary built from the existing `rbassist/ui_services/library.py` page model, so the desktop Library tab now surfaces issue-row totals and top health categories alongside the preview table; updated `tests/test_desktop_app.py` and `docs/dev/DESKTOP_GUI_MIGRATION_CONTRACT.md`.
-- Evidence / outputs: `python -m compileall rbassist\ui rbassist\runtime rbassist\ui_services rbassist\desktop` passed; `pytest -q tests/test_ui_app.py tests/test_ui_components.py tests/test_ui_crate_expander.py tests/test_ui_discover.py tests/test_ui_jobs.py tests/test_ui_services.py tests/test_ui_services_settings.py tests/test_ui_state.py tests/test_bridge_boundaries.py tests/test_desktop_app.py tests/test_recommend_index.py` passed (`49 passed`, `2` boundary subtests); page import smoke over all `PAGE_SPECS` passed with zero failures; desktop model smoke reported `13332` tracks, `3335` library issue rows, and top issue categories without opening a PySide window.
-- Current blockers or risks: desktop shell remains read-only and has not been live-window smoked; the health summary can be expensive on the full library because it checks path/embedding existence for every metadata row.
-- Next recommended step: keep the next desktop slice read-only by adding Library health filters/details or Discover seed-readiness from service outputs before considering any desktop actions that launch background work.
+- Evidence / outputs: `python -m compileall rbassist\ui rbassist\runtime rbassist\ui_services rbassist\desktop` passed; `pytest -q tests/test_ui_app.py tests/test_ui_components.py tests/test_ui_crate_expander.py tests/test_ui_discover.py tests/`
+`next desktop slice read-only by adding Library health filters/details or Discover seed-readiness from service outputs before considering any desktop actions that launch background work.
 
 ### 2026-04-12
 - Goal: Implement the opt-in embedding upgrade plan without changing the canonical index contract.
@@ -243,6 +248,25 @@
 - Live full backfill status: backed up metadata to `data/backups/meta_before_section_embed_full_20260413_042813.json`; started `python -m rbassist.cli embed --missing-section-sidecars --section-embed --resume --checkpoint-file data\runlogs\section_embed_full_checkpoint_20260413.json --checkpoint-every 25 --device cuda --num-workers 8`; checkpoint status at `2026-04-13T22:58:13.677109+00:00` was `running`, `1675/9980` completed, `0` failed, and `0` CUDA retries.
 - Current blockers or risks: the full-library section-sidecar backfill is still running and should not be duplicated by a second embed process; if interrupted, resume the same command with the same checkpoint file.
 - Next recommended step: let the current checkpointed process finish, then rerun the embedding benchmark C/D rows and verify complete section sidecar coverage before any ranking promotion.
+
+### 2026-04-13
+- Goal: Add opt-in embedding-stage profiling before making decode or MERT batching changes.
+- Changes made: added `rbassist embed --profile-embed-out <jsonl>` and `build_embeddings(..., profile_embed_out=...)`; profile rows are written only when requested and include decode timing, decoded/trimmed samples, duration cap, source sample rate, MERT flattened item count, actual MERT batch size, device, section/layer/timbre flags, MERT encode timing, save timing, checkpoint timing, and meta write timing.
+- Evidence / outputs: no loader behavior, decode windowing, or MERT micro-batching was changed in this slice; the profiler is intended to gather evidence before applying those optimizations.
+- Validation: `python -m compileall rbassist\embed.py rbassist\cli.py` passed; `python -m pytest tests/test_embed_sections.py tests/test_embed_resume.py` passed (`14 passed`); `python -m pytest tests/test_embed_resume.py tests/test_embed_sections.py tests/test_section_rerank.py tests/test_benchmark_embeddings.py tests/test_recommend_index.py tests/test_playlist_expand.py` passed (`41 passed`); `python -m compileall rbassist scripts\benchmark_embeddings.py scripts\train_layer_mix.py` passed; `python -m rbassist.cli embed --help` passed; `git diff --check` passed with only line-ending warnings.
+- Current blockers or risks: profile output has not yet been collected on a real fixed slice because the full section backfill is still running; avoid running a second embedding job concurrently.
+- Next recommended step: after the active backfill finishes, run a small fixed slice with `--profile-embed-out data\runlogs\embed_profile_<slice>.jsonl`, then decide whether the decode-duration patch is justified.
+
+### 2026-04-13
+- Goal: Make the failed full section-sidecar backfill resumable without re-triggering the same CUDA crash.
+- Changes made: added checkpoint failed-path quarantine for `rbassist embed --missing-section-sidecars --resume`; failed checkpoint paths are skipped by default, with `--retry-checkpoint-failures` available for intentional retries.
+- Evidence / outputs: the stopped backfill checkpoint remained usable at `5650/9980` completed with one unique failed path, `C:\Users\hunte\Music\HOUSE  TECH\Halloween 2021 downloads\AITCH - Wait.mp3`; no manual checkpoint or `data/meta.json` edits were made.
+- Validation: `python -m pytest tests/test_embed_resume.py tests/test_embed_sections.py` passed (`16 passed`); `python -m pytest tests/test_embed_resume.py tests/test_embed_sections.py tests/test_section_rerank.py tests/test_benchmark_embeddings.py tests/test_recommend_index.py tests/test_playlist_expand.py` passed (`43 passed`); `python -m rbassist.cli embed --help` passed; `python -m compileall rbassist\embed.py rbassist\cli.py` passed; `git diff --check` passed with only line-ending warnings.
+- Resume status: restarted the full backfill as PID `23560` with `python -m rbassist.cli embed --missing-section-sidecars --section-embed --resume --checkpoint-file data\runlogs\section_embed_full_checkpoint_20260413.json --checkpoint-every 25 --device cuda --num-workers 8`; stdout/stderr are `data/runlogs/section_embed_full_resume_20260414_stdout.log` and `data/runlogs/section_embed_full_resume_20260414_stderr.log`; the resume selected `4330` remaining section-gap tracks, skipped `1` checkpoint-failed track, and skipped `2` stale audio paths.
+- Completion status: PID `23560` finished cleanly; checkpoint status is `completed`, resumed queue `queued=4329`, `succeeded=4329`, `failed=0`, with the original failed path still quarantined. Read-only coverage check found `10008` primary embeddings, `10005` complete section sidecar sets, and `3` remaining section gaps: `C:\Users\hunte\Music\HOUSE  TECH\Halloween 2021 downloads\AITCH - Wait.mp3` plus two stale `D:\My Drive\demucs_separated\...` paths.
+- Benchmark smoke: ran `python scripts\benchmark_embeddings.py --seeds-file data\runlogs\section_embed_crate25_benchmark_seeds_20260413.txt --rows C,D --section-embeds --top 10 --candidate-pool 50 --out reports\benchmark_section_full_20260414.json`; coverage in the report is `10005` section-complete, and C/D now produce `transition_score_mean=0.5316157023375183`.
+- Current blockers or risks: the failed `AITCH - Wait.mp3` track still needs a later one-track diagnostic, likely with profile output and possibly CPU fallback; two stale demucs paths remain metadata/path hygiene follow-up rather than section embedding failures.
+- Next recommended step: run a one-track diagnostic for `C:\Users\hunte\Music\HOUSE  TECH\Halloween 2021 downloads\AITCH - Wait.mp3`, then decide whether to retry it on CPU or quarantine it permanently.
 
 ### 2026-04-13
 - Goal: Harden the Rekordbox boundary for Crate Expander playlist loading and playlist XML export without touching live Rekordbox state or local library metadata.

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, List, Optional
 import typer
 from .analyze import analyze_bpm_key
-from .utils import load_meta, save_meta, console, walk_audio, pick_device, read_paths_file, make_path_aliases
+from .utils import DATA, load_meta, save_meta, console, walk_audio, pick_device, read_paths_file, make_path_aliases
 from .sampling_profile import load_sampling_params
 from .beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 
@@ -81,6 +81,29 @@ def _missing_section_sidecar_paths(
         selected.append(clean_path)
     stats["selected_count"] = len(selected)
     return selected, stats
+
+
+def _resolve_embed_checkpoint_path(checkpoint_file: pathlib.Path | None) -> pathlib.Path:
+    if checkpoint_file is None:
+        return DATA / "embed_checkpoint.json"
+    if checkpoint_file.is_absolute():
+        return checkpoint_file
+    return (pathlib.Path.cwd() / checkpoint_file).resolve()
+
+
+def _checkpoint_failed_paths(checkpoint_file: pathlib.Path | None) -> set[str]:
+    checkpoint_path = _resolve_embed_checkpoint_path(checkpoint_file)
+    if not checkpoint_path.exists():
+        return set()
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        console.print(f"[yellow]Checkpoint unreadable ({checkpoint_path}): {e}")
+        return set()
+    failed = checkpoint.get("failed_paths", []) if isinstance(checkpoint, dict) else []
+    if not isinstance(failed, list):
+        return set()
+    return {str(path) for path in failed if str(path).strip()}
 
 
 def _normalize_playlist_expansion_choice(value: str, allowed: set[str], *, label: str) -> str:
@@ -286,6 +309,14 @@ def cmd_embed(
             "Implies --section-embed and --resume."
         ),
     ),
+    retry_checkpoint_failures: bool = typer.Option(
+        False,
+        "--retry-checkpoint-failures",
+        help=(
+            "When resuming --missing-section-sidecars, retry paths already listed in the checkpoint failed_paths. "
+            "By default they are quarantined for separate follow-up."
+        ),
+    ),
     resume: bool = typer.Option(
         False,
         "--resume",
@@ -301,6 +332,11 @@ def cmd_embed(
         "--checkpoint-every",
         min=1,
         help="Persist checkpoint state every N processed tracks.",
+    ),
+    profile_embed_out: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--profile-embed-out",
+        help="Optional JSONL path for per-track embed stage timings.",
     ),
 ):
     # Enforce canonical embedding defaults to keep library consistent.
@@ -352,6 +388,21 @@ def cmd_embed(
             f"Selected {gap_stats['selected_count']} primary-embedded track(s) missing section sidecars "
             f"from {gap_stats['tracks_total']} metadata track(s)."
         )
+        if resume and not retry_checkpoint_failures:
+            failed_paths = _checkpoint_failed_paths(checkpoint_file)
+            if failed_paths:
+                before_failed_filter = len(files)
+                failed_aliases: set[str] = set()
+                for failed_path in failed_paths:
+                    failed_aliases.update(make_path_aliases(failed_path))
+                files = [path for path in files if not (make_path_aliases(path) & failed_aliases)]
+                skipped_failed = before_failed_filter - len(files)
+                if skipped_failed:
+                    console.print(
+                        "[yellow]"
+                        f"Skipped {skipped_failed} checkpoint-failed section-gap track(s). "
+                        "Use --retry-checkpoint-failures to retry them."
+                    )
         if gap_stats["missing_audio_count"]:
             console.print(
                 "[yellow]"
@@ -381,6 +432,7 @@ def cmd_embed(
         section_embed=section_embed,
         layer_mix=layer_mix,
         layer_mix_weights_path=(str(layer_mix_weights_path) if layer_mix_weights_path else None),
+        profile_embed_out=(str(profile_embed_out) if profile_embed_out else None),
     )
 
 

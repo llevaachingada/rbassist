@@ -207,6 +207,59 @@ class EmbedSectionTests(unittest.TestCase):
 
             self.assertEqual(holder["embedder"].batch_calls, 1)
 
+    def test_build_embeddings_writes_opt_in_profile_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            emb_dir = base / "embeddings"
+            checkpoint = base / "checkpoint.json"
+            profile = base / "embed_profile.jsonl"
+            track = str(base / "Artist - Title.wav")
+            meta_store: dict = {"tracks": {}}
+
+            def fake_load_meta() -> dict:
+                return meta_store
+
+            def fake_save_meta(meta: dict) -> None:
+                saved = json.loads(json.dumps(meta))
+                meta_store.clear()
+                meta_store.update(saved)
+
+            with (
+                mock.patch.object(embed_mod, "MertEmbedder", _SectionFakeEmbedder),
+                mock.patch.object(embed_mod, "load_meta", side_effect=fake_load_meta),
+                mock.patch.object(embed_mod, "save_meta", side_effect=fake_save_meta),
+                mock.patch.object(embed_mod, "mode_for_path", return_value="baseline"),
+                mock.patch.object(embed_mod, "EMB", emb_dir),
+                mock.patch.object(embed_mod.librosa, "load", return_value=(np.ones(20, dtype=np.float32), 10)),
+            ):
+                embed_mod.build_embeddings(
+                    [track],
+                    duration_s=1,
+                    num_workers=0,
+                    checkpoint_file=str(checkpoint),
+                    checkpoint_every=1,
+                    section_embed=True,
+                    profile_embed_out=str(profile),
+                )
+
+            rows = [json.loads(line) for line in profile.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["event"], "track")
+            self.assertEqual(row["path"], track)
+            self.assertEqual(row["source_sample_rate"], 10)
+            self.assertEqual(row["decoded_samples"], 20)
+            self.assertEqual(row["trimmed_samples"], 10)
+            self.assertEqual(row["duration_cap_s"], 1)
+            self.assertEqual(row["mert_flattened_item_count"], 1)
+            self.assertEqual(row["actual_mert_batch_size"], 1)
+            self.assertTrue(row["section_embed"])
+            self.assertFalse(row["layer_mix"])
+            self.assertFalse(row["timbre"])
+            for key in ("load_audio_s", "mert_encode_s", "save_s", "checkpoint_write_s", "meta_write_s"):
+                self.assertIn(key, row)
+                self.assertGreaterEqual(row[key], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
