@@ -167,6 +167,12 @@ The NiceGUI `Crate Expander` tab now uses the same shared backend with Rekordbox
 The Crate Expander UI can also save the current expansion as a Rekordbox playlist XML file under `exports/crate_expander/`; this writes a playlist XML only and does not overwrite or mutate your Rekordbox library. After saving, the export folder opens so you can drag the XML into Rekordbox to import the new playlist.
 Added-track selection also applies a small anti-repetition penalty to reduce same-artist / same-version clustering in the appended crate.
 
+Build a read-only playlist-pair dataset for future learned-similarity training:
+```powershell
+python scripts\export_playlist_pairs.py --source db --out data\training\playlist_pairs.jsonl --summary data\training\playlist_pairs_summary.json
+```
+Use `--dry-run` first to print counts without writing the JSONL dataset. The exporter only writes the requested output files; it does not mutate `data/meta.json`, embeddings, indexes, or Rekordbox.
+
 5) Import Bandcamp tags (update local meta for filtering later)
 ```powershell
 rbassist bandcamp-import .\bandcamp.csv rbassist\config.yml
