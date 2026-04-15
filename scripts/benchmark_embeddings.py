@@ -235,6 +235,25 @@ def _run_row_for_seed(
     return filtered[:top], None
 
 
+def _review_tracks(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    review_rows: list[dict[str, Any]] = []
+    for rank, row in enumerate(results, start=1):
+        info = row.get("info", {})
+        review_rows.append(
+            {
+                "rank": rank,
+                "path": row.get("path"),
+                "artist": info.get("artist", ""),
+                "title": info.get("title", ""),
+                "bpm": info.get("bpm"),
+                "key": info.get("key"),
+                "ann_distance": row.get("ann_distance"),
+                "score": row.get("score"),
+            }
+        )
+    return review_rows
+
+
 def _metrics_for_results(
     seed_info: dict[str, Any],
     results: list[dict[str, Any]],
@@ -297,6 +316,7 @@ def run_benchmark(
     if not resolved:
         raise ValueError("No benchmark seeds matched tracks in metadata.")
     row_results: dict[str, Any] = {}
+    listening_review: dict[str, list[dict[str, Any]]] = {}
     learned_head = None
     if "H" in rows:
         if load_similarity_head is None:
@@ -318,6 +338,7 @@ def run_benchmark(
             console.print(f"[yellow]Skipping row {row_name}: {row_results[row_name]['reason']}")
             continue
         per_seed_metrics = []
+        per_seed_review: list[dict[str, Any]] = []
         skips: list[str] = []
         for seed_path in resolved:
             results, skip_reason = _run_row_for_seed(
@@ -331,6 +352,7 @@ def run_benchmark(
             if skip_reason:
                 skips.append(f"{seed_path}: {skip_reason}")
                 continue
+            per_seed_review.append({"seed_path": seed_path, "tracks": _review_tracks(results)})
             per_seed_metrics.append(
                 _metrics_for_results(
                     tracks.get(seed_path, {}),
@@ -342,6 +364,7 @@ def run_benchmark(
             row_results[row_name] = {"skipped": True, "reason": "; ".join(skips) or "no usable results"}
             console.print(f"[yellow]Skipping row {row_name}: {row_results[row_name]['reason']}")
             continue
+        listening_review[row_name] = per_seed_review
         if use_section_scores:
             section_pairs_scored = sum(int(metrics.get("transition_pairs_scored") or 0) for metrics in per_seed_metrics)
             if section_pairs_scored <= 0:
@@ -381,7 +404,54 @@ def run_benchmark(
                 }
             )
         row_results[row_name] = averaged
-    return {"seeds": resolved, "rows": row_results, "coverage": embedding_coverage(meta)}
+    return {"seeds": resolved, "rows": row_results, "coverage": embedding_coverage(meta), "listening_review": listening_review}
+
+
+def compute_listening_overlap(listening_review: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    baseline = {
+        item["seed_path"]: [track.get("path") for track in item.get("tracks", [])]
+        for item in listening_review.get("C", [])
+    }
+    overlap: dict[str, Any] = {"_baseline": {"available": bool(baseline), "seed_count": len(baseline)}}
+    if not baseline:
+        overlap["_baseline"]["reason"] = "row C baseline unavailable"
+        return overlap
+    for row_name, seed_items in listening_review.items():
+        if row_name == "C":
+            continue
+        row_overlap: list[dict[str, Any]] = []
+        for item in seed_items:
+            seed_path = item.get("seed_path")
+            current_paths = [track.get("path") for track in item.get("tracks", [])]
+            if seed_path not in baseline:
+                row_overlap.append(
+                    {
+                        "seed_path": seed_path,
+                        "baseline_available": False,
+                        "reason": "row C baseline unavailable for seed",
+                        "overlap_with_C_count": 0,
+                        "top_count": len(current_paths),
+                        "new_vs_C": [],
+                        "dropped_from_C": [],
+                    }
+                )
+                continue
+            baseline_paths = baseline[seed_path]
+            baseline_set = set(baseline_paths)
+            current_set = set(current_paths)
+            shared = [path for path in current_paths if path in baseline_set]
+            row_overlap.append(
+                {
+                    "seed_path": seed_path,
+                    "baseline_available": True,
+                    "overlap_with_C_count": len(shared),
+                    "top_count": len(current_paths),
+                    "new_vs_C": [path for path in current_paths if path not in baseline_set],
+                    "dropped_from_C": [path for path in baseline_paths if path not in current_set],
+                }
+            )
+        overlap[row_name] = row_overlap
+    return overlap
 
 
 def compute_deltas(current: dict[str, Any], prior: dict[str, Any]) -> dict[str, Any]:
@@ -437,6 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layer-mix", action="store_true", help="Enable rows that use layer-mix embeddings.")
     parser.add_argument("--learned-similarity-model", default=None, help="Enable row H with a trained similarity head.")
     parser.add_argument("--learned-similarity-device", default="cuda", help="Device for row H; CUDA is preferred by default.")
+    parser.add_argument("--listening-review-out", default=None, help="Optional JSON path with per-seed ranked tracks for listening review.")
     return parser
 
 
@@ -469,6 +540,12 @@ def main(argv: list[str] | None = None) -> int:
         "rows": result["rows"],
         "deltas_vs_prior": None,
     }
+    listening_payload = {
+        "run_id": payload["run_id"],
+        "seeds": result["seeds"],
+        "rows": result["listening_review"],
+        "overlap_vs_C": compute_listening_overlap(result["listening_review"]),
+    }
     if args.compare:
         prior = json.loads(Path(args.compare).read_text(encoding="utf-8"))
         payload["deltas_vs_prior"] = compute_deltas(payload, prior)
@@ -477,6 +554,11 @@ def main(argv: list[str] | None = None) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     console.print(f"[green]Wrote benchmark JSON -> {out_path}")
+    if args.listening_review_out:
+        review_path = Path(args.listening_review_out)
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        review_path.write_text(json.dumps(listening_payload, indent=2), encoding="utf-8")
+        console.print(f"[green]Wrote listening review JSON -> {review_path}")
     return 0
 
 

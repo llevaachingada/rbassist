@@ -1,0 +1,57 @@
+{
+  "run_id": "2026-04-15T23:53:48.134275+00:00",
+  "seeds": [
+    "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+    "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+    "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3"
+  ],
+  "coverage": {
+    "tracks_total": 13332,
+    "primary_embedding_count": 10008,
+    "section_embedding_complete_count": 10006,
+    "section_embedding_missing_count": 2,
+    "layer_mix_embedding_count": 0,
+    "case_collision_key_count": 3,
+    "case_collision_extra_row_count": 3
+  },
+  "rows": {
+    "C": {
+      "camelot_compat_rate": 1.0,
+      "bpm_compat_rate": 1.0,
+      "tag_overlap_mean": 0.0,
+      "intra_list_diversity": 0.052271032774889904,
+      "transition_score_mean": null,
+      "ann_distance_mean": 0.03145959973335266
+    },
+    "D": {
+      "camelot_compat_rate": 1.0,
+      "bpm_compat_rate": 1.0,
+      "tag_overlap_mean": 0.0,
+      "intra_list_diversity": 0.052271032774889904,
+      "transition_score_mean": 0.5316160589456559,
+      "ann_distance_mean": 0.03145959973335266,
+      "section_scores_requested": true,
+      "section_scores_enabled": true,
+      "seed_section_late_count": 3,
+      "selected_candidate_intro_count": 14,
+      "transition_pairs_scored": 14
+    },
+    "G": {
+      "camelot_compat_rate": 1.0,
+      "bpm_compat_rate": 1.0,
+      "tag_overlap_mean": 0.0,
+      "intra_list_diversity": 0.052271032774889904,
+      "transition_score_mean": null,
+      "ann_distance_mean": 0.03145959973335266
+    },
+    "H": {
+      "camelot_compat_rate": 1.0,
+      "bpm_compat_rate": 1.0,
+      "tag_overlap_mean": 0.0,
+      "intra_list_diversity": 0.052271032774889904,
+      "transition_score_mean": null,
+      "ann_distance_mean": 0.03145959973335266
+    }
+  },
+  "deltas_vs_prior": null
+}

@@ -59,6 +59,8 @@ class BenchmarkEmbeddingTests(unittest.TestCase):
         self.assertEqual(result["coverage"]["primary_embedding_count"], 3)
         self.assertEqual(result["coverage"]["section_embedding_complete_count"], 0)
         self.assertEqual(result["coverage"]["layer_mix_embedding_count"], 0)
+        self.assertIn("C", result["listening_review"])
+        self.assertEqual(result["listening_review"]["C"][0]["tracks"][0]["rank"], 1)
 
     def test_benchmark_output_json_valid_and_compare_deltas(self) -> None:
         current = {
@@ -74,6 +76,66 @@ class BenchmarkEmbeddingTests(unittest.TestCase):
         deltas = bench.compute_deltas(current, prior)
         self.assertAlmostEqual(deltas["A"]["camelot_compat_rate"], 0.25)
         json.dumps({"rows": current["rows"], "deltas_vs_prior": deltas})
+
+    def test_listening_overlap_reports_changes_vs_baseline_row_c(self) -> None:
+        review = {
+            "C": [{"seed_path": "seed", "tracks": [{"path": "a"}, {"path": "b"}]}],
+            "G": [{"seed_path": "seed", "tracks": [{"path": "b"}, {"path": "c"}]}],
+        }
+
+        overlap = bench.compute_listening_overlap(review)
+
+        self.assertTrue(overlap["_baseline"]["available"])
+        self.assertEqual(overlap["G"][0]["overlap_with_C_count"], 1)
+        self.assertTrue(overlap["G"][0]["baseline_available"])
+        self.assertEqual(overlap["G"][0]["new_vs_C"], ["c"])
+        self.assertEqual(overlap["G"][0]["dropped_from_C"], ["a"])
+
+    def test_listening_overlap_marks_missing_baseline(self) -> None:
+        review = {
+            "G": [{"seed_path": "seed", "tracks": [{"path": "b"}, {"path": "c"}]}],
+        }
+
+        overlap = bench.compute_listening_overlap(review)
+
+        self.assertFalse(overlap["_baseline"]["available"])
+        self.assertEqual(overlap["_baseline"]["reason"], "row C baseline unavailable")
+        self.assertNotIn("G", overlap)
+
+    def test_main_writes_listening_review_json(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            meta = self._fixture_meta(base)
+            meta_path = base / "meta.json"
+            out_path = base / "benchmark.json"
+            review_path = base / "review.json"
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+            exit_code = bench.main(
+                [
+                    "--meta",
+                    str(meta_path),
+                    "--seeds",
+                    "seed",
+                    "--rows",
+                    "C",
+                    "--top",
+                    "1",
+                    "--candidate-pool",
+                    "2",
+                    "--out",
+                    str(out_path),
+                    "--listening-review-out",
+                    str(review_path),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(out_path.exists())
+            self.assertTrue(review_path.exists())
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+            self.assertIn("C", review["rows"])
+            self.assertTrue(review["overlap_vs_C"]["_baseline"]["available"])
 
     def test_benchmark_skips_section_rows_without_flag(self) -> None:
         with tempfile.TemporaryDirectory() as td:
