@@ -265,12 +265,15 @@ def load_playlists_for_dataset(
     playlist_refs: Iterable[str] | None = None,
     xml_path: str | pathlib.Path | None = None,
     max_playlists: int | None = None,
+    ignore_load_errors: bool = True,
 ) -> list[SeedPlaylist]:
     source = str(source or "db").lower().strip()
     refs = [str(ref) for ref in (playlist_refs or []) if str(ref).strip()]
     if not refs:
         refs = []
         for item in list_rekordbox_playlists(source=source, xml_path=xml_path):
+            if bool(item.get("is_smart_playlist")):
+                continue
             if source == "db" and item.get("id") is not None:
                 refs.append(f"db:{item['id']}|{item.get('path') or item.get('name') or ''}")
             else:
@@ -287,7 +290,13 @@ def load_playlists_for_dataset(
             playlist_id, _, path_hint = payload.partition("|")
             seed_ref = int(playlist_id)
             playlist_path = path_hint or None
-        playlists.append(load_rekordbox_playlist(seed_ref, source=source, playlist_path=playlist_path, xml_path=xml_path))
+        try:
+            playlists.append(
+                load_rekordbox_playlist(seed_ref, source=source, playlist_path=playlist_path, xml_path=xml_path)
+            )
+        except Exception:
+            if not ignore_load_errors:
+                raise
     return playlists
 
 

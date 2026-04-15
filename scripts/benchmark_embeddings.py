@@ -10,6 +10,11 @@ import numpy as np
 from rich.table import Table
 
 from rbassist.recommend import DIM, load_embedding_safe, load_section_embeddings
+from rbassist.features import harmonic_compatibility_from_features
+try:
+    from rbassist.similarity_head import load_similarity_head
+except Exception:
+    load_similarity_head = None  # type: ignore
 from rbassist.utils import camelot_relation, console, tempo_match
 
 METRIC_KEYS = [
@@ -29,6 +34,8 @@ ROW_DESCRIPTIONS = {
     "D": "C + section scores",
     "E": "C + layer-mix primary",
     "F": "D + layer-mix primary",
+    "G": "C + harmonic scoring",
+    "H": "C + learned similarity",
 }
 
 
@@ -129,7 +136,15 @@ def _candidate_pool(
     return rows[:limit]
 
 
-def _score_candidate(seed_info: dict[str, Any], row: dict[str, Any], *, use_section_scores: bool) -> float:
+def _score_candidate(
+    seed_info: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    seed_vec: np.ndarray | None = None,
+    use_section_scores: bool,
+    use_harmonic_scores: bool = False,
+    learned_head: Any = None,
+) -> float:
     info = row["info"]
     ann_score = 1.0 - float(row["ann_distance"])
     score = 0.50 * ann_score
@@ -147,6 +162,10 @@ def _score_candidate(seed_info: dict[str, Any], row: dict[str, Any], *, use_sect
         cand_intro = load_section_embeddings(info).get("intro")
         if seed_late is not None and cand_intro is not None:
             score += 0.18 * _cosine_01(seed_late, cand_intro)
+    if use_harmonic_scores:
+        score += 0.12 * harmonic_compatibility_from_features(seed_info, info)
+    if learned_head is not None and seed_vec is not None:
+        score += 0.30 * learned_head.score(seed_vec, row["vector"])
     return float(score)
 
 
@@ -168,11 +187,14 @@ def _run_row_for_seed(
     row_name: str,
     top: int,
     candidate_pool: int,
+    learned_head: Any = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     use_layer_mix = row_name in {"E", "F"}
     use_section_scores = row_name in {"D", "F"}
-    use_gates = row_name in {"B", "C", "D", "E", "F"}
-    use_rerank = row_name in {"C", "D", "E", "F"}
+    use_harmonic_scores = row_name == "G"
+    use_learned_scores = row_name == "H"
+    use_gates = row_name in {"B", "C", "D", "E", "F", "G", "H"}
+    use_rerank = row_name in {"C", "D", "E", "F", "G", "H"}
     embedding_key = "embedding_layer_mix" if use_layer_mix else "embedding"
 
     seed_info = tracks.get(seed_path, {})
@@ -197,7 +219,14 @@ def _run_row_for_seed(
                 continue
         if use_rerank:
             candidate = dict(candidate)
-            candidate["score"] = _score_candidate(seed_info, candidate, use_section_scores=use_section_scores)
+            candidate["score"] = _score_candidate(
+                seed_info,
+                candidate,
+                seed_vec=seed_vec,
+                use_section_scores=use_section_scores,
+                use_harmonic_scores=use_harmonic_scores,
+                learned_head=learned_head if use_learned_scores else None,
+            )
         filtered.append(candidate)
     if use_rerank:
         filtered.sort(key=lambda item: (-float(item.get("score", 0.0)), str(item["path"]).lower()))
@@ -260,12 +289,20 @@ def run_benchmark(
     candidate_pool: int,
     allow_section_rows: bool,
     allow_layer_mix_rows: bool,
+    learned_similarity_model: str | None = None,
+    learned_similarity_device: str = "cuda",
 ) -> dict[str, Any]:
     tracks = meta.get("tracks", {})
     resolved = [path for seed in seeds if (path := _resolve_seed(seed, tracks))]
     if not resolved:
         raise ValueError("No benchmark seeds matched tracks in metadata.")
     row_results: dict[str, Any] = {}
+    learned_head = None
+    if "H" in rows:
+        if load_similarity_head is None:
+            console.print("[yellow]Skipping learned similarity row H: similarity head support unavailable")
+        else:
+            learned_head = load_similarity_head(learned_similarity_model or "data/models/similarity_head.pt", device=learned_similarity_device)
     for row_name in rows:
         use_section_scores = row_name in {"D", "F"}
         if row_name in {"D", "F"} and not allow_section_rows:
@@ -276,6 +313,10 @@ def run_benchmark(
             row_results[row_name] = {"skipped": True, "reason": "layer-mix rows require --layer-mix"}
             console.print(f"[yellow]Skipping row {row_name}: layer-mix rows require --layer-mix")
             continue
+        if row_name == "H" and learned_head is None:
+            row_results[row_name] = {"skipped": True, "reason": "learned similarity row requires --learned-similarity-model"}
+            console.print(f"[yellow]Skipping row {row_name}: {row_results[row_name]['reason']}")
+            continue
         per_seed_metrics = []
         skips: list[str] = []
         for seed_path in resolved:
@@ -285,6 +326,7 @@ def run_benchmark(
                 row_name=row_name,
                 top=top,
                 candidate_pool=candidate_pool,
+                learned_head=learned_head,
             )
             if skip_reason:
                 skips.append(f"{seed_path}: {skip_reason}")
@@ -393,6 +435,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rows", default="A,B,C,D,E,F", help="Comma-separated row names.")
     parser.add_argument("--section-embeds", action="store_true", help="Enable rows that use section embeddings.")
     parser.add_argument("--layer-mix", action="store_true", help="Enable rows that use layer-mix embeddings.")
+    parser.add_argument("--learned-similarity-model", default=None, help="Enable row H with a trained similarity head.")
+    parser.add_argument("--learned-similarity-device", default="cuda", help="Device for row H; CUDA is preferred by default.")
     return parser
 
 
@@ -415,6 +459,8 @@ def main(argv: list[str] | None = None) -> int:
         candidate_pool=max(1, int(args.candidate_pool)),
         allow_section_rows=bool(args.section_embeds),
         allow_layer_mix_rows=bool(args.layer_mix),
+        learned_similarity_model=args.learned_similarity_model,
+        learned_similarity_device=args.learned_similarity_device,
     )
     payload = {
         "run_id": datetime.now(timezone.utc).isoformat(),

@@ -10,6 +10,11 @@ except Exception:
     bass_similarity = None  # type: ignore
     rhythm_similarity = None  # type: ignore
     harmonic_compatibility_from_features = None  # type: ignore
+try:
+    from .similarity_head import DEFAULT_SIMILARITY_MODEL, load_similarity_head
+except Exception:
+    DEFAULT_SIMILARITY_MODEL = pathlib.Path("data/models/similarity_head.pt")  # type: ignore
+    load_similarity_head = None  # type: ignore
 
 DIM = 1024
 INDEX_ADD_CHUNK = 2000
@@ -220,6 +225,9 @@ def recommend(
     camelot_neighbors: bool = True,
     weights: Optional[Dict[str, float]] = None,
     use_section_scores: bool = False,
+    learned_similarity: bool = False,
+    similarity_head_path: str | pathlib.Path | None = None,
+    similarity_device: str = "cuda",
 ):
     idxfile = IDX / "hnsw.idx"
     paths_map = json.load(open(IDX / "paths.json", "r", encoding="utf-8"))
@@ -268,7 +276,19 @@ def recommend(
     w_bass = float(weights.get("bass", 0.0))
     w_rhythm = float(weights.get("rhythm", 0.0))
     w_harmony = float(weights.get("harmony", 0.0))
+    w_learned = float(weights.get("learned_sim", 0.0))
     w_transition = float(weights.get("transition", 0.0))
+    learned_head = None
+    if learned_similarity or w_learned:
+        model_path = similarity_head_path or DEFAULT_SIMILARITY_MODEL
+        if load_similarity_head is None:
+            console.print("[yellow]Learned similarity unavailable; falling back to standard ANN scoring.")
+        else:
+            learned_head = load_similarity_head(model_path, device=similarity_device)
+            if learned_head is None:
+                console.print(f"[yellow]Learned similarity model not found at {model_path}; falling back to standard ANN scoring.")
+            else:
+                console.print(f"[cyan]Loaded learned similarity head on {learned_head.device}: {learned_head.path}")
 
     # load seed features for bass and rhythm
     seed_c = np.array(seed_info.get("features", {}).get("bass_contour", {}).get("contour", []), dtype=float)
@@ -291,6 +311,11 @@ def recommend(
         score = 0.0
         # base ANN score: invert distance
         score += w_ann * float(1.0 - float(dist))
+        cand_vec = None
+        if learned_head is not None and w_learned:
+            cand_vec = load_embedding_safe(info.get("embedding"), seed_vec.shape[0])
+            if cand_vec is not None:
+                score += w_learned * learned_head.score(seed_vec, cand_vec)
         # samples score from candidate features
         samp = float(info.get("features", {}).get("samples", 0.0))
         score += w_samples * samp
@@ -314,7 +339,7 @@ def recommend(
         cands.append((path, info, cand_bpm, cand_key, rule_name, dist, score))
 
     # sort: if any weight provided, sort by score desc; else by ANN distance asc
-    if any([w_ann, w_samples, w_bass, w_rhythm, w_harmony, w_transition]):
+    if any([w_ann, w_samples, w_bass, w_rhythm, w_harmony, w_learned, w_transition]):
         cands.sort(key=lambda x: x[6], reverse=True)
     else:
         cands.sort(key=lambda x: x[5])

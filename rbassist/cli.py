@@ -530,6 +530,10 @@ def cmd_recommend(
     w_samples: float = typer.Option(0.0, help="Weight: samples score (0..1)"),
     w_bass: float = typer.Option(0.0, help="Weight: bass contour similarity (0..1)"),
     w_harmony: float = typer.Option(0.0, help="Weight: cached chroma/tonnetz harmonic compatibility (0..1)"),
+    w_learned_sim: float = typer.Option(0.0, "--w-learned-sim", help="Weight: learned playlist-pair similarity head (0..1)"),
+    learned_similarity: bool = typer.Option(False, "--learned-similarity/--no-learned-similarity", help="Use data/models/similarity_head.pt when present."),
+    similarity_head_path: pathlib.Path = typer.Option(pathlib.Path("data/models/similarity_head.pt"), "--similarity-head-path", help="Path to learned similarity model."),
+    similarity_device: str = typer.Option("cuda", "--similarity-device", help="Device for learned similarity inference; CUDA is preferred by default."),
     w_transition: float = typer.Option(0.0, help="Weight: outro-to-intro section transition score (0..1)"),
     section_scores: bool = typer.Option(False, "--section-scores", help="Use section embeddings when present."),
 ):
@@ -544,8 +548,18 @@ def cmd_recommend(
         tempo_pct=tempo_pct,
         allow_doubletime=allow_doubletime,
         camelot_neighbors=camelot_neighbors,
-        weights={"ann": w_ann, "samples": w_samples, "bass": w_bass, "harmony": w_harmony, "transition": w_transition},
+        weights={
+            "ann": w_ann,
+            "samples": w_samples,
+            "bass": w_bass,
+            "harmony": w_harmony,
+            "learned_sim": w_learned_sim,
+            "transition": w_transition,
+        },
         use_section_scores=section_scores,
+        learned_similarity=learned_similarity,
+        similarity_head_path=similarity_head_path,
+        similarity_device=similarity_device,
     )
 
 

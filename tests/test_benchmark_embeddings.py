@@ -135,6 +135,24 @@ class BenchmarkEmbeddingTests(unittest.TestCase):
         self.assertEqual(row["transition_pairs_scored"], 2)
         self.assertIsNotNone(row["transition_score_mean"])
 
+    def test_benchmark_harmonic_and_learned_rows_are_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            meta = self._fixture_meta(pathlib.Path(td))
+
+            result = bench.run_benchmark(
+                meta,
+                ["seed"],
+                rows=["G", "H"],
+                top=2,
+                candidate_pool=2,
+                allow_section_rows=False,
+                allow_layer_mix_rows=False,
+                learned_similarity_model=str(pathlib.Path(td) / "missing.pt"),
+            )
+
+        self.assertFalse(result["rows"]["G"].get("skipped", False))
+        self.assertTrue(result["rows"]["H"]["skipped"])
+
     def test_embedding_coverage_counts_section_and_case_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = pathlib.Path(td)

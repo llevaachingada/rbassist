@@ -109,12 +109,33 @@ class PlaylistPairDatasetTests(unittest.TestCase):
         with mock.patch.object(
             pp,
             "list_rekordbox_playlists",
-            return_value=[{"source": "db", "name": "radio 10/22", "path": "Folder/radio 10/22", "id": 42}],
+            return_value=[
+                {"source": "db", "name": "Smart", "path": "Folder/Smart", "id": 7, "is_smart_playlist": True},
+                {"source": "db", "name": "radio 10/22", "path": "Folder/radio 10/22", "id": 42},
+            ],
         ), mock.patch.object(pp, "load_rekordbox_playlist", return_value=loaded) as load_playlist:
             playlists = pp.load_playlists_for_dataset(source="db")
 
         self.assertEqual(playlists, [loaded])
         load_playlist.assert_called_once_with(42, source="db", playlist_path="Folder/radio 10/22", xml_path=None)
+
+    def test_loader_skips_playlist_load_errors_by_default(self) -> None:
+        loaded = _playlist("Warmup", [_track("a"), _track("b")])
+        with mock.patch.object(
+            pp,
+            "list_rekordbox_playlists",
+            return_value=[
+                {"source": "db", "name": "Broken", "path": "Folder/Broken", "id": 1},
+                {"source": "db", "name": "Warmup", "path": "Folder/Warmup", "id": 2},
+            ],
+        ), mock.patch.object(
+            pp,
+            "load_rekordbox_playlist",
+            side_effect=[RuntimeError("smart playlist load failed"), loaded],
+        ):
+            playlists = pp.load_playlists_for_dataset(source="db")
+
+        self.assertEqual(playlists, [loaded])
 
     def test_export_script_dry_run_does_not_write_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -171,7 +171,20 @@ Build a read-only playlist-pair dataset for future learned-similarity training:
 ```powershell
 python scripts\export_playlist_pairs.py --source db --out data\training\playlist_pairs.jsonl --summary data\training\playlist_pairs_summary.json
 ```
-Use `--dry-run` first to print counts without writing the JSONL dataset. The exporter only writes the requested output files; it does not mutate `data/meta.json`, embeddings, indexes, or Rekordbox.
+Use `--dry-run` first to print counts without writing the JSONL dataset. The exporter only writes the requested output files; it does not mutate `data/meta.json`, embeddings, indexes, or Rekordbox. Smart playlists and individual playlist load failures are skipped by default during discovery so one bad Rekordbox playlist does not stop the export.
+
+Train and test the opt-in learned similarity reranker:
+```powershell
+# CUDA is preferred by default; the trainer falls back to CPU if CUDA is unavailable.
+python scripts\train_similarity_head.py --pairs data\training\playlist_pairs.jsonl --out data\models\similarity_head.pt --device cuda
+
+# Use the trained head only when explicitly requested.
+rbassist recommend "Artist - Title" --learned-similarity --w-learned-sim 0.30 --similarity-device cuda
+
+# Compare baseline, section, harmonic, and learned rows for listening review.
+python scripts\benchmark_embeddings.py --seeds-file config\benchmark_seeds.txt --rows C,D,G,H --section-embeds --learned-similarity-model data\models\similarity_head.pt
+```
+The learned model does not replace the HNSW index or the primary `embedding` field. If the model file is missing, recommendation and benchmark flows fall back cleanly instead of failing.
 
 5) Import Bandcamp tags (update local meta for filtering later)
 ```powershell
