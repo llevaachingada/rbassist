@@ -38,12 +38,16 @@ class AppState:
         'rhythm': 0.1,
         'bpm': 0.05,
         'key': 0.05,
+        'harmony': 0.0,
+        'learned_sim': 0.0,
         'tags': 0.0,
     })
     filters: dict = field(default_factory=lambda: {
         'tempo_pct': 6.0,
         'camelot': True,
         'doubletime': True,
+        'learned_similarity': False,
+        'similarity_device': 'cuda',
         'bpm_max_diff': 0.0,
         'allowed_key_relations': [],
         'require_tags': [],

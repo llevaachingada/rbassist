@@ -19,6 +19,62 @@ class _Widget:
 
 
 class CrateExpanderAsyncTests(IsolatedAsyncioTestCase):
+    def test_build_controls_passes_advanced_matching_switches(self) -> None:
+        page = ce.CrateExpander()
+        page.preset_toggle = _Widget("balanced")
+        page.strategy_toggle = _Widget("blend")
+        page.ann_centroid_slider = _Widget(0.3)
+        page.ann_seed_coverage_slider = _Widget(0.2)
+        page.group_match_slider = _Widget(0.1)
+        page.bpm_match_slider = _Widget(0.1)
+        page.key_match_slider = _Widget(0.2)
+        page.tag_match_slider = _Widget(0.1)
+        page.diversity_slider = _Widget(0.25)
+        page.tempo_slider = _Widget(6.0)
+        page.doubletime_switch = _Widget(True)
+        page.key_mode_toggle = _Widget("soft")
+        page.require_tags_input = _Widget("")
+        page.candidate_pool_input = _Widget(250)
+        page.harmonic_key_switch = _Widget(True)
+        page.section_scores_switch = _Widget(True)
+
+        controls = page._build_controls()
+
+        self.assertTrue(controls.use_harmonic_key_scores)
+        self.assertTrue(controls.use_section_scores)
+
+    def test_workspace_signature_includes_component_score_controls(self) -> None:
+        page = ce.CrateExpander()
+        page.preset_toggle = _Widget("balanced")
+        page.strategy_toggle = _Widget("blend")
+        page.ann_centroid_slider = _Widget(0.3)
+        page.ann_seed_coverage_slider = _Widget(0.2)
+        page.group_match_slider = _Widget(0.1)
+        page.bpm_match_slider = _Widget(0.1)
+        page.key_match_slider = _Widget(0.2)
+        page.tag_match_slider = _Widget(0.1)
+        page.diversity_slider = _Widget(0.25)
+        page.tempo_slider = _Widget(6.0)
+        page.doubletime_switch = _Widget(True)
+        page.key_mode_toggle = _Widget("soft")
+        page.require_tags_input = _Widget("")
+        page.candidate_pool_input = _Widget(250)
+        page.harmonic_key_switch = _Widget(False)
+        page.section_scores_switch = _Widget(False)
+        page.selected_seeds = ["seed"]
+
+        baseline = page._workspace_signature()
+        page.harmonic_key_switch.value = True
+        harmonic = page._workspace_signature()
+        page.section_scores_switch.value = True
+        section = page._workspace_signature()
+        page.tempo_slider.value = 8.0
+        tempo = page._workspace_signature()
+
+        self.assertNotEqual(baseline, harmonic)
+        self.assertNotEqual(harmonic, section)
+        self.assertNotEqual(section, tempo)
+
     async def test_load_selected_rekordbox_playlist_uses_worker_and_updates_state(self) -> None:
         page = ce.CrateExpander()
         page.rekordbox_playlist_select = _Widget("db:7")

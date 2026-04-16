@@ -11,11 +11,12 @@ from ..state import get_state
 
 # Weight presets
 PRESETS = {
-    "Balanced": {"ann": 0.6, "samples": 0.1, "bass": 0.1, "rhythm": 0.1, "bpm": 0.05, "key": 0.05, "tags": 0.0},
-    "Energy": {"ann": 0.45, "samples": 0.35, "bass": 0.1, "rhythm": 0.05, "bpm": 0.05, "key": 0.0, "tags": 0.0},
-    "Groove": {"ann": 0.4, "samples": 0.1, "bass": 0.2, "rhythm": 0.2, "bpm": 0.05, "key": 0.05, "tags": 0.0},
-    "Harmonic": {"ann": 0.4, "samples": 0.05, "bass": 0.15, "rhythm": 0.05, "bpm": 0.15, "key": 0.2, "tags": 0.0},
-    "Pure ANN": {"ann": 1.0, "samples": 0.0, "bass": 0.0, "rhythm": 0.0, "bpm": 0.0, "key": 0.0, "tags": 0.0},
+    "Balanced": {"ann": 0.6, "samples": 0.1, "bass": 0.1, "rhythm": 0.1, "bpm": 0.05, "key": 0.05, "harmony": 0.0, "learned_sim": 0.0, "tags": 0.0},
+    "Energy": {"ann": 0.45, "samples": 0.35, "bass": 0.1, "rhythm": 0.05, "bpm": 0.05, "key": 0.0, "harmony": 0.0, "learned_sim": 0.0, "tags": 0.0},
+    "Groove": {"ann": 0.4, "samples": 0.1, "bass": 0.2, "rhythm": 0.2, "bpm": 0.05, "key": 0.05, "harmony": 0.0, "learned_sim": 0.0, "tags": 0.0},
+    "Harmonic": {"ann": 0.35, "samples": 0.05, "bass": 0.1, "rhythm": 0.05, "bpm": 0.15, "key": 0.15, "harmony": 0.15, "learned_sim": 0.0, "tags": 0.0},
+    "Learned": {"ann": 0.35, "samples": 0.05, "bass": 0.1, "rhythm": 0.05, "bpm": 0.1, "key": 0.05, "harmony": 0.05, "learned_sim": 0.25, "tags": 0.0},
+    "Pure ANN": {"ann": 1.0, "samples": 0.0, "bass": 0.0, "rhythm": 0.0, "bpm": 0.0, "key": 0.0, "harmony": 0.0, "learned_sim": 0.0, "tags": 0.0},
 }
 
 
@@ -63,12 +64,16 @@ class FilterPanel:
                 self.doubletime_check = ui.checkbox(
                     "Treat halftime/doubletime as compatible", value=self.state.filters["doubletime"]
                 ).props("dark color=indigo")
+                self.learned_similarity_check = ui.checkbox(
+                    "Use learned playlist-pair model", value=bool(self.state.filters.get("learned_similarity", False))
+                ).props("dark color=indigo")
             ui.label(
-                "This checkbox removes key-incompatible tracks. The Harmonic fit slider below can still boost compatible keys even when this is off."
+                "The learned model is opt-in and uses CUDA by default when your trained model is available."
             ).classes("text-gray-500 text-xs mb-1")
 
             self.camelot_check.on("update:model-value", self._on_filter_change)
             self.doubletime_check.on("update:model-value", self._on_filter_change)
+            self.learned_similarity_check.on("update:model-value", self._on_filter_change)
 
             ui.separator().classes("my-3")
 
@@ -146,6 +151,28 @@ class FilterPanel:
                     "Raise this when harmonic compatibility matters more for blending."
                 ).classes("text-gray-500 text-xs")
 
+                # Cached harmonic profile weight
+                with ui.row().classes("w-full items-center gap-2"):
+                    ui.label("Profile harmony:").classes("text-gray-400 w-28")
+                    self.harmony_slider = ui.slider(
+                        min=0, max=1, step=0.05, value=self.state.weights.get("harmony", 0.0)
+                    ).props("dark color=indigo").classes("flex-1")
+                    self.harmony_label = ui.label(f"{self.state.weights.get('harmony', 0.0):.2f}").classes("text-gray-300 w-12")
+                ui.label(
+                    "Uses cached chroma/tonnetz profiles when present. Missing profiles quietly score as zero."
+                ).classes("text-gray-500 text-xs")
+
+                # Learned similarity weight
+                with ui.row().classes("w-full items-center gap-2"):
+                    ui.label("Learned fit:").classes("text-gray-400 w-28")
+                    self.learned_slider = ui.slider(
+                        min=0, max=1, step=0.05, value=self.state.weights.get("learned_sim", 0.0)
+                    ).props("dark color=indigo").classes("flex-1")
+                    self.learned_label = ui.label(f"{self.state.weights.get('learned_sim', 0.0):.2f}").classes("text-gray-300 w-12")
+                ui.label(
+                    "Uses the trained playlist-pair model only when the checkbox above is enabled."
+                ).classes("text-gray-500 text-xs")
+
                 # Tags weight
                 with ui.row().classes("w-full items-center gap-2"):
                     ui.label("Tag overlap:").classes("text-gray-400 w-28")
@@ -163,6 +190,8 @@ class FilterPanel:
             self.rhythm_slider.on("update:model-value", self._on_weight_change)
             self.bpm_slider.on("update:model-value", self._on_weight_change)
             self.key_slider.on("update:model-value", self._on_weight_change)
+            self.harmony_slider.on("update:model-value", self._on_weight_change)
+            self.learned_slider.on("update:model-value", self._on_weight_change)
             self.tags_slider.on("update:model-value", self._on_weight_change)
 
             ui.separator().classes("my-3")
@@ -185,6 +214,8 @@ class FilterPanel:
     def _on_filter_change(self, e=None) -> None:
         self.state.filters["camelot"] = self.camelot_check.value
         self.state.filters["doubletime"] = self.doubletime_check.value
+        self.state.filters["learned_similarity"] = self.learned_similarity_check.value
+        self.state.filters["similarity_device"] = "cuda"
         if self.on_change:
             self.on_change()
 
@@ -195,6 +226,8 @@ class FilterPanel:
         self.state.weights["rhythm"] = self.rhythm_slider.value
         self.state.weights["bpm"] = self.bpm_slider.value
         self.state.weights["key"] = self.key_slider.value
+        self.state.weights["harmony"] = self.harmony_slider.value
+        self.state.weights["learned_sim"] = self.learned_slider.value
         self.state.weights["tags"] = self.tags_slider.value
         self.ann_label.text = f"{self.ann_slider.value:.2f}"
         self.samples_label.text = f"{self.samples_slider.value:.2f}"
@@ -202,6 +235,8 @@ class FilterPanel:
         self.rhythm_label.text = f"{self.rhythm_slider.value:.2f}"
         self.bpm_label.text = f"{self.bpm_slider.value:.2f}"
         self.key_label.text = f"{self.key_slider.value:.2f}"
+        self.harmony_label.text = f"{self.harmony_slider.value:.2f}"
+        self.learned_label.text = f"{self.learned_slider.value:.2f}"
         self.tags_label.text = f"{self.tags_slider.value:.2f}"
         self.ann_label.update()
         self.samples_label.update()
@@ -209,6 +244,8 @@ class FilterPanel:
         self.rhythm_label.update()
         self.bpm_label.update()
         self.key_label.update()
+        self.harmony_label.update()
+        self.learned_label.update()
         self.tags_label.update()
         if self.on_change:
             self.on_change()
@@ -224,20 +261,30 @@ class FilterPanel:
         self.rhythm_slider.value = preset.get("rhythm", 0.1)
         self.bpm_slider.value = preset.get("bpm", 0.05)
         self.key_slider.value = preset.get("key", 0.05)
+        self.harmony_slider.value = preset.get("harmony", 0.0)
+        self.learned_slider.value = preset.get("learned_sim", 0.0)
         self.tags_slider.value = preset.get("tags", 0.0)
+        self.learned_similarity_check.value = bool(preset.get("learned_sim", 0.0) > 0.0)
+        self.state.filters["learned_similarity"] = self.learned_similarity_check.value
+        self.state.filters["similarity_device"] = "cuda"
         self.ann_slider.update()
         self.samples_slider.update()
         self.bass_slider.update()
         self.rhythm_slider.update()
         self.bpm_slider.update()
         self.key_slider.update()
+        self.harmony_slider.update()
+        self.learned_slider.update()
         self.tags_slider.update()
+        self.learned_similarity_check.update()
         self.ann_label.text = f"{preset.get('ann', 0.6):.2f}"
         self.samples_label.text = f"{preset.get('samples', 0.1):.2f}"
         self.bass_label.text = f"{preset.get('bass', 0.1):.2f}"
         self.rhythm_label.text = f"{preset.get('rhythm', 0.1):.2f}"
         self.bpm_label.text = f"{preset.get('bpm', 0.05):.2f}"
         self.key_label.text = f"{preset.get('key', 0.05):.2f}"
+        self.harmony_label.text = f"{preset.get('harmony', 0.0):.2f}"
+        self.learned_label.text = f"{preset.get('learned_sim', 0.0):.2f}"
         self.tags_label.text = f"{preset.get('tags', 0.0):.2f}"
         self.ann_label.update()
         self.samples_label.update()
@@ -245,6 +292,8 @@ class FilterPanel:
         self.rhythm_label.update()
         self.bpm_label.update()
         self.key_label.update()
+        self.harmony_label.update()
+        self.learned_label.update()
         self.tags_label.update()
         if self.on_change:
             self.on_change()

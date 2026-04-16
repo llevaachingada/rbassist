@@ -57,8 +57,11 @@ def _plain_component_name(name: str) -> str:
         "group_match": "group fit",
         "bpm_match": "tempo fit",
         "key_match": "harmonic fit",
+        "harmonic_key_score": "profile harmony",
         "tag_match": "tag overlap",
         "anti_repetition": "repeat protection",
+        "transition_outro_to_intro": "section flow",
+        "transition_score": "section flow",
     }
     return mapping.get(str(name), str(name).replace("_", " "))
 
@@ -133,6 +136,8 @@ class CrateExpander:
         self.tempo_pct = float(filters["tempo_pct"])
         self.allow_doubletime = bool(filters["allow_doubletime"])
         self.key_mode = str(filters["key_mode"])
+        self.use_harmonic_key_scores = False
+        self.use_section_scores = False
         self.weight_values = {
             "ann_centroid": float(weights["ann_centroid"]),
             "ann_seed_coverage": float(weights["ann_seed_coverage"]),
@@ -442,6 +447,20 @@ class CrateExpander:
                             "Allow 2x/0.5x lets the BPM envelope treat doubletime and halftime as compatible when tempo matching."
                         ).classes("text-gray-500 text-xs")
 
+                        with ui.row().classes("w-full items-center gap-2"):
+                            ui.label("New signals").classes("text-gray-400 w-24")
+                            self.harmonic_key_switch = ui.switch(
+                                "Profile harmony",
+                                value=self.use_harmonic_key_scores,
+                            ).props("dark")
+                            self.section_scores_switch = ui.switch(
+                                "Section flow",
+                                value=self.use_section_scores,
+                            ).props("dark")
+                        ui.label(
+                            "Profile harmony uses cached chroma/tonnetz when present. Section flow uses late-to-intro sidecars when present."
+                        ).classes("text-gray-500 text-xs")
+
                         self.require_tags_input = ui.input(
                             label="Required tags",
                             placeholder="Comma-separated My Tags, e.g. Warm-up, Opener",
@@ -612,6 +631,8 @@ class CrateExpander:
         self.key_mode_toggle.on("update:model-value", lambda e: self._on_rerank_control_change())
         self.diversity_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
         self.doubletime_switch.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.harmonic_key_switch.on("update:model-value", lambda e: self._on_rerank_control_change())
+        self.section_scores_switch.on("update:model-value", lambda e: self._on_rerank_control_change())
         self.require_tags_input.on("update:model-value", lambda e: self._on_rerank_control_change())
 
         self.ann_centroid_slider.on("update:model-value", lambda e: self._on_rerank_control_change())
@@ -843,6 +864,8 @@ class CrateExpander:
             diversity=float(self.diversity_slider.value or 0.0),
             filters=self._filters_from_widgets(),
             candidate_pool=max(25, int(float(self.candidate_pool_input.value or 250))),
+            use_harmonic_key_scores=bool(self.harmonic_key_switch.value),
+            use_section_scores=bool(self.section_scores_switch.value),
         )
 
     def _workspace_signature(self) -> tuple[Any, ...]:
@@ -851,6 +874,11 @@ class CrateExpander:
             tuple(self.selected_seeds),
             controls.strategy,
             controls.candidate_pool,
+            round(float(controls.filters.tempo_pct), 3),
+            bool(controls.filters.allow_doubletime),
+            str(controls.filters.key_mode),
+            bool(controls.use_harmonic_key_scores),
+            bool(controls.use_section_scores),
         )
 
     def _on_rebuild_control_change(self) -> None:

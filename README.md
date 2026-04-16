@@ -163,7 +163,7 @@ rbassist playlist-expand --playlist "DarkMoon" --target-total 30 --mode balanced
 This is read-only against Rekordbox and `data/meta.json`, and it fails closed if fewer than 3 mapped tracks with embeddings are available.
 Presets now include `tight`, `balanced`, and `adventurous`; advanced overrides include `--strategy blend|centroid|coverage`, `--key-mode off|soft|filter`, and weight flags such as `--w-ann-centroid`, `--w-group-match`, and `--w-tags`.
 Use `--harmonic-key-score` only after harmonic profiles have been cached; it replaces the soft `key_match` component with continuous chroma/tonnetz compatibility where profiles exist and falls back to Camelot when they do not.
-The NiceGUI `Crate Expander` tab now uses the same shared backend with Rekordbox playlist loading, preset toggles, advanced sliders, quick role-tag lane buttons such as `Warm-up` and `Peak-time`, and cached reranking so slider changes reuse the prepared candidate pool instead of rebuilding ANN every time.
+The NiceGUI `Crate Expander` tab now uses the same shared backend with Rekordbox playlist loading, preset toggles, advanced sliders, quick role-tag lane buttons such as `Warm-up` and `Peak-time`, and cached reranking so slider changes reuse the prepared candidate pool instead of rebuilding ANN every time. Its advanced controls can also opt into cached profile harmony and section-flow scoring when those sidecars exist.
 The Crate Expander UI can also save the current expansion as a Rekordbox playlist XML file under `exports/crate_expander/`; this writes a playlist XML only and does not overwrite or mutate your Rekordbox library. After saving, the export folder opens so you can drag the XML into Rekordbox to import the new playlist.
 Added-track selection also applies a small anti-repetition penalty to reduce same-artist / same-version clustering in the appended crate.
 
@@ -185,6 +185,7 @@ rbassist recommend "Artist - Title" --learned-similarity --w-learned-sim 0.30 --
 python scripts\benchmark_embeddings.py --seeds-file config\benchmark_seeds.txt --rows C,D,G,H --section-embeds --learned-similarity-model data\models\similarity_head.pt
 ```
 The learned model does not replace the HNSW index or the primary `embedding` field. If the model file is missing, recommendation and benchmark flows fall back cleanly instead of failing.
+The NiceGUI Discover tab exposes the same idea as opt-in controls: Profile harmony uses cached chroma/tonnetz profiles, and Learned fit uses the trained playlist-pair model only when enabled. CUDA is the default learned-model device.
 
 5) Import Bandcamp tags (update local meta for filtering later)
 ```powershell

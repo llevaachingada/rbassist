@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
@@ -115,6 +116,10 @@ def build_track_detail(
         f"Overall fit {track.get('score', '-')}, audio distance {audio_distance_note(track.get('dist'))}, "
         f"harmonic fit {plain_key_fit(str(track.get('key_rule', '-')))}."
     )
+    if track.get("harmonic_score") not in (None, "", "-"):
+        summary += f" Profile harmony {track.get('harmonic_score')}."
+    if track.get("learned_score") not in (None, "", "-"):
+        summary += f" Learned fit {track.get('learned_score')}."
     if browse_mode:
         summary = "Library browse mode shows track metadata only. Switch back to Recommendations for ranked matches."
     return {
@@ -143,10 +148,17 @@ def build_recommendation_rows(
     from rbassist.utils import camelot_relation, tempo_match
 
     try:
-        from rbassist.features import bass_similarity, rhythm_similarity
+        from rbassist.features import bass_similarity, harmonic_compatibility_from_features, rhythm_similarity
     except Exception:
         bass_similarity = None
+        harmonic_compatibility_from_features = None
         rhythm_similarity = None
+
+    try:
+        from rbassist.similarity_head import DEFAULT_SIMILARITY_MODEL, load_similarity_head
+    except Exception:
+        DEFAULT_SIMILARITY_MODEL = Path("data/models/similarity_head.pt")  # type: ignore
+        load_similarity_head = None  # type: ignore
 
     tracks = meta.get("tracks", {}) if isinstance(meta, Mapping) else {}
     seed_info = tracks.get(seed_path, {})
@@ -184,6 +196,13 @@ def build_recommendation_rows(
     require_tags = set(filters.get("require_tags", []))
     prefer_tags = set(filters.get("prefer_tags", []))
     weight_sum = sum(weights.values()) or 1.0
+    learned_head = None
+    if bool(filters.get("learned_similarity", False)) and float(weights.get("learned_sim", 0.0)):
+        if load_similarity_head is not None:
+            learned_head = load_similarity_head(
+                filters.get("similarity_head_path") or DEFAULT_SIMILARITY_MODEL,
+                device=str(filters.get("similarity_device") or "cuda"),
+            )
 
     results: list[dict[str, Any]] = []
     for label, dist in zip(labels, dists):
@@ -200,6 +219,7 @@ def build_recommendation_rows(
         cand_camelot = str(info.get("camelot") or "")
         cand_features = info.get("features", {})
         cand_tags = set(info.get("tags", []) + info.get("mytags", []))
+        cand_vec: np.ndarray | None = None
 
         if bpm_max_diff > 0 and seed_bpm > 0 and cand_bpm > 0 and abs(seed_bpm - cand_bpm) > bpm_max_diff:
             continue
@@ -251,6 +271,16 @@ def build_recommendation_rows(
             score += weights["bpm"] * tempo_score(seed_bpm, cand_bpm, bpm_max_diff or filters.get("tempo_pct", 6.0))
         if weights.get("key", 0.0):
             score += weights["key"] * key_score
+        harmonic_score = 0.0
+        if weights.get("harmony", 0.0) and harmonic_compatibility_from_features is not None:
+            harmonic_score = float(harmonic_compatibility_from_features(seed_info, info))
+            score += weights["harmony"] * harmonic_score
+        learned_score = 0.0
+        if learned_head is not None and weights.get("learned_sim", 0.0):
+            cand_vec = load_embedding_safe(str(info.get("embedding") or ""), seed_vec.shape[0])
+            if cand_vec is not None:
+                learned_score = float(learned_head.score(seed_vec, cand_vec))
+                score += weights["learned_sim"] * learned_score
         if weights.get("tags", 0.0):
             score += weights["tags"] * tag_similarity_score(seed_tags, cand_tags, prefer_tags)
 
@@ -267,6 +297,8 @@ def build_recommendation_rows(
                 "key": cand_key or "-",
                 "dist": round(float(dist), 3),
                 "key_rule": rel,
+                "harmonic_score": round(float(harmonic_score), 3),
+                "learned_score": round(float(learned_score), 3) if learned_head is not None else "-",
                 "score": round(float(score), 3),
             }
         )

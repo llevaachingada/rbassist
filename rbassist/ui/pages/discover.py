@@ -127,6 +127,8 @@ class DiscoverPage:
                             {"name": "score", "label": "Overall fit", "field": "score", "sortable": True, "align": "right"},
                             {"name": "dist", "label": "Audio distance", "field": "dist", "sortable": True, "align": "right"},
                             {"name": "key_rule", "label": "Harmonic fit", "field": "key_rule", "sortable": False, "align": "left"},
+                            {"name": "harmonic_score", "label": "Profile harmony", "field": "harmonic_score", "sortable": True, "align": "right"},
+                            {"name": "learned_score", "label": "Learned fit", "field": "learned_score", "sortable": True, "align": "right"},
                         ],
                     )
                     self.rec_table.build()
