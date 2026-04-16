@@ -29,11 +29,13 @@ ml = ["transformers>=4.40", "accelerate>=0.28", "datasets>=2.18"]
 audio = ["mutagen>=1.47", "pyloudnorm>=0.1.1", "pydub>=0.25.1"]
 ann = ["hnswlib>=0.8"]
 ui = ["nicegui>=1.4", "pywebview>=4.0"]
+desktop = ["PySide6>=6.8"]
 beatgrid = ["BeatNet>=1.1.1"]
 
 [project.scripts]
 rbassist = "rbassist.cli:app"
 rbassist-ui = "rbassist.ui.app:main"
+rbassist-desktop-preview = "rbassist.desktop.app:main"
 
 [tool.setuptools]
 include-package-data = false

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from nicegui import ui
 
 
@@ -68,6 +70,29 @@ class StatusBar:
             self.embed_count = ui.label("0 embedded")
             self.device_label = ui.label("CPU")
 
+    def bind_runtime(
+        self,
+        *,
+        job_source: Callable[[], Any | None] | None = None,
+        stats_source: Callable[[], dict[str, Any]] | None = None,
+        interval: float = 0.5,
+    ) -> None:
+        """Poll shared runtime state from the UI thread."""
+
+        def _refresh() -> None:
+            if stats_source is not None:
+                stats = stats_source() or {}
+                self.update_stats(
+                    tracks=int(stats.get("tracks", 0) or 0),
+                    embedded=int(stats.get("embedded", 0) or 0),
+                    device=str(stats.get("device", "CPU") or "CPU"),
+                )
+            if job_source is not None:
+                text, busy = describe_job_snapshot(job_source())
+                self.set_status(text, busy=busy)
+
+        ui.timer(interval, _refresh)
+
     def update_stats(self, tracks: int, embedded: int, device: str = "CPU") -> None:
         """Update status bar statistics."""
         self.track_count.text = f"{tracks:,} tracks"
@@ -81,3 +106,31 @@ class StatusBar:
             self.status_dot.classes(remove="text-green-500", add="text-amber-500")
         else:
             self.status_dot.classes(remove="text-amber-500", add="text-green-500")
+
+
+def describe_job_snapshot(snapshot: Any | None) -> tuple[str, bool]:
+    """Convert a shared job snapshot into shell-friendly status text."""
+    if snapshot is None:
+        return "Ready", False
+
+    status = str(getattr(snapshot, "status", "") or "").strip().lower()
+    phase = str(getattr(snapshot, "phase", "") or "").strip()
+    message = str(getattr(snapshot, "message", "") or "").strip()
+
+    if status == "running":
+        if message:
+            return message, True
+        if phase:
+            return f"Running {phase}", True
+        return "Working...", True
+
+    if status == "failed":
+        return message or "Last job failed", False
+
+    if status == "completed":
+        return message or "Last job completed", False
+
+    if message:
+        return message, status == "queued"
+
+    return "Ready", False

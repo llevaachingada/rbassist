@@ -1,55 +1,54 @@
 ## About rbassist
 
-rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fast recommendations, and streamlined Rekordbox workflows without depending on opaque cloud services. The project packages a Typer CLI, Streamlit control panel, and a set of data pipelines that run entirely on a local GPU (tested on RTX 4060-class laptops).
+rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fast recommendations, and streamlined Rekordbox workflows without depending on opaque cloud services. The project packages a Typer CLI, a NiceGUI interface, and local data pipelines that run on the same machine as your music library.
 
 ### What it does
 
 - Builds audio embeddings with `m-a-p/MERT-v1-330M`, caches them as `.npy` vectors, and stores metadata in `data/meta.json`.
-- Indexes those embeddings with HNSWLIB to power lightning-fast similarity lookups in both CLI (`rbassist recommend`) and GUI.
-- Imports Bandcamp CSV tags and Rekordbox My Tag exports, ties them into a unified `config/tags.yml`, and can reapply/suggest tags automatically.
-- Analyzes BPM, Camelot keys, cue suggestions, RMS/sample heuristics, and bass contours so transitions and auto-tags respect musical structure.
-- Provides a Streamlit front-end with folder management, embed/analyze controls, duplicates finder, stem-splitting helpers, and library browser.
-- Ships ready-to-use Typer commands for XML export, playlists, DJ Link listener, My Tag importer, intelligent playlist presets, and high-volume auto-tagging.
+- Indexes those embeddings with HNSWLIB to power fast similarity lookups in both CLI (`rbassist recommend`) and GUI flows.
+- Imports Bandcamp CSV tags and Rekordbox My Tags, ties them into a unified `config/tags.yml`, and can reapply or suggest tags automatically.
+- Analyzes BPM, Camelot keys, cue suggestions, beatgrid segments, RMS/sample heuristics, and bass contours so transitions and auto-tags respect musical structure.
+- Provides a NiceGUI front-end with library browsing, health checks, folder-by-folder ingest, beatgrid preview, and settings for resumable embedding.
+- Ships ready-to-use Typer commands for XML export, playlists, DJ Link listener, My Tag import, duplicate detection, and large-library ingest workflows.
 
 ### Why it matters
 
-1. **Local control** – all audio stays on your machine; nothing is uploaded. This keeps private edits or unreleased promos secure.
-2. **Repeatable pipelines** – every command (`embed`, `analyze`, `index`, `tags-auto`, etc.) can be scripted/batched, so large crates can be refreshed overnight.
-3. **Human-friendly review** – CLI progress bars, Streamlit tables, CSV exports, and meta snapshots give you a paper trail for every automated suggestion.
-4. **Interoperability** – outputs (`rbassist.xml`, config/tags.yml, data/meta.json`) are simple text/JSON files that plug into Rekordbox and other library tools.
+1. **Local control** - all audio stays on your machine; nothing is uploaded.
+2. **Repeatable pipelines** - commands like `embed`, `analyze`, `index`, and `tags-auto` can be scripted or resumed for large crates.
+3. **Human-friendly review** - CLI progress, NiceGUI tables, JSON reports, and meta snapshots provide a paper trail for automated suggestions.
+4. **Interoperability** - outputs such as `rbassist.xml`, `config/tags.yml`, and `data/meta.json` stay simple and portable.
 
-### Architecture snapshot
+### Architecture Snapshot
 
 | Layer | Tech | Notes |
 | --- | --- | --- |
 | Embedding | PyTorch + Transformers | MERT-v1-330M with optional CUDA acceleration. |
-| Index/Search | HNSWLIB | Cosine similarity, ANN queries for top-N recs. |
-| CLI | Typer | Commands under `rbassist` entry-point. |
-| GUI | Streamlit | Runs `rbassist/webapp.py`, mirrors CLI functionality. |
+| Index/Search | HNSWLIB | Cosine similarity ANN queries for top-N recommendations. |
+| CLI | Typer | Commands under the `rbassist` entry point. |
+| GUI | NiceGUI | Launch with `rbassist ui` or `start.ps1`. |
 | Metadata | JSON/YAML | `data/meta.json`, `config/tags.yml`, `data/index`. |
 
-### Typical workflow
+### Typical Workflow
 
-1. `rbassist embed "D:\Music\YourCrate" --duration-s 60 --device cuda --num-workers 4`
+1. `rbassist embed "D:\Music\YourCrate" --device cuda --num-workers 4`
 2. `rbassist analyze "D:\Music\YourCrate" --duration-s 60`
 3. `rbassist index`
-4. `rbassist recommend "Artist - Track" --top 25` or start the NiceGUI UI via `rbassist ui`
+4. `rbassist recommend "Artist - Track" --top 25` or launch `rbassist ui`
+5. `rbassist tags-auto --margin 0.05 --apply`
+6. `rbassist export-xml --out rbassist.xml`
 
-### Embedding defaults (Dec 2025)
-- **Slicing policy:** per track, rbassist spends ~80 seconds of audio budget using three fixed slices: 10s intro, 60s core (40s on medium-length tracks), and 10s late. The intro starts at the first non-silent audio, the core slice is centered on the track midpoint (clamped to stay inside the file), and the late slice sits near the end with 5s of headroom and no overlap with the core.
-- **Edge cases:** tracks shorter than ~80s are embedded as a single full-track window; medium tracks use a 10/40/10 pattern; very long tracks still use the same 80s budget to capture overall “vibe” rather than full coverage.
-- **Layer / pooling policy:** MERT embeddings use the model’s upper layers with mean pooling over each slice, and then mean-pool across the three slices into a single 1024-d vector.
-- **Timbre branch:** an OpenL3 “music” model at 48 kHz with 1.0s frames and 50% overlap produces a timbre embedding for the same windows. Each slice aggregates mean and variance to form a 1024-d timbre vector (mean || variance), and rbassist blends MERT and timbre at fixed weights 70/30 (W_MERT / W_TIMBRE). Component files `_mert.npy` and `_timbre.npy` are saved alongside the combined `embedding.npy`.
-- **Hard defaults:** the core parameters (slice durations, OpenL3 frame/hop, and 512-d timbre size) are treated as canonical; CLI/UI guardrails prevent running with non-default duration or timbre size so that a library’s embeddings remain consistent over time.
-5. `rbassist tags-auto --margin 0.05 --apply` or review in the GUI’s Auto Tag Suggestions table.
-6. `rbassist export-xml --out rbassist.xml` for Rekordbox ingest.
+### Large-Library Notes
 
-### Getting involved
+- Resumable embedding supports `--paths-file`, `--resume`, `--checkpoint-file`, and `--checkpoint-every`.
+- Health tooling lives in `scripts/audit_meta_health.py`, `scripts/list_embedding_gaps.py`, and `scripts/normalize_meta_paths.py`.
+- Path repair now supports collision-safe dry runs before any metadata write-back.
 
-- **Issue tracking** – Use GitHub Issues for bugs, feature requests, or performance reports (include OS, GPU, and command logs).
-- **Pull requests** – Align with the existing Typer/Streamlit patterns, keep features optional, and document new CLI flags in `readme.txt`.
-- **Testing** – Lightweight pytest suite under `tests/`; when touching embedding/analyze/tagstore logic, add fixtures or CLI dry-run scripts.
+### Getting Involved
+
+- **Issue tracking** - Use GitHub Issues for bugs, feature requests, or performance reports and include OS, GPU, and command logs.
+- **Pull requests** - Align with the existing Typer and NiceGUI patterns, keep risky features optional, and document new CLI flags.
+- **Testing** - Lightweight pytest coverage lives under `tests/`; when touching embedding, analysis, or metadata flows, add small fixtures or focused smoke tests.
 
 ### Support
 
-Questions, ideas, or DJ workflow tips? File an issue in the GitHub repo or drop a note in the project discussions tab. The more context you give (dataset size, hardware, desired outcome), the faster we can help tune rbassist to your setup.
+Questions, ideas, or DJ workflow tips? File an issue in the GitHub repo or drop a note in the project discussions tab. The more context you give about your hardware, library size, and desired workflow, the easier it is to tune rbassist for your setup.

@@ -1,70 +1,60 @@
-"""Centralized state management for rbassist UI."""
-
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
+from rbassist.bpm_sources import clear_rekordbox_bpm_cache
+from rbassist.health import audit_meta_health, default_music_roots, suggest_rewrite_pairs
 from rbassist.utils import load_meta, DATA, IDX, ROOT, pick_device
 
-# UI config file
-UI_CONFIG = ROOT / "config" / "ui_settings.json"
+UI_CONFIG = ROOT / 'config' / 'ui_settings.json'
 
 
 def load_ui_config() -> dict:
-    """Load UI settings from config file."""
     if UI_CONFIG.exists():
         try:
-            return json.loads(UI_CONFIG.read_text(encoding="utf-8"))
+            return json.loads(UI_CONFIG.read_text(encoding='utf-8'))
         except Exception:
             return {}
     return {}
 
 
 def save_ui_config(config: dict) -> None:
-    """Save UI settings to config file."""
     UI_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    UI_CONFIG.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    UI_CONFIG.write_text(json.dumps(config, indent=2), encoding='utf-8')
 
 
 @dataclass
 class AppState:
-    """Global application state."""
-
-    # Library metadata
     meta: dict = field(default_factory=dict)
-
-    # Recommendations state
     seed_track: str | None = None
     recommendations: list[dict] = field(default_factory=list)
-
-    # Filter weights
+    health: dict = field(default_factory=dict)
     weights: dict = field(default_factory=lambda: {
-        "ann": 0.6,
-        "samples": 0.1,
-        "bass": 0.1,
-        "rhythm": 0.1,
-        "bpm": 0.05,
-        "key": 0.05,
-        "tags": 0.0,
+        'ann': 0.6,
+        'samples': 0.1,
+        'bass': 0.1,
+        'rhythm': 0.1,
+        'bpm': 0.05,
+        'key': 0.05,
+        'harmony': 0.0,
+        'learned_sim': 0.0,
+        'tags': 0.0,
     })
-
-    # Filter settings
     filters: dict = field(default_factory=lambda: {
-        "tempo_pct": 6.0,
-        "camelot": True,
-        "doubletime": True,
-        "bpm_max_diff": 0.0,  # 0 = disabled, otherwise hard limit in BPM
-        "allowed_key_relations": [],  # empty = all allowed, or ["same", "relative", "neighbor"]
-        "require_tags": [],  # must have all these tags
-        "prefer_tags": [],  # soft preference for these tags
+        'tempo_pct': 6.0,
+        'camelot': True,
+        'doubletime': True,
+        'learned_similarity': False,
+        'similarity_device': 'cuda',
+        'bpm_max_diff': 0.0,
+        'allowed_key_relations': [],
+        'require_tags': [],
+        'prefer_tags': [],
     })
-
-    # Workspace settings
     music_folders: list[str] = field(default_factory=list)
-    device: str = pick_device("cuda")
+    device: str = pick_device('cuda')
     duration_s: int = 90
     workers: int = 12
     batch_size: int = 4
@@ -72,109 +62,123 @@ class AppState:
     skip_analyzed: bool = True
     use_timbre: bool = True
     embed_overwrite: bool = True
+    embed_resume: bool = False
+    embed_checkpoint_file: str = ''
+    embed_checkpoint_every: int = 100
+    embed_paths_file: str = ''
     beatgrid_enable: bool = False
     beatgrid_overwrite: bool = False
 
     @property
     def music_folder(self) -> str:
-        """Backward-compatible single-folder accessor."""
-        return self.music_folders[0] if self.music_folders else ""
+        return self.music_folders[0] if self.music_folders else ''
 
     @music_folder.setter
     def music_folder(self, value: str) -> None:
-        """Set a single music folder (clears existing list)."""
         if value:
             self.music_folders = [str(Path(value))]
         else:
             self.music_folders = []
 
+    def current_music_roots(self) -> list[str]:
+        roots = [str(Path(path)) for path in self.music_folders if str(path).strip()]
+        return roots or default_music_roots()
+
     def refresh_meta(self) -> None:
-        """Reload metadata from disk."""
+        clear_rekordbox_bpm_cache()
         self.meta = load_meta()
 
+    def refresh_health(self) -> None:
+        roots = self.current_music_roots()
+        report = audit_meta_health(repo=ROOT, meta=self.meta, roots=roots)
+        suggestions = suggest_rewrite_pairs(report, roots)
+        if suggestions:
+            report['suggested_rewrite_pairs'] = [
+                {'from': old, 'to': new}
+                for old, new in suggestions
+            ]
+        self.health = report
+
     def get_track_count(self) -> int:
-        """Total tracks in library."""
-        return len(self.meta.get("tracks", {}))
+        return len(self.meta.get('tracks', {}))
 
     def get_embedded_count(self) -> int:
-        """Tracks with embeddings."""
-        tracks = self.meta.get("tracks", {})
-        return sum(1 for t in tracks.values() if t.get("embedding"))
+        tracks = self.meta.get('tracks', {})
+        return sum(1 for t in tracks.values() if t.get('embedding'))
 
     def get_analyzed_count(self) -> int:
-        """Tracks with BPM/key analysis."""
-        tracks = self.meta.get("tracks", {})
-        return sum(1 for t in tracks.values() if t.get("bpm") and t.get("key"))
+        tracks = self.meta.get('tracks', {})
+        return sum(1 for t in tracks.values() if t.get('bpm') and t.get('key'))
 
     def get_indexed_paths(self) -> list[str]:
-        """Return list of indexed track paths."""
-        paths_file = IDX / "paths.json"
+        paths_file = IDX / 'paths.json'
         if paths_file.exists():
-            return json.loads(paths_file.read_text(encoding="utf-8"))
+            return json.loads(paths_file.read_text(encoding='utf-8'))
         return []
 
     def has_index(self) -> bool:
-        """Check if HNSW index exists."""
-        return (IDX / "hnsw.idx").exists()
+        return (IDX / 'hnsw.idx').exists()
 
     def load_settings(self) -> None:
-        """Load settings from config file."""
         config = load_ui_config()
         if config:
-            folders = config.get("music_folders")
-            # Backward compatibility: accept single string key
+            folders = config.get('music_folders')
             if folders is None:
-                legacy = config.get("music_folder", "")
+                legacy = config.get('music_folder', '')
                 folders = [legacy] if legacy else []
-            # Normalize to list[str]
             if isinstance(folders, str):
                 folders = [folders] if folders else []
             self.music_folders = [str(Path(p)) for p in folders if p]
-            self.device = config.get("device", self.device or pick_device("cuda"))
-            self.duration_s = config.get("duration_s", self.duration_s)
-            self.workers = config.get("workers", self.workers)
-            self.batch_size = config.get("batch_size", self.batch_size)
-            self.auto_cues = config.get("auto_cues", self.auto_cues)
-            self.skip_analyzed = config.get("skip_analyzed", self.skip_analyzed)
-            self.use_timbre = config.get("use_timbre", self.use_timbre)
-            self.embed_overwrite = config.get("embed_overwrite", self.embed_overwrite)
-            self.beatgrid_enable = config.get("beatgrid_enable", self.beatgrid_enable)
-            self.beatgrid_overwrite = config.get("beatgrid_overwrite", self.beatgrid_overwrite)
-
-            # Load filter presets
-            if "weights" in config:
-                self.weights.update(config["weights"])
-            if "filters" in config:
-                self.filters.update(config["filters"])
+            self.device = config.get('device', self.device or pick_device('cuda'))
+            self.duration_s = config.get('duration_s', self.duration_s)
+            self.workers = config.get('workers', self.workers)
+            self.batch_size = config.get('batch_size', self.batch_size)
+            self.auto_cues = config.get('auto_cues', self.auto_cues)
+            self.skip_analyzed = config.get('skip_analyzed', self.skip_analyzed)
+            self.use_timbre = config.get('use_timbre', self.use_timbre)
+            self.embed_overwrite = config.get('embed_overwrite', self.embed_overwrite)
+            self.embed_resume = bool(config.get('embed_resume', self.embed_resume))
+            self.embed_checkpoint_file = str(config.get('embed_checkpoint_file', self.embed_checkpoint_file or ''))
+            try:
+                self.embed_checkpoint_every = max(1, int(config.get('embed_checkpoint_every', self.embed_checkpoint_every)))
+            except Exception:
+                self.embed_checkpoint_every = max(1, int(self.embed_checkpoint_every or 100))
+            self.embed_paths_file = str(config.get('embed_paths_file', self.embed_paths_file or ''))
+            self.beatgrid_enable = config.get('beatgrid_enable', self.beatgrid_enable)
+            self.beatgrid_overwrite = config.get('beatgrid_overwrite', self.beatgrid_overwrite)
+            if 'weights' in config:
+                self.weights.update(config['weights'])
+            if 'filters' in config:
+                self.filters.update(config['filters'])
 
     def save_settings(self) -> None:
-        """Save settings to config file."""
         config = {
-            "music_folders": self.music_folders,
-            # legacy key retained for compatibility with older configs
-            "music_folder": self.music_folders[0] if self.music_folders else "",
-            "device": self.device,
-            "duration_s": self.duration_s,
-            "workers": self.workers,
-            "batch_size": self.batch_size,
-            "auto_cues": self.auto_cues,
-            "skip_analyzed": self.skip_analyzed,
-            "use_timbre": self.use_timbre,
-            "embed_overwrite": self.embed_overwrite,
-            "beatgrid_enable": self.beatgrid_enable,
-            "beatgrid_overwrite": self.beatgrid_overwrite,
-            "weights": self.weights,
-            "filters": self.filters,
+            'music_folders': self.music_folders,
+            'music_folder': self.music_folders[0] if self.music_folders else '',
+            'device': self.device,
+            'duration_s': self.duration_s,
+            'workers': self.workers,
+            'batch_size': self.batch_size,
+            'auto_cues': self.auto_cues,
+            'skip_analyzed': self.skip_analyzed,
+            'use_timbre': self.use_timbre,
+            'embed_overwrite': self.embed_overwrite,
+            'embed_resume': self.embed_resume,
+            'embed_checkpoint_file': self.embed_checkpoint_file,
+            'embed_checkpoint_every': self.embed_checkpoint_every,
+            'embed_paths_file': self.embed_paths_file,
+            'beatgrid_enable': self.beatgrid_enable,
+            'beatgrid_overwrite': self.beatgrid_overwrite,
+            'weights': self.weights,
+            'filters': self.filters,
         }
         save_ui_config(config)
 
 
-# Global singleton state
 state = AppState()
 state.refresh_meta()
 state.load_settings()
 
 
 def get_state() -> AppState:
-    """Get the global app state."""
     return state

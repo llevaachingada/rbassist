@@ -1,0 +1,722 @@
+{
+  "run_id": "2026-04-15T23:53:48.134275+00:00",
+  "seeds": [
+    "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+    "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+    "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3"
+  ],
+  "rows": {
+    "C": [
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+            "artist": "",
+            "title": "CONGA (TOOL)",
+            "bpm": 126.05,
+            "key": "11A",
+            "ann_distance": -1.1920928955078125e-07,
+            "score": 0.8000000596046448
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2023 February DLs\\T2 - Heartbroken (Danny T VIP).mp3",
+            "artist": "T2",
+            "title": "Heartbroken (Danny T VIP)",
+            "bpm": 130.81,
+            "key": "10A",
+            "ann_distance": 0.03352677822113037,
+            "score": 0.7832366108894349
+          },
+          {
+            "rank": 3,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\131. Keys N Krates - What Girls Do.mp3",
+            "artist": "131. Keys N Krates",
+            "title": "What Girls Do",
+            "bpm": 123.05,
+            "key": "11A",
+            "ann_distance": 0.035919189453125,
+            "score": 0.7820404052734375
+          },
+          {
+            "rank": 4,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\jan 2021 DL\\702 - You Don't Know (Album Version).mp3",
+            "artist": "702",
+            "title": "You Don't Know (Album Version)",
+            "bpm": 132.51,
+            "key": "10A",
+            "ann_distance": 0.04208463430404663,
+            "score": 0.7789576828479767
+          },
+          {
+            "rank": 5,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\Soulseek Downloads\\Rebel Mc Introducing Little T - Rich Ah Getting Richer (Cds) (1992) [FLAC] {Bite Records, 146 146-3}\\04 - Rich Ah Getting Richer (Soldier Mix).flac",
+            "artist": "04",
+            "title": "Rich Ah Getting Richer (Soldier Mix)",
+            "bpm": 129.2,
+            "key": "1A",
+            "ann_distance": 0.04222506284713745,
+            "score": 0.7788874685764313
+          },
+          {
+            "rank": 6,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2023 February DLs\\Dave Nunes - Poison (Dave Nunes x Chamos UKG edit).mp3",
+            "artist": "Dave Nunes",
+            "title": "Poison (Dave Nunes x Chamos UKG edit)",
+            "bpm": 129.2,
+            "key": "11A",
+            "ann_distance": 0.04324454069137573,
+            "score": 0.7783777296543122
+          },
+          {
+            "rank": 7,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\A K U - SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM.mp3",
+            "artist": "A K U",
+            "title": "SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM",
+            "bpm": 126.05,
+            "key": "12A",
+            "ann_distance": 0.04427456855773926,
+            "score": 0.7778627157211304
+          },
+          {
+            "rank": 8,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\A K U - SOUK EDITS - VOL 1\\A K U - SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM.mp3",
+            "artist": "A K U",
+            "title": "SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM",
+            "bpm": 126.05,
+            "key": "12A",
+            "ann_distance": 0.04427456855773926,
+            "score": 0.7778627157211304
+          },
+          {
+            "rank": 9,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\June 2024\\Lorkestra - QUANDO O DJ TOCA (Lorkestra -Balanc\u0327ou- Flip).aiff",
+            "artist": "Lorkestra",
+            "title": "QUANDO O DJ TOCA (Lorkestra -Balanc\u0327ou- Flip)",
+            "bpm": 129.2,
+            "key": "6A",
+            "ann_distance": 0.045880019664764404,
+            "score": 0.7770599901676178
+          },
+          {
+            "rank": 10,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\radio april\\Crazy P - Echo my-free-mp3s.com .mp3",
+            "artist": "Crazy P",
+            "title": "Echo my-free-mp3s.com ",
+            "bpm": 120.19,
+            "key": "6A",
+            "ann_distance": 0.04625648260116577,
+            "score": 0.7768717586994172
+          }
+        ]
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+            "artist": "",
+            "title": "END OF TIME X BLACK OR WHITE (TOOL)",
+            "bpm": 117.45,
+            "key": "12A",
+            "ann_distance": -1.1920928955078125e-07,
+            "score": 0.8000000596046448
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\spring house 2020\\Scruscru - Cockatoo On Pomegrante.mp3",
+            "artist": "Scruscru",
+            "title": "Cockatoo On Pomegrante",
+            "bpm": 123.05,
+            "key": "1A",
+            "ann_distance": 0.06199997663497925,
+            "score": 0.7690000116825104
+          }
+        ]
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+            "artist": "",
+            "title": "GET BUSY x UH (TOOL)",
+            "bpm": 103.36,
+            "key": "4A",
+            "ann_distance": 0.0,
+            "score": 0.8
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\97 - Young Miko, Bad Gyal Ft. Lorna - Papi Chulo Parte 2 - Transition 115.mp3",
+            "artist": "97",
+            "title": "Young Miko, Bad Gyal Ft. Lorna - Papi Chulo Parte 2 - Transition 115",
+            "bpm": 97.51,
+            "key": "4A",
+            "ann_distance": 0.051220595836639404,
+            "score": 0.7743897020816803
+          }
+        ]
+      }
+    ],
+    "D": [
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\June 2024\\Lorkestra - QUANDO O DJ TOCA (Lorkestra -Balanc\u0327ou- Flip).aiff",
+            "artist": "Lorkestra",
+            "title": "QUANDO O DJ TOCA (Lorkestra -Balanc\u0327ou- Flip)",
+            "bpm": 129.2,
+            "key": "6A",
+            "ann_distance": 0.045880019664764404,
+            "score": 0.8975971972942353
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2023 February DLs\\T2 - Heartbroken (Danny T VIP).mp3",
+            "artist": "T2",
+            "title": "Heartbroken (Danny T VIP)",
+            "bpm": 130.81,
+            "key": "10A",
+            "ann_distance": 0.03352677822113037,
+            "score": 0.8913906598091126
+          },
+          {
+            "rank": 3,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\131. Keys N Krates - What Girls Do.mp3",
+            "artist": "131. Keys N Krates",
+            "title": "What Girls Do",
+            "bpm": 123.05,
+            "key": "11A",
+            "ann_distance": 0.035919189453125,
+            "score": 0.8885333621501923
+          },
+          {
+            "rank": 4,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\Soulseek Downloads\\Rebel Mc Introducing Little T - Rich Ah Getting Richer (Cds) (1992) [FLAC] {Bite Records, 146 146-3}\\04 - Rich Ah Getting Richer (Soldier Mix).flac",
+            "artist": "04",
+            "title": "Rich Ah Getting Richer (Soldier Mix)",
+            "bpm": 129.2,
+            "key": "1A",
+            "ann_distance": 0.04222506284713745,
+            "score": 0.88492906332016
+          },
+          {
+            "rank": 5,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+            "artist": "",
+            "title": "CONGA (TOOL)",
+            "bpm": 126.05,
+            "key": "11A",
+            "ann_distance": -1.1920928955078125e-07,
+            "score": 0.8848172163963318
+          },
+          {
+            "rank": 6,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\A K U - SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM.mp3",
+            "artist": "A K U",
+            "title": "SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM",
+            "bpm": 126.05,
+            "key": "12A",
+            "ann_distance": 0.04427456855773926,
+            "score": 0.8843974614143372
+          },
+          {
+            "rank": 7,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\A K U - SOUK EDITS - VOL 1\\A K U - SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM.mp3",
+            "artist": "A K U",
+            "title": "SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM",
+            "bpm": 126.05,
+            "key": "12A",
+            "ann_distance": 0.04427456855773926,
+            "score": 0.8843974614143372
+          },
+          {
+            "rank": 8,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\jan 2021 DL\\702 - You Don't Know (Album Version).mp3",
+            "artist": "702",
+            "title": "You Don't Know (Album Version)",
+            "bpm": 132.51,
+            "key": "10A",
+            "ann_distance": 0.04208463430404663,
+            "score": 0.8644534599781036
+          },
+          {
+            "rank": 9,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2023 February DLs\\Dave Nunes - Poison (Dave Nunes x Chamos UKG edit).mp3",
+            "artist": "Dave Nunes",
+            "title": "Poison (Dave Nunes x Chamos UKG edit)",
+            "bpm": 129.2,
+            "key": "11A",
+            "ann_distance": 0.04324454069137573,
+            "score": 0.8614405232667923
+          },
+          {
+            "rank": 10,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\radio april\\Crazy P - Echo my-free-mp3s.com .mp3",
+            "artist": "Crazy P",
+            "title": "Echo my-free-mp3s.com ",
+            "bpm": 120.19,
+            "key": "6A",
+            "ann_distance": 0.04625648260116577,
+            "score": 0.8596089160442353
+          }
+        ]
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+            "artist": "",
+            "title": "END OF TIME X BLACK OR WHITE (TOOL)",
+            "bpm": 117.45,
+            "key": "12A",
+            "ann_distance": -1.1920928955078125e-07,
+            "score": 0.8898762273788452
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\spring house 2020\\Scruscru - Cockatoo On Pomegrante.mp3",
+            "artist": "Scruscru",
+            "title": "Cockatoo On Pomegrante",
+            "bpm": 123.05,
+            "key": "1A",
+            "ann_distance": 0.06199997663497925,
+            "score": 0.8735319304466248
+          }
+        ]
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+            "artist": "",
+            "title": "GET BUSY x UH (TOOL)",
+            "bpm": 103.36,
+            "key": "4A",
+            "ann_distance": 0.0,
+            "score": 0.8783556509017945
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\97 - Young Miko, Bad Gyal Ft. Lorna - Papi Chulo Parte 2 - Transition 115.mp3",
+            "artist": "97",
+            "title": "Young Miko, Bad Gyal Ft. Lorna - Papi Chulo Parte 2 - Transition 115",
+            "bpm": 97.51,
+            "key": "4A",
+            "ann_distance": 0.051220595836639404,
+            "score": 0.8776896715164185
+          }
+        ]
+      }
+    ],
+    "G": [
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\A K U - SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM.mp3",
+            "artist": "A K U",
+            "title": "SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM",
+            "bpm": 126.05,
+            "key": "12A",
+            "ann_distance": 0.04427456855773926,
+            "score": 0.8462943699359894
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\A K U - SOUK EDITS - VOL 1\\A K U - SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM.mp3",
+            "artist": "A K U",
+            "title": "SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM",
+            "bpm": 126.05,
+            "key": "12A",
+            "ann_distance": 0.04427456855773926,
+            "score": 0.8462943699359894
+          },
+          {
+            "rank": 3,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+            "artist": "",
+            "title": "CONGA (TOOL)",
+            "bpm": 126.05,
+            "key": "11A",
+            "ann_distance": -1.1920928955078125e-07,
+            "score": 0.8000000596046448
+          },
+          {
+            "rank": 4,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2023 February DLs\\T2 - Heartbroken (Danny T VIP).mp3",
+            "artist": "T2",
+            "title": "Heartbroken (Danny T VIP)",
+            "bpm": 130.81,
+            "key": "10A",
+            "ann_distance": 0.03352677822113037,
+            "score": 0.7832366108894349
+          },
+          {
+            "rank": 5,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\131. Keys N Krates - What Girls Do.mp3",
+            "artist": "131. Keys N Krates",
+            "title": "What Girls Do",
+            "bpm": 123.05,
+            "key": "11A",
+            "ann_distance": 0.035919189453125,
+            "score": 0.7820404052734375
+          },
+          {
+            "rank": 6,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\jan 2021 DL\\702 - You Don't Know (Album Version).mp3",
+            "artist": "702",
+            "title": "You Don't Know (Album Version)",
+            "bpm": 132.51,
+            "key": "10A",
+            "ann_distance": 0.04208463430404663,
+            "score": 0.7789576828479767
+          },
+          {
+            "rank": 7,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\Soulseek Downloads\\Rebel Mc Introducing Little T - Rich Ah Getting Richer (Cds) (1992) [FLAC] {Bite Records, 146 146-3}\\04 - Rich Ah Getting Richer (Soldier Mix).flac",
+            "artist": "04",
+            "title": "Rich Ah Getting Richer (Soldier Mix)",
+            "bpm": 129.2,
+            "key": "1A",
+            "ann_distance": 0.04222506284713745,
+            "score": 0.7788874685764313
+          },
+          {
+            "rank": 8,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2023 February DLs\\Dave Nunes - Poison (Dave Nunes x Chamos UKG edit).mp3",
+            "artist": "Dave Nunes",
+            "title": "Poison (Dave Nunes x Chamos UKG edit)",
+            "bpm": 129.2,
+            "key": "11A",
+            "ann_distance": 0.04324454069137573,
+            "score": 0.7783777296543122
+          },
+          {
+            "rank": 9,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\June 2024\\Lorkestra - QUANDO O DJ TOCA (Lorkestra -Balanc\u0327ou- Flip).aiff",
+            "artist": "Lorkestra",
+            "title": "QUANDO O DJ TOCA (Lorkestra -Balanc\u0327ou- Flip)",
+            "bpm": 129.2,
+            "key": "6A",
+            "ann_distance": 0.045880019664764404,
+            "score": 0.7770599901676178
+          },
+          {
+            "rank": 10,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\radio april\\Crazy P - Echo my-free-mp3s.com .mp3",
+            "artist": "Crazy P",
+            "title": "Echo my-free-mp3s.com ",
+            "bpm": 120.19,
+            "key": "6A",
+            "ann_distance": 0.04625648260116577,
+            "score": 0.7768717586994172
+          }
+        ]
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+            "artist": "",
+            "title": "END OF TIME X BLACK OR WHITE (TOOL)",
+            "bpm": 117.45,
+            "key": "12A",
+            "ann_distance": -1.1920928955078125e-07,
+            "score": 0.8000000596046448
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\spring house 2020\\Scruscru - Cockatoo On Pomegrante.mp3",
+            "artist": "Scruscru",
+            "title": "Cockatoo On Pomegrante",
+            "bpm": 123.05,
+            "key": "1A",
+            "ann_distance": 0.06199997663497925,
+            "score": 0.7690000116825104
+          }
+        ]
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\97 - Young Miko, Bad Gyal Ft. Lorna - Papi Chulo Parte 2 - Transition 115.mp3",
+            "artist": "97",
+            "title": "Young Miko, Bad Gyal Ft. Lorna - Papi Chulo Parte 2 - Transition 115",
+            "bpm": 97.51,
+            "key": "4A",
+            "ann_distance": 0.051220595836639404,
+            "score": 0.8725338671207429
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+            "artist": "",
+            "title": "GET BUSY x UH (TOOL)",
+            "bpm": 103.36,
+            "key": "4A",
+            "ann_distance": 0.0,
+            "score": 0.8
+          }
+        ]
+      }
+    ],
+    "H": [
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+            "artist": "",
+            "title": "CONGA (TOOL)",
+            "bpm": 126.05,
+            "key": "11A",
+            "ann_distance": -1.1920928955078125e-07,
+            "score": 1.0341781854629517
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\June 2024\\Lorkestra - QUANDO O DJ TOCA (Lorkestra -Balanc\u0327ou- Flip).aiff",
+            "artist": "Lorkestra",
+            "title": "QUANDO O DJ TOCA (Lorkestra -Balanc\u0327ou- Flip)",
+            "bpm": 129.2,
+            "key": "6A",
+            "ann_distance": 0.045880019664764404,
+            "score": 1.0158268928527832
+          },
+          {
+            "rank": 3,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\131. Keys N Krates - What Girls Do.mp3",
+            "artist": "131. Keys N Krates",
+            "title": "What Girls Do",
+            "bpm": 123.05,
+            "key": "11A",
+            "ann_distance": 0.035919189453125,
+            "score": 1.0108249843120576
+          },
+          {
+            "rank": 4,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\A K U - SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM.mp3",
+            "artist": "A K U",
+            "title": "SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM",
+            "bpm": 126.05,
+            "key": "12A",
+            "ann_distance": 0.04427456855773926,
+            "score": 1.0078172564506531
+          },
+          {
+            "rank": 5,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\A K U - SOUK EDITS - VOL 1\\A K U - SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM.mp3",
+            "artist": "A K U",
+            "title": "SOUK EDITS - VOL 1 - 03 EL KALAM RIDDIM",
+            "bpm": 126.05,
+            "key": "12A",
+            "ann_distance": 0.04427456855773926,
+            "score": 1.0078172564506531
+          },
+          {
+            "rank": 6,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2023 February DLs\\T2 - Heartbroken (Danny T VIP).mp3",
+            "artist": "T2",
+            "title": "Heartbroken (Danny T VIP)",
+            "bpm": 130.81,
+            "key": "10A",
+            "ann_distance": 0.03352677822113037,
+            "score": 1.0065844237804413
+          },
+          {
+            "rank": 7,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2023 February DLs\\Dave Nunes - Poison (Dave Nunes x Chamos UKG edit).mp3",
+            "artist": "Dave Nunes",
+            "title": "Poison (Dave Nunes x Chamos UKG edit)",
+            "bpm": 129.2,
+            "key": "11A",
+            "ann_distance": 0.04324454069137573,
+            "score": 1.002772480249405
+          },
+          {
+            "rank": 8,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\jan 2021 DL\\702 - You Don't Know (Album Version).mp3",
+            "artist": "702",
+            "title": "You Don't Know (Album Version)",
+            "bpm": 132.51,
+            "key": "10A",
+            "ann_distance": 0.04208463430404663,
+            "score": 1.001997882127762
+          },
+          {
+            "rank": 9,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\Soulseek Downloads\\Rebel Mc Introducing Little T - Rich Ah Getting Richer (Cds) (1992) [FLAC] {Bite Records, 146 146-3}\\04 - Rich Ah Getting Richer (Soldier Mix).flac",
+            "artist": "04",
+            "title": "Rich Ah Getting Richer (Soldier Mix)",
+            "bpm": 129.2,
+            "key": "1A",
+            "ann_distance": 0.04222506284713745,
+            "score": 0.9987346589565278
+          },
+          {
+            "rank": 10,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\radio april\\Crazy P - Echo my-free-mp3s.com .mp3",
+            "artist": "Crazy P",
+            "title": "Echo my-free-mp3s.com ",
+            "bpm": 120.19,
+            "key": "6A",
+            "ann_distance": 0.04625648260116577,
+            "score": 0.9983558833599091
+          }
+        ]
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+            "artist": "",
+            "title": "END OF TIME X BLACK OR WHITE (TOOL)",
+            "bpm": 117.45,
+            "key": "12A",
+            "ann_distance": -1.1920928955078125e-07,
+            "score": 1.0351163148880005
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\HOUSE  TECH\\spring house 2020\\Scruscru - Cockatoo On Pomegrante.mp3",
+            "artist": "Scruscru",
+            "title": "Cockatoo On Pomegrante",
+            "bpm": 123.05,
+            "key": "1A",
+            "ann_distance": 0.06199997663497925,
+            "score": 0.9865434885025025
+          }
+        ]
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+        "tracks": [
+          {
+            "rank": 1,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2025 NYE\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+            "artist": "",
+            "title": "GET BUSY x UH (TOOL)",
+            "bpm": 103.36,
+            "key": "4A",
+            "ann_distance": 0.0,
+            "score": 1.0391107082366944
+          },
+          {
+            "rank": 2,
+            "path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\97 - Young Miko, Bad Gyal Ft. Lorna - Papi Chulo Parte 2 - Transition 115.mp3",
+            "artist": "97",
+            "title": "Young Miko, Bad Gyal Ft. Lorna - Papi Chulo Parte 2 - Transition 115",
+            "bpm": 97.51,
+            "key": "4A",
+            "ann_distance": 0.051220595836639404,
+            "score": 0.9912338376045228
+          }
+        ]
+      }
+    ]
+  },
+  "overlap_vs_C": {
+    "_baseline": {
+      "available": true,
+      "seed_count": 3
+    },
+    "D": [
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 10,
+        "top_count": 10,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 2,
+        "top_count": 2,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 2,
+        "top_count": 2,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      }
+    ],
+    "G": [
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 10,
+        "top_count": 10,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 2,
+        "top_count": 2,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 2,
+        "top_count": 2,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      }
+    ],
+    "H": [
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\CONGA (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 10,
+        "top_count": 10,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\END OF TIME X BLACK OR WHITE (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 2,
+        "top_count": 2,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      },
+      {
+        "seed_path": "C:\\Users\\hunte\\Music\\BREAKS\\2024 july august\\#1 SOME SDJ TOOLS\\GET BUSY x UH (TOOL).mp3",
+        "baseline_available": true,
+        "overlap_with_C_count": 2,
+        "top_count": 2,
+        "new_vs_C": [],
+        "dropped_from_C": []
+      }
+    ]
+  }
+}

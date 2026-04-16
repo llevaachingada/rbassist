@@ -49,89 +49,82 @@ def render() -> None:
 
 
 def _render_instructions_panel() -> None:
-    """Render the instructions and about panel with scrollable content"""
-    with ui.expansion("ℹ️ How It Works", icon="info").classes(
+    """Render the instructions and about panel with scrollable content."""
+    with ui.expansion("How It Works", icon="info").classes(
         "w-full bg-[#1a1a1a] border border-[#333]"
     ).props("dark"):
         with ui.column().classes("w-full gap-3 p-4"):
-            # Create scrollable area for instructions
             with ui.scroll_area().classes("w-full h-64 bg-[#0f0f0f] rounded border border-[#444]"):
                 with ui.column().classes("w-full gap-3 p-4"):
-                    # Step-by-step guide
-                    ui.label("🚀 Quick Start").classes("text-lg font-bold text-blue-400 mb-2")
+                    ui.label("Quick Start").classes("text-lg font-bold text-blue-400 mb-2")
 
                     with ui.column().classes("gap-2 text-sm text-gray-300"):
-                        ui.label("1️⃣ Tag Tracks").classes("font-semibold text-gray-200")
-                        ui.label("   Go to the 'Tags' tab and manually tag 5-10 tracks per tag.").classes("text-xs text-gray-400 ml-2")
+                        ui.label("1. Tag Tracks").classes("font-semibold text-gray-200")
+                        ui.label("   Go to the Tags tab and manually tag 5-10 tracks per tag.").classes("text-xs text-gray-400 ml-2")
 
-                        ui.label("2️⃣ Train AI").classes("font-semibold text-gray-200 mt-2")
-                        ui.label("   Click 'Learn & Generate Suggestions' to learn your tagging style.").classes("text-xs text-gray-400 ml-2")
+                        ui.label("2. Train AI").classes("font-semibold text-gray-200 mt-2")
+                        ui.label("   Click Learn and Generate Suggestions to learn your tagging style.").classes("text-xs text-gray-400 ml-2")
 
-                        ui.label("3️⃣ Review").classes("font-semibold text-gray-200 mt-2")
-                        ui.label("   Check suggestions below and click ✓ to accept or ✗ to reject.").classes("text-xs text-gray-400 ml-2")
+                        ui.label("3. Review").classes("font-semibold text-gray-200 mt-2")
+                        ui.label("   Review suggestions below and accept or reject each tag.").classes("text-xs text-gray-400 ml-2")
 
-                        ui.label("4️⃣ Improve").classes("font-semibold text-gray-200 mt-2")
-                        ui.label("   AI learns from your decisions and gets better over time!").classes("text-xs text-gray-400 ml-2")
+                        ui.label("4. Improve").classes("font-semibold text-gray-200 mt-2")
+                        ui.label("   The model learns from your decisions over time.").classes("text-xs text-gray-400 ml-2")
 
                     ui.separator().classes("my-3")
 
-                    # What each panel does
-                    ui.label("📊 What's What").classes("text-lg font-bold text-green-400 mb-2")
+                    ui.label("What Each Panel Does").classes("text-lg font-bold text-green-400 mb-2")
 
                     with ui.column().classes("gap-2 text-sm text-gray-300"):
                         ui.label("Stats Dashboard").classes("font-semibold text-gray-200")
                         ui.label("   Shows tagged tracks, pending suggestions, and acceptance rate.").classes("text-xs text-gray-400 ml-2")
 
                         ui.label("Train AI Panel").classes("font-semibold text-gray-200 mt-2")
-                        ui.label("   Learn profiles from your tags and generate AI suggestions.").classes("text-xs text-gray-400 ml-2")
+                        ui.label("   Learns profiles from your tags and generates AI suggestions.").classes("text-xs text-gray-400 ml-2")
 
                         ui.label("Smart Suggestions").classes("font-semibold text-gray-200 mt-2")
-                        ui.label("   AI finds uncertain tracks where your input teaches it the most.").classes("text-xs text-gray-400 ml-2")
+                        ui.label("   Finds uncertain tracks where your input teaches the model the most.").classes("text-xs text-gray-400 ml-2")
 
                         ui.label("Review Panel").classes("font-semibold text-gray-200 mt-2")
-                        ui.label("   Accept (✓) good suggestions or reject (✗) bad ones.").classes("text-xs text-gray-400 ml-2")
+                        ui.label("   Accept good suggestions or reject bad ones.").classes("text-xs text-gray-400 ml-2")
 
                     ui.separator().classes("my-3")
 
-                    # Key tips
-                    ui.label("💡 Pro Tips").classes("text-lg font-bold text-yellow-400 mb-2")
+                    ui.label("Pro Tips").classes("text-lg font-bold text-yellow-400 mb-2")
 
                     with ui.column().classes("gap-2 text-sm text-gray-300"):
-                        ui.label("• Use 'Smart Suggestions' to find uncertain tracks - tag those!").classes("text-xs text-gray-400")
-                        ui.label("• Be consistent with tag names (use 'Techno' not 'Tech')").classes("text-xs text-gray-400")
-                        ui.label("• Reject bad suggestions - AI learns from mistakes!").classes("text-xs text-gray-400")
-                        ui.label("• Start with 3-5 tags you use most, expand gradually").classes("text-xs text-gray-400")
-                        ui.label("• Check stats to monitor AI accuracy").classes("text-xs text-gray-400")
+                        ui.label("- Use Smart Suggestions to find uncertain tracks and tag those first.").classes("text-xs text-gray-400")
+                        ui.label("- Be consistent with tag names (use Techno, not Tech).").classes("text-xs text-gray-400")
+                        ui.label("- Reject bad suggestions so the model learns from mistakes.").classes("text-xs text-gray-400")
+                        ui.label("- Start with 3-5 tags you use most, then expand gradually.").classes("text-xs text-gray-400")
+                        ui.label("- Check the stats cards to monitor AI accuracy over time.").classes("text-xs text-gray-400")
 
                     ui.separator().classes("my-3")
 
-                    # Safety guarantee
-                    ui.label("🔒 Your Tags Are Safe").classes("text-lg font-bold text-green-500 mb-2")
+                    ui.label("Your Tags Stay Safe").classes("text-lg font-bold text-green-500 mb-2")
 
                     with ui.column().classes("gap-2 text-sm text-gray-300"):
-                        ui.label("✓ User tags in protected 'USER' namespace").classes("text-xs text-green-400")
-                        ui.label("✓ AI suggestions in separate 'AI' namespace").classes("text-xs text-green-400")
-                        ui.label("✓ Nothing changes without your explicit approval").classes("text-xs text-green-400")
-                        ui.label("✓ Full history of all decisions kept for learning").classes("text-xs text-green-400")
+                        ui.label("- User tags stay in the protected USER namespace.").classes("text-xs text-green-400")
+                        ui.label("- AI suggestions stay in a separate AI namespace.").classes("text-xs text-green-400")
+                        ui.label("- Nothing changes without your explicit approval.").classes("text-xs text-green-400")
+                        ui.label("- A full history of your decisions is kept for learning.").classes("text-xs text-green-400")
 
                     ui.separator().classes("my-3")
 
-                    # FAQ
-                    ui.label("❓ FAQ").classes("text-lg font-bold text-orange-400 mb-2")
+                    ui.label("FAQ").classes("text-lg font-bold text-orange-400 mb-2")
 
                     with ui.column().classes("gap-2 text-sm text-gray-300"):
                         ui.label("Q: How many examples do I need per tag?").classes("font-semibold text-gray-200")
-                        ui.label("A: Minimum 3-5 tracks. More examples = better accuracy.").classes("text-xs text-gray-400 ml-2")
+                        ui.label("A: Start with 3-5 tracks. More examples generally mean better accuracy.").classes("text-xs text-gray-400 ml-2")
 
-                        ui.label("Q: Can AI modify my tags?").classes("font-semibold text-gray-200 mt-2")
-                        ui.label("A: No! You must explicitly accept each suggestion.").classes("text-xs text-gray-400 ml-2")
+                        ui.label("Q: Can AI modify my tags on its own?").classes("font-semibold text-gray-200 mt-2")
+                        ui.label("A: No. You must explicitly accept each suggestion.").classes("text-xs text-gray-400 ml-2")
 
-                        ui.label("Q: What if AI suggests wrong tags?").classes("font-semibold text-gray-200 mt-2")
-                        ui.label("A: Click ✗ to reject. AI learns from your feedback!").classes("text-xs text-gray-400 ml-2")
+                        ui.label("Q: What if AI suggests the wrong tags?").classes("font-semibold text-gray-200 mt-2")
+                        ui.label("A: Reject it. The model learns from your feedback.").classes("text-xs text-gray-400 ml-2")
 
             ui.separator().classes("mt-3")
-            ui.label("Scroll above to see full instructions and tips →").classes("text-xs text-gray-500 italic")
-
+            ui.label("Scroll above to see the full instructions and tips.").classes("text-xs text-gray-500 italic")
 
 def _render_stats_cards() -> None:
     """Render statistics cards"""
@@ -398,8 +391,14 @@ def _render_suggestion_review() -> None:
         min_confidence = ui.slider(min=0, max=1, step=0.05, value=0.5).props(
             "dark label-always"
         ).classes("w-full mb-2")
-        ui.label(f"Min confidence: {min_confidence.value:.0%}").classes(
+        confidence_label = ui.label(f"Min confidence: {min_confidence.value:.0%}").classes(
             "text-gray-400 text-sm mb-4"
+        )
+        min_confidence.on_value_change(
+            lambda e: (
+                setattr(confidence_label, "text", f"Min confidence: {float(min_confidence.value or 0):.0%}"),
+                confidence_label.update(),
+            )
         )
 
         suggestions_container = ui.column().classes("w-full gap-3 max-h-[600px] overflow-y-auto")
@@ -576,10 +575,10 @@ def _render_advanced_tools() -> None:
             def _validate():
                 issues = safe_tagstore.validate_tag_safety()
                 if not issues:
-                    validation_result.text = "✓ All checks passed!"
+                    validation_result.text = "Validation passed."
                     validation_result.classes("text-green-500", remove="text-red-500")
                 else:
-                    validation_result.text = f"⚠ Found {len(issues)} issues:\n" + "\n".join(
+                    validation_result.text = f"Found {len(issues)} issue(s):\n" + "\n".join(
                         issues[:5]
                     )
                     validation_result.classes("text-red-500", remove="text-green-500")

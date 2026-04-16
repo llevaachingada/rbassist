@@ -62,7 +62,9 @@ archive_*/**
 
 # Local user/library data (do not commit)
 config/ui_settings.json
+config/user_profile.json
 config/tags.yml
+config/cue_template.yml
 config/my_tags.yml
 config/ai_suggestions.json
 config/tag_corrections.json
@@ -73,3 +75,13 @@ cleanup_backup_*/
 hunters ibrary.xml
 hs collection 12.xml
 *.lnk
+
+# Review archives
+review/archives/archive_20251209/meta.json
+
+# Generated local analysis/report artifacts
+docs/dev/bare_meta_resolution_*.csv
+docs/dev/bare_meta_resolution_*.json
+docs/dev/health_audit_*.json
+docs/dev/stale_meta_*.json
+output/

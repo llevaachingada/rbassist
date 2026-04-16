@@ -2,23 +2,213 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import asyncio
-import shlex
-import re
 from nicegui import ui
 
+from rbassist.health import list_embedding_gaps, normalize_meta_paths, resolve_bare_meta_paths
+from ..jobs import complete_job, fail_job, latest_job, list_recent_jobs, resolve_active_job, start_job, update_job
 from ..state import get_state
+from ..components.health_summary import render_health_summary
 from rbassist.beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
+from rbassist.ui_services.settings import (
+    build_settings_pipeline_request,
+    build_settings_pipeline_view,
+    parse_folder_inputs,
+)
+from rbassist.utils import ROOT
 
 
 def render() -> None:
     """Render the settings page."""
     state = get_state()
+    state.refresh_health()
     sync_guard: dict[str, bool] = {"busy": False}
+    pipeline_job_id: dict[str, str | None] = {"value": None}
 
     with ui.column().classes("w-full gap-4 max-w-3xl"):
         ui.label("Settings").classes("text-2xl font-bold text-white")
+
+
+        # Health Dashboard
+        with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):
+            ui.label("Library Health").classes("text-lg font-semibold text-gray-200 mb-3")
+            ui.label(
+                "Audit the current metadata, scan configured folders for missing embeddings, and dry-run path repair before applying any changes."
+            ).classes("text-gray-400 text-sm mb-2")
+            health_mount = ui.column().classes("w-full")
+            with health_mount:
+                render_health_summary(state.health)
+            audit_preview = ui.textarea(label="Audit Preview").props("dark readonly autogrow").classes("w-full")
+            rewrite_hint = ui.label("").classes("text-indigo-300 text-sm")
+            action_status = ui.label("Status: idle").classes("text-gray-400 text-sm")
+
+            def _set_preview(report: dict) -> None:
+                audit_preview.value = json.dumps(report, indent=2)
+                audit_preview.update()
+
+            def _refresh_health_cards(report: dict | None = None) -> None:
+                state.refresh_meta()
+                state.refresh_health()
+                report = report or state.health
+                health_mount.clear()
+                with health_mount:
+                    render_health_summary(report)
+                suggestions = report.get("suggested_rewrite_pairs", []) if isinstance(report, dict) else []
+                if suggestions:
+                    rewrite_hint.text = "Suggested rewrite pairs: " + ", ".join(
+                        f"{item.get('from')} -> {item.get('to')}" for item in suggestions
+                    )
+                else:
+                    rewrite_hint.text = "Suggested rewrite pairs: none detected from current configured folders."
+                rewrite_hint.update()
+
+            def _run_inline_audit() -> None:
+                state.refresh_meta()
+                state.refresh_health()
+                _set_preview(state.health)
+                _refresh_health_cards(state.health)
+                action_status.text = "Status: refreshed live health snapshot from data/meta.json."
+                action_status.update()
+                ui.notify("Health audit refreshed", type="positive")
+
+            def _run_gap_scan() -> None:
+                if not state.music_folders:
+                    ui.notify("Add at least one music folder before scanning embedding gaps.", type="warning")
+                    return
+                report = list_embedding_gaps(
+                    repo=ROOT,
+                    roots=list(state.music_folders),
+                    out_prefix="data/pending_embedding_paths.health_ui",
+                    chunk_size=2000,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                action_status.text = (
+                    f"Status: scanned configured folders and found {report['counts'].get('pending_embedding_total', 0)} pending embedding target(s)."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Gap scan complete: {report['counts'].get('pending_embedding_total', 0)} pending track(s).",
+                    type="positive",
+                )
+
+            def _run_normalize_dry() -> None:
+                state.refresh_meta()
+                state.refresh_health()
+                suggestions = state.health.get("suggested_rewrite_pairs", [])
+                report = normalize_meta_paths(
+                    repo=ROOT,
+                    rewrite_from=[item.get("from", "") for item in suggestions],
+                    rewrite_to=[item.get("to", "") for item in suggestions],
+                    drop_junk=True,
+                    resolve_collisions=True,
+                    apply_changes=False,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                resolved = report.get("counts", {}).get("resolved_collision_groups_total", 0)
+                action_status.text = (
+                    f"Status: dry-run path repair planned {report['counts'].get('changed_paths', 0)} rewrites and "
+                    f"{resolved} collision-group merge(s)."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Path repair dry run complete: {report['counts'].get('changed_paths', 0)} rewrites, "
+                    f"{resolved} collision-group merge(s), {report['counts'].get('dropped_junk', 0)} junk entries flagged.",
+                    type="positive",
+                )
+
+            def _apply_normalize() -> None:
+                state.refresh_meta()
+                state.refresh_health()
+                suggestions = state.health.get("suggested_rewrite_pairs", [])
+                report = normalize_meta_paths(
+                    repo=ROOT,
+                    rewrite_from=[item.get("from", "") for item in suggestions],
+                    rewrite_to=[item.get("to", "") for item in suggestions],
+                    drop_junk=True,
+                    resolve_collisions=True,
+                    apply_changes=True,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                if not report.get("applied"):
+                    if report.get("blocked_reason") == "collisions_detected":
+                        ui.notify(
+                            "Path fixes were not applied because collisions were detected. Review the dry run first.",
+                            type="warning",
+                        )
+                    else:
+                        ui.notify("Path fixes were not applied.", type="warning")
+                    action_status.text = "Status: path repair did not apply. Review the dry run preview for remaining blockers."
+                    action_status.update()
+                    return
+                _refresh_health_cards()
+                action_status.text = (
+                    f"Status: applied safe path repair with {report['counts'].get('changed_paths', 0)} rewrites and "
+                    f"{report['counts'].get('resolved_collision_groups_total', 0)} collision-group merge(s)."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Applied safe path repair: {report['counts'].get('changed_paths', 0)} rewrites, "
+                    f"{report['counts'].get('resolved_collision_groups_total', 0)} collision-group merge(s), "
+                    f"{report['counts'].get('dropped_junk', 0)} junk entries dropped.",
+                    type="positive",
+                )
+
+            def _run_bare_path_dry() -> None:
+                state.refresh_meta()
+                roots = state.current_music_roots()
+                report = resolve_bare_meta_paths(
+                    repo=ROOT,
+                    roots=roots,
+                    apply_changes=False,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                action_status.text = (
+                    f"Status: bare-path dry run found {report['counts'].get('unique_matches_total', 0)} unique matches, "
+                    f"{report['counts'].get('ambiguous_matches_total', 0)} ambiguous, "
+                    f"{report['counts'].get('missing_matches_total', 0)} missing."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Bare-path dry run complete: {report['counts'].get('unique_matches_total', 0)} unique match(es) in the current GUI scope.",
+                    type="positive",
+                )
+
+            def _apply_bare_path_fix() -> None:
+                state.refresh_meta()
+                roots = state.current_music_roots()
+                report = resolve_bare_meta_paths(
+                    repo=ROOT,
+                    roots=roots,
+                    apply_changes=True,
+                    meta=state.meta,
+                )
+                _set_preview(report)
+                _refresh_health_cards()
+                action_status.text = (
+                    f"Status: applied bare-path repair for {report['counts'].get('unique_matches_total', 0)} uniquely matched orphan entry(ies)."
+                )
+                action_status.update()
+                ui.notify(
+                    f"Applied bare-path repair: {report['counts'].get('unique_matches_total', 0)} unique match(es) merged in the current GUI scope.",
+                    type="positive",
+                )
+
+            _refresh_health_cards(state.health)
+
+            with ui.row().classes("gap-2 flex-wrap"):
+                ui.button("Refresh health snapshot", on_click=_run_inline_audit).props("flat").classes("bg-indigo-600 hover:bg-indigo-500 text-white")
+                ui.button("Scan configured folders", on_click=_run_gap_scan).props("flat").classes("bg-teal-600 hover:bg-teal-500 text-white")
+                ui.button("Dry run path repair", on_click=_run_normalize_dry).props("flat").classes("bg-[#252525] text-gray-200")
+                ui.button("Apply safe path repair", on_click=_apply_normalize).props("flat").classes("bg-amber-600 hover:bg-amber-500 text-white")
+                ui.button("Dry run bare-path repair", on_click=_run_bare_path_dry).props("flat").classes("bg-[#252525] text-gray-200")
+                ui.button("Apply bare-path repair", on_click=_apply_bare_path_fix).props("flat").classes("bg-emerald-600 hover:bg-emerald-500 text-white")
+                ui.button("Refresh cards only", on_click=_refresh_health_cards).props("flat").classes("bg-[#252525] text-gray-200")
 
         # Workspace
         with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):
@@ -45,7 +235,11 @@ def render() -> None:
                                     ui.label(path).classes("text-gray-200 text-sm truncate")
 
                                     async def _import_one(p: str = path) -> None:
-                                        await run_pipeline(roots=[p])
+                                        await run_pipeline(
+                                            roots=[p],
+                                            force_overwrite=False,
+                                            force_skip_analyzed=True,
+                                        )
 
                                     def _remove(p: str = path) -> None:
                                         state.music_folders = [f for f in state.music_folders if f != p]
@@ -55,53 +249,7 @@ def render() -> None:
                                     ui.button(icon="close", on_click=_remove).props("flat round dense").classes("text-gray-400")
 
                     def _add_folder(val: str) -> None:
-                        def _parse_folder_inputs(raw: str) -> list[str]:
-                            if not raw:
-                                return []
-                            tokens: list[str] = []
-
-                            def _strip_quotes(s: str) -> str:
-                                s = s.strip()
-                                if len(s) >= 2 and s[0] == s[-1] and s[0] in {"'", '"', "“", "”", "‘", "’"}:
-                                    return s[1:-1]
-                                # handle mismatched leading/trailing smart quotes
-                                if s[:1] in {"'", '"', "“", "”", "‘", "’"}:
-                                    s = s[1:]
-                                if s[-1:] in {"'", '"', "“", "”", "‘", "’"}:
-                                    s = s[:-1]
-                                return s.strip()
-
-                            def _extract_quoted(line: str) -> list[str]:
-                                # Look for "quoted", 'quoted', or “smart quoted” segments
-                                matches = re.findall(r'"([^"]+)"|“([^”]+)”|\'([^\']+)\'|‘([^’]+)’', line)
-                                out: list[str] = []
-                                for a, b, c, d in matches:
-                                    candidate = a or b or c or d
-                                    if candidate:
-                                        out.append(candidate)
-                                return out
-
-                            for line in raw.replace("\r", "\n").split("\n"):
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                try:
-                                    parts = shlex.split(line, posix=False)
-                                except ValueError:
-                                    parts = [line]
-                                # Fallback: if shlex returned one long string but we had multiple quoted segments
-                                if len(parts) == 1:
-                                    quoted = _extract_quoted(line)
-                                    if len(quoted) > 1:
-                                        parts = quoted
-                                for part in parts:
-                                    for piece in part.split(";"):
-                                        piece = _strip_quotes(piece)
-                                        if piece:
-                                            tokens.append(piece)
-                            return tokens
-
-                        paths = _parse_folder_inputs(val)
+                        paths = parse_folder_inputs(val)
                         if not paths:
                             ui.notify("Folder path is empty", type="warning")
                             return
@@ -133,20 +281,28 @@ def render() -> None:
                         if missing:
                             ui.notify(f"Folder does not exist: {', '.join(missing)}", type="warning")
 
-                    def pick_folder():
-                        try:
-                            import tkinter as tk
-                            from tkinter import filedialog
-                            root = tk.Tk()
-                            root.withdraw()
-                            folder = filedialog.askdirectory(title="Select Music Folder")
-                            root.destroy()
-                            if folder:
-                                _add_folder(folder)
-                            else:
-                                ui.notify("No folder selected. Paste a path instead.", type="info")
-                        except Exception as e:
-                            ui.notify(f"Folder picker error: {e}. Paste a path instead.", type="warning")
+                    async def pick_folder() -> None:
+                        def _pick() -> tuple[str | None, str | None]:
+                            try:
+                                import tkinter as tk
+                                from tkinter import filedialog
+                                root = tk.Tk()
+                                root.withdraw()
+                                root.attributes("-topmost", True)
+                                folder = filedialog.askdirectory(title="Select Music Folder")
+                                root.destroy()
+                                return folder or None, None
+                            except Exception as e:
+                                return None, str(e)
+
+                        folder, err = await asyncio.to_thread(_pick)
+                        if err:
+                            ui.notify(f"Folder picker error: {err}. Paste a path instead.", type="warning")
+                            return
+                        if folder:
+                            _add_folder(folder)
+                        else:
+                            ui.notify("No folder selected. Paste a path instead.", type="info")
 
                     async def add_and_import() -> None:
                         raw = (folder_input.value or "").strip()
@@ -156,7 +312,11 @@ def render() -> None:
                         _add_folder(raw)
                         added_paths = last_add_result.get("paths", [])
                         if len(added_paths) == 1:
-                            await run_pipeline(roots=[added_paths[0]])
+                            await run_pipeline(
+                                roots=[added_paths[0]],
+                                force_overwrite=False,
+                                force_skip_analyzed=True,
+                            )
                             return
                         if len(added_paths) > 1:
                             ui.notify("Added multiple folders; use the Import button next to the folder you want to process.", type="info")
@@ -167,17 +327,24 @@ def render() -> None:
                         except Exception:
                             resolved = ""
                         if resolved and resolved in state.music_folders:
-                            await run_pipeline(roots=[resolved])
+                            await run_pipeline(
+                                roots=[resolved],
+                                force_overwrite=False,
+                                force_skip_analyzed=True,
+                            )
                         else:
                             ui.notify("No folder to import (nothing new added).", type="info")
 
                     with ui.column().classes("flex-1 gap-2"):
                         _render_folder_list()
                         with ui.row().classes("w-full items-center gap-2"):
+                            def _add_from_input() -> None:
+                                _add_folder(folder_input.value)
+
                             ui.button(icon="folder", on_click=pick_folder).props("flat dense")
-                            ui.button("Add path", on_click=lambda: _add_folder(folder_input.value)).props("flat dense").classes("bg-[#252525] text-gray-200")
+                            ui.button("Add path", on_click=_add_from_input).props("flat dense").classes("bg-[#252525] text-gray-200")
                             ui.button("Add + Import", icon="play_arrow", on_click=add_and_import).props("flat dense").classes("bg-indigo-600 hover:bg-indigo-500 text-white")
-                        ui.label("Tip: use Import next to a folder to process one folder at a time.").classes("text-gray-500 text-xs")
+                        ui.label("Tip: use Import next to a folder to process one folder at a time (safe, no overwrite).").classes("text-gray-500 text-xs")
 
                 with ui.row().classes("w-full items-center gap-4"):
                     ui.label("Device:").classes("text-gray-400 w-32")
@@ -241,42 +408,145 @@ def render() -> None:
                 ).props("dark")
                 ui.label("Tip: turn overwrite OFF to import a new folder without reprocessing your whole library.").classes("text-gray-500 text-xs")
 
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Paths file:").classes("text-gray-400 w-32")
+                    paths_file_input = ui.input(
+                        value=state.embed_paths_file,
+                        placeholder="Optional .txt with one path per line (used by Process all)",
+                    ).props("dark dense clearable").classes("flex-1")
+
+                resume_check = ui.checkbox(
+                    "Resume embedding from checkpoint",
+                    value=bool(state.embed_resume),
+                ).props("dark")
+
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Checkpoint file:").classes("text-gray-400 w-32")
+                    checkpoint_file_input = ui.input(
+                        value=state.embed_checkpoint_file,
+                        placeholder="Optional path (default: data/embed_checkpoint.json)",
+                    ).props("dark dense clearable").classes("flex-1")
+
+                with ui.row().classes("w-full items-center gap-4"):
+                    ui.label("Checkpoint every:").classes("text-gray-400 w-32")
+                    checkpoint_every_input = ui.number(
+                        value=max(1, int(state.embed_checkpoint_every or 100)),
+                        min=1,
+                        max=100000,
+                        step=1,
+                    ).props("dark dense").classes("w-32")
+                    ui.label("Persist progress every N processed tracks").classes("text-gray-500 text-sm")
+
+                preflight_label = ui.markdown("**Preflight:** idle").classes("text-gray-300")
+
                 # Pipeline progress UI
                 pipe_progress = ui.linear_progress(value=0).props("rounded color=indigo").classes("w-full")
                 pipe_label = ui.label("Idle").classes("text-gray-400 text-sm")
+                pipe_phase = ui.label("No shared job started yet.").classes("text-gray-500 text-xs")
+                pipe_error = ui.label("").classes("text-red-400 text-xs")
+                pipe_history = ui.label("Recent settings jobs: none yet.").classes("text-gray-500 text-xs")
 
-                async def run_pipeline(roots: list[str] | None = None) -> None:
-                    from rbassist.utils import walk_audio, load_meta
+                def _refresh_pipeline_job_view() -> None:
+                    snapshot = resolve_active_job(pipeline_job_id["value"], kind="settings_pipeline")
+                    if snapshot is not None:
+                        pipeline_job_id["value"] = snapshot.job_id
+                    recent = list_recent_jobs(kind="settings_pipeline", limit=3)
+                    view = build_settings_pipeline_view(snapshot, recent)
+                    if view.progress_visible:
+                        pipe_progress.value = view.progress_value
+                    else:
+                        pipe_progress.value = 0
+                    pipe_label.text = view.status_text
+                    pipe_phase.text = view.phase_text
+                    pipe_error.text = view.error_text
+                    pipe_history.text = view.history_text
+
+                    pipe_progress.update()
+                    pipe_label.update()
+                    pipe_phase.update()
+                    pipe_error.update()
+                    pipe_history.update()
+
+                ui.timer(0.5, _refresh_pipeline_job_view)
+
+                async def run_pipeline(
+                    roots: list[str] | None = None,
+                    *,
+                    force_overwrite: bool | None = None,
+                    force_skip_analyzed: bool | None = None,
+                    use_paths_file_only: bool = False,
+                ) -> None:
+                    from rbassist.utils import walk_audio, load_meta, read_paths_file
                     from rbassist.embed import build_embeddings
                     from rbassist.analyze import analyze_bpm_key
                     from rbassist.recommend import build_index
 
+                    active_job = latest_job(kind="settings_pipeline")
+                    if active_job and active_job.status == "running":
+                        ui.notify("A settings pipeline is already running. Wait for it to finish before starting another.", type="warning")
+                        return
+
                     # If user pasted paths but didn't click "Add path", ingest them now (default scope only)
-                    default_scope = roots is None
-                    if roots is None:
+                    default_scope = roots is None and not use_paths_file_only
+                    scope_label = "all folders"
+                    if roots is None and not use_paths_file_only:
                         if folder_input.value:
                             _add_folder(folder_input.value)
                         roots = list(state.music_folders)
 
                     roots = [str(p) for p in (roots or []) if str(p).strip()]
+                    files: list[str] = []
+                    music_roots: list[str] = []
 
-                    # Filter out missing paths but warn the user
-                    music_roots = [p for p in roots if Path(p).exists()]
-                    missing = [p for p in roots if p not in music_roots]
-                    if missing:
-                        ui.notify(f"Skipping missing folder(s): {', '.join(missing)}", type="warning")
-                    if not music_roots:
-                        ui.notify("Set at least one Music Folder first", type="warning")
-                        return
-                    files = walk_audio(music_roots)
-                    if not files:
-                        ui.notify("No audio files found under the selected folder(s)", type="warning")
-                        return
+                    paths_file_value = str(paths_file_input.value or "").strip()
+                    if use_paths_file_only or (default_scope and paths_file_value):
+                        pfile = Path(paths_file_value).expanduser()
+                        if not pfile.exists():
+                            ui.notify(f"Paths file not found: {pfile}", type="warning")
+                            return
+                        try:
+                            listed_paths = read_paths_file(pfile)
+                        except Exception as e:
+                            ui.notify(f"Failed to read paths file: {e}", type="negative")
+                            return
+                        if not listed_paths:
+                            ui.notify(f"Paths file has no usable entries: {pfile}", type="warning")
+                            return
+                        files = walk_audio(listed_paths)
+                        if not files:
+                            ui.notify("No audio files found from paths file entries.", type="warning")
+                            return
+                        scope_label = f"paths file ({len(listed_paths)} entries)"
+                    else:
+                        # Filter out missing paths but warn the user
+                        music_roots = [p for p in roots if Path(p).exists()]
+                        missing = [p for p in roots if p not in music_roots]
+                        if missing:
+                            ui.notify(f"Skipping missing folder(s): {', '.join(missing)}", type="warning")
+                        if not music_roots:
+                            ui.notify("Set at least one Music Folder first", type="warning")
+                            return
+                        files = walk_audio(music_roots)
+                        if not files:
+                            ui.notify("No audio files found under the selected folder(s)", type="warning")
+                            return
+                        scope_label = "all folders" if default_scope else f"{len(music_roots)} folder(s)"
+                        if not default_scope and len(music_roots) == 1:
+                            scope_label = Path(music_roots[0]).name
 
                     completed = 0
-                    overwrite = bool(overwrite_check.value)
-                    skip_analyzed = bool(skip_check.value)
+                    overwrite = bool(overwrite_check.value) if force_overwrite is None else bool(force_overwrite)
+                    skip_analyzed = bool(skip_check.value) if force_skip_analyzed is None else bool(force_skip_analyzed)
                     use_timbre = bool(timbre_check.value)
+                    resume_embed = bool(resume_check.value)
+                    device_value = device_select.value if device_select.value != "auto" else None
+                    workers_value = int(workers_input.value or 0)
+                    batch_size_value = int(batch_input.value or 4)
+                    add_cues_value = bool(cues_check.value)
+                    beatgrid_enabled = bool(beatgrid_check.value)
+                    beatgrid_overwrite = bool(beatgrid_overwrite_check.value)
+                    checkpoint_value = str(checkpoint_file_input.value or "").strip()
+                    checkpoint_every = max(1, int(checkpoint_every_input.value or 100))
 
                     meta = load_meta()
 
@@ -300,8 +570,8 @@ def render() -> None:
                         ]
 
                     bg_files: list[str] = []
-                    if beatgrid_check.value:
-                        if beatgrid_overwrite_check.value:
+                    if beatgrid_enabled:
+                        if beatgrid_overwrite:
                             bg_files = files
                         else:
                             bg_files = [
@@ -310,63 +580,93 @@ def render() -> None:
                             ]
 
                     total_steps = max(1, len(embed_files) + len(analysis_files) + len(bg_files) + 1)
+                    pipeline_request = build_settings_pipeline_request(
+                        scope_label=scope_label,
+                        files_total=len(files),
+                        embed_total=len(embed_files),
+                        analysis_total=len(analysis_files),
+                        beatgrid_total=len(bg_files),
+                        overwrite=overwrite,
+                        skip_analyzed=skip_analyzed,
+                        use_timbre=use_timbre,
+                        resume_embed=resume_embed,
+                        duration_s=int(duration_input.value or 120),
+                        workers=workers_value,
+                        batch_size=batch_size_value,
+                        device=device_value,
+                        add_cues=add_cues_value,
+                        beatgrid_enabled=beatgrid_enabled,
+                        beatgrid_overwrite=beatgrid_overwrite,
+                        checkpoint_file=checkpoint_value,
+                        checkpoint_every=checkpoint_every,
+                    )
+                    try:
+                        preflight_label.content = pipeline_request.preflight_text()
+                        preflight_label.update()
+                    except Exception:
+                        pass
 
-                    def _update(label: str):
-                        """Safely update progress UI; ignore if client/slot is gone."""
-                        try:
-                            pipe_label.text = label
-                            pipe_progress.value = min(max(completed / max(total_steps, 1), 0.0), 1.0)
-                            pipe_progress.update()
-                            pipe_label.update()
-                        except RuntimeError:
-                            # Client or parent element has been deleted (tab closed/reloaded);
-                            # allow background pipeline to continue silently.
-                            pass
+                    job = start_job(
+                        "settings_pipeline",
+                        phase="preflight",
+                        message=f"Preparing {scope_label}...",
+                        progress=0.0,
+                        result=pipeline_request.result_payload(),
+                    )
+                    pipeline_job_id["value"] = job.job_id
+                    _refresh_pipeline_job_view()
 
                     try:
-                        scope_label = "all folders" if default_scope else f"{len(music_roots)} folder(s)"
-                        if not default_scope and len(music_roots) == 1:
-                            scope_label = Path(music_roots[0]).name
                         ui.notify(
-                            f"Running pipeline on {scope_label}: {len(files)} track(s) "
-                            f"({len(embed_files)} embed, {len(analysis_files)} analyze)...",
+                            pipeline_request.running_text(),
                             type="info",
                         )
                     except RuntimeError:
-                        # Same rationale as _update: UI may no longer be attached.
+                        # The pipeline can still run via shared job state even if this client detached.
                         pass
-                    _update("Starting pipeline...")
 
                     def _work():
                         nonlocal completed
+
+                        def _publish(phase: str, label: str) -> None:
+                            update_job(
+                                job.job_id,
+                                phase=phase,
+                                message=label,
+                                progress=min(max(completed / max(total_steps, 1), 0.0), 1.0),
+                            )
+
                         # Embed
                         def _embed_cb(done: int, count: int, path: str):
                             nonlocal completed
                             completed = done
-                            _update(f"Embedding {done}/{count}: {path}")
+                            _publish("embed", f"Embedding {done}/{count}: {path}")
 
                         if embed_files:
                             build_embeddings(
                                 embed_files,
                                 duration_s=120,
-                                device=(device_select.value if device_select.value != "auto" else None),
-                                num_workers=int(workers_input.value or 0),
-                                batch_size=int(batch_input.value or 4),
-                                overwrite=True,
+                                device=device_value,
+                                num_workers=workers_value,
+                                batch_size=batch_size_value,
+                                overwrite=overwrite,
                                 timbre=use_timbre,
+                                resume=resume_embed,
+                                checkpoint_file=(checkpoint_value or None),
+                                checkpoint_every=checkpoint_every,
                                 progress_callback=_embed_cb,
                             )
                             completed = len(embed_files)
-                            _update("Embedding complete")
+                            _publish("embed", "Embedding complete")
                         else:
                             completed = 0
-                            _update("Embedding skipped (no targets)")
+                            _publish("embed", "Embedding skipped (no targets)")
 
                         # Analyze
                         def _analyze_cb(done: int, count: int, path: str):
                             nonlocal completed
                             completed = len(embed_files) + done
-                            _update(f"Analyzing {done}/{count}: {path}")
+                            _publish("analyze", f"Analyzing {done}/{count}: {path}")
 
                         if analysis_files:
                             analyze_bpm_key(
@@ -374,50 +674,74 @@ def render() -> None:
                                 duration_s=90,
                                 only_new=not overwrite,
                                 force=overwrite,
-                                add_cues=bool(cues_check.value),
-                                workers=(int(workers_input.value) if int(workers_input.value) > 0 else None),
+                                add_cues=add_cues_value,
+                                workers=(workers_value if workers_value > 0 else None),
                                 progress_callback=_analyze_cb,
                             )
                             completed = len(embed_files) + len(analysis_files)
-                            _update("Analyzing complete")
+                            _publish("analyze", "Analyzing complete")
                         else:
                             completed = len(embed_files)
-                            _update("Analyzing skipped (no targets)")
+                            _publish("analyze", "Analyzing skipped (no targets)")
 
                         # Beatgrid (optional)
-                        if beatgrid_check.value:
+                        if beatgrid_enabled:
                             if bg_files:
                                 def _bg_cb(done: int, count: int, path: str):
                                     nonlocal completed
                                     completed = len(embed_files) + len(analysis_files) + done
-                                    _update(f"Beatgrid {done}/{count}: {path}")
+                                    _publish("beatgrid", f"Beatgrid {done}/{count}: {path}")
 
-                                _update(f"Beatgridding {len(bg_files)} track(s)...")
+                                _publish("beatgrid", f"Beatgridding {len(bg_files)} track(s)...")
                                 analyze_beatgrid_paths(
                                     bg_files,
                                     cfg=BeatgridConfig(mode="fixed", backend="beatnet"),
-                                    overwrite=beatgrid_overwrite_check.value,
+                                    overwrite=beatgrid_overwrite,
                                     progress_callback=_bg_cb,
                                 )
                                 completed = len(embed_files) + len(analysis_files) + len(bg_files)
                             else:
                                 completed = len(embed_files) + len(analysis_files)
-                                _update("Beatgrid skipped (no targets)")
+                                _publish("beatgrid", "Beatgrid skipped (no targets)")
 
                         # Index
-                        _update("Building index...")
+                        _publish("index", "Building index...")
                         build_index(incremental=not overwrite)
                         completed = total_steps
-                        _update("Index built")
+                        _publish("index", "Index built")
 
                     try:
                         await asyncio.to_thread(_work)
+                        complete_job(
+                            job.job_id,
+                            phase="completed",
+                            message=pipeline_request.completed_text(),
+                            result=pipeline_request.result_payload(),
+                        )
+                        state.refresh_meta()
+                        state.refresh_health()
+                        try:
+                            _refresh_health_cards()
+                        except Exception:
+                            pass
+                        _refresh_pipeline_job_view()
                         try:
                             ui.notify("Embed + Analyze + Index complete", type="positive")
+                            if resume_embed:
+                                cpath = checkpoint_value or "data/embed_checkpoint.json"
+                                ui.notify(f"Checkpoint updated: {cpath}", type="info")
                         except RuntimeError:
                             # Client may have gone away; pipeline still finished.
                             pass
                     except Exception as e:
+                        fail_job(
+                            job.job_id,
+                            phase="failed",
+                            message=pipeline_request.failed_text(),
+                            error=str(e),
+                            result=pipeline_request.result_payload(),
+                        )
+                        _refresh_pipeline_job_view()
                         try:
                             ui.notify(f"Pipeline failed: {e}", type="negative")
                         except RuntimeError:
@@ -425,9 +749,22 @@ def render() -> None:
                             # let it be visible in the terminal logs only.
                             pass
 
-                ui.button("Process all folders (Embed + Analyze + Index)", icon="play_arrow", on_click=run_pipeline).props("flat").classes(
-                    "bg-indigo-600 hover:bg-indigo-500 w-64"
-                )
+                async def run_configured_folders() -> None:
+                    await run_pipeline(roots=list(state.music_folders))
+
+                async def run_paths_file_only() -> None:
+                    await run_pipeline(use_paths_file_only=True)
+
+                with ui.row().classes("gap-2 flex-wrap"):
+                    ui.button("Process configured folders", icon="folder_play", on_click=run_configured_folders).props("flat").classes(
+                        "bg-indigo-600 hover:bg-indigo-500 text-white"
+                    )
+                    ui.button("Process paths file", icon="playlist_play", on_click=run_paths_file_only).props("flat").classes(
+                        "bg-teal-600 hover:bg-teal-500 text-white"
+                    )
+                    ui.button("Auto scope (legacy)", icon="play_arrow", on_click=run_pipeline).props("flat").classes(
+                        "bg-[#252525] text-gray-200"
+                    )
 
         # Analysis Settings
         with ui.card().classes("w-full bg-[#1a1a1a] border border-[#333] p-4"):
@@ -504,10 +841,21 @@ def render() -> None:
                         1. Add Music Folders (folder icon or paste a path).
                         2. Click the **play** icon next to the folder you want to import (or use **Add + Import**).
                         3. Keep **Overwrite** OFF to only process new tracks (recommended).
-                        4. Click **Save Settings** if you want these choices to persist.
+                        4. Optional: turn **Resume embedding from checkpoint** ON for interruption-safe runs.
+                        5. Click **Save Settings** if you want these choices to persist.
+
+                        **Configured folders**
+                        - Click **Process configured folders** to run only the folders shown in Settings.
+                        - Use this when you want a predictable library slice instead of scanning everything.
+
+                        **Paths file**
+                        - Set **Paths file** to a curated list (one path per line), then click **Process paths file**.
+                        - Use this when you want a checkpoint-friendly batch or a hand-picked ingest queue.
 
                         **Full rebuild**
-                        - Turn **Overwrite** ON, then click **Process all folders**.
+                        - Turn **Overwrite** ON before running a large rebuild.
+                        - Run **Dry run path repair** first if health shows stale or duplicate path variants.
+                        - Run **Dry run bare-path repair** if health still shows orphan filename-only records after path repair.
                         """
                     ).classes("text-gray-300")
 
@@ -515,8 +863,10 @@ def render() -> None:
                     ui.markdown(
                         """
                         - **Overwrite vs Skip analyzed:** these are linked; turning Overwrite ON turns Skip analyzed OFF (and vice-versa).
-                        - **Why is Discover empty?** Discover needs an index; run the pipeline (folder Import or Process all folders).
+                        - **Why is Discover empty?** Discover needs an index; run a folder import, configured-folder run, or paths-file run first.
+                        - **What is Auto scope?** Legacy behavior: if a Paths file is set, it uses that; otherwise it uses configured folders.
                         - **What does Timbre do?** Adds extra texture features; it is slower and requires `openl3` installed.
+                        - **What does Resume do?** Embedding progress is checkpointed and completed tracks are skipped on rerun.
                         """
                     ).classes("text-gray-300")
 
@@ -535,6 +885,10 @@ def render() -> None:
                 state.skip_analyzed = skip_check.value
                 state.use_timbre = bool(timbre_check.value)
                 state.embed_overwrite = bool(overwrite_check.value)
+                state.embed_resume = bool(resume_check.value)
+                state.embed_checkpoint_file = str(checkpoint_file_input.value or "").strip()
+                state.embed_checkpoint_every = max(1, int(checkpoint_every_input.value or 100))
+                state.embed_paths_file = str(paths_file_input.value or "").strip()
                 state.beatgrid_enable = beatgrid_check.value
                 state.beatgrid_overwrite = beatgrid_overwrite_check.value
 

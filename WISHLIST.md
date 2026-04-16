@@ -6,9 +6,12 @@
 
 #### Embedding Reliability
 - [ ] Implement comprehensive error recovery during large library embedding
-- [ ] Add detailed logging for failed/skipped track embeddings
-- [ ] Create resumable embedding process
-- [ ] Support checkpointing for multi-day/interrupted embedding runs
+- [x] Add detailed logging for failed/skipped track embeddings
+  - Completed 2026-02-07: failed track output now writes structured JSONL logs instead of console-only errors.
+- [x] Create resumable embedding process
+  - Completed 2026-02-07: CLI and UI now support resumable embedding runs.
+- [x] Support checkpointing for multi-day/interrupted embedding runs
+  - Completed 2026-02-07: `--resume`, `--checkpoint-file`, and `--checkpoint-every` are wired through the active embedding workflow.
 
 #### Performance Optimizations
 - [ ] Optimize memory usage for large libraries (100k+ tracks)
@@ -25,7 +28,8 @@
 
 #### UI/UX
 - [ ] Library table virtual scrolling / true pagination for 10k+ tracks (current plan: pagination; future: infinite scroll).
-- [ ] Settings: import/scan UX overhaul (import one folder at a time without reanalyzing whole library, clarify overwrite/skip behavior for already-analyzed tracks, add an in-page "How to use" tab).
+- [x] Settings: import/scan UX overhaul (import one folder at a time without reanalyzing whole library, clarify overwrite/skip behavior for already-analyzed tracks, add an in-page "How to use" tab).
+  - Completed 2026-02-28: one-folder import, configured-folder vs paths-file runs, preflight summaries, health actions, and in-page guidance are now in Settings.
 - [x] Beatgrid waveform preview: refine layout/controls and consider downbeat markers/zoom; current preview shows first ~16 bars on demand.
   - Completed 2025-12-25: Enhanced with beat/downbeat markers (pink dashed/yellow solid), dark theme, BPM/confidence/segments in title, legend.
 - [x] Tagging: implement safe_tagstore (user vs AI namespace), active_learning (uncertainty sampling), and optional user_model per docs/tagging_active_learning_plan.md.
@@ -57,8 +61,19 @@
 - [x] Intelligent track deduplication UI: wire Tools → Duplicate Finder to `duplicates.find_duplicates` and show KEEP/REMOVE pairs with CDJ warnings.
   - Completed 2025-12-09: Tools page now has working duplicate scanner with exact/fuzzy matching and CDJ warnings.
 - [ ] Automated metadata cleanup helpers (artist/title normalization, missing BPM/key reports).
+  - Partial 2026-03-01: library health audit, embedding gap scan, collision-safe path repair, and safe bare-path/orphan resolution now exist; artist/title cleanup and manual review tools for ambiguous leftovers still need work.
 - [ ] Advanced tag inference UI: expose `tags-auto` parameters in the Tagging page (min_samples, margin, prune_margin, apply) beyond the current CSV-only GUI flow.
 - [ ] Comprehensive library health checks (counts of missing embeddings/BPM/key/cues, corrupt files, inconsistent tags).
+  - Partial 2026-03-01: counts for missing embeddings/BPM/key/cues plus stale, bare, junk, broken-path, and post-repair orphan issues are now surfaced in scripts and UI; corrupt-file and inconsistent-tag reporting still need finishing.
+
+#### BPM & Rekordbox Integration
+- [ ] **Separate BPM storage from Rekordbox sync** - Implementation plan: `C:\Users\hunte\.claude\plans\shimmering-stirring-barto.md`
+  * BPM data in separate `data/bpm.json` file (never syncs to Rekordbox by default)
+  * Config-based export control (`export_bpm_to_rekordbox: false` default)
+  * Conflict resolution UI when importing BPM from Rekordbox
+  * One-click migration tool with automatic backup
+  * Estimated effort: 5-6 days
+  * Status: Design complete, awaiting implementation
 
 #### User Preferences
 - [ ] Machine learning-based preference learning
@@ -71,6 +86,17 @@
 - [x] Comprehensive unit and integration tests
   - Completed 2025-12-25: Added test_beatgrid.py (6 test categories) and test_ai_tagging.py (7 test categories); both 100% pass rate.
 - [ ] Performance benchmarking suite
+- [ ] Crate Expander performance pass
+  - Focus first on CPU-side wins in `rbassist/playlist_expand.py`, not GPU work.
+  - Highest-ROI slice: cache the loaded HNSW index, `paths.json`, and the resolved meta/alias lookup across playlist-expansion runs instead of rebuilding or reloading them repeatedly.
+  - Next slice: pre-normalize seed/candidate vectors and precompute repeat signatures once per workspace so reranking does less repeated cosine math and text normalization.
+  - Later slice: explore batch or parallel per-seed coverage queries for large seed sets, optionally with a worker/config knob if the simpler caching work is not enough.
+  - Grounded evidence from 2026-03-30 benchmark on playlist `2024 Novemebr DLs` (`50` mapped/embedded seeds, target total `100`):
+    - warm run at `candidate_pool=1000`: `10.874s`, filled to `100`
+    - warm run at `candidate_pool=2000`: `17.270s`, filled to `100`
+    - cold multi-run average at `1000`: `21.801s`
+    - cold multi-run average at `2000`: `33.958s`
+  - Profiling note: the current bottlenecks are repeated cosine similarity work, repeated HNSW/index-path loading, alias-index rebuilding, and repeat-signature text processing.
 - [ ] Cross-platform compatibility testing
 
 #### Documentation
@@ -84,6 +110,10 @@
 
 #### Experimental Features
 - [ ] DJ-style intelligent playlist generation surfaced in the Discover/Tools pages (front-end for existing `int-pl` logic).
+- [ ] Section-aware / transition-aware crate expansion for DJ mixing.
+  - Build on the shared `playlist-expand` backend now used by the CLI and Crate Expander tab.
+  - Goal: expand one playlist into sections or transition-friendly lanes instead of only a flat append-only crate.
+  - Follow this only after the current crate-expansion flow is manually smoke-tested in the browser.
 - [ ] Advanced beat grid analysis and visual cue editing tools in the GUI.
 - [ ] Optional: history rewrite tool (git-filter-repo) to fully purge accidentally committed personal/library files from Git history (force-push workflow).
 - [ ] Automatic set preparation tools (end-to-end: seed → recommendations → ordered export with cues).
@@ -95,12 +125,12 @@ Interested in helping? Check the current roadmap and open issues.
 Pull requests welcome!
 
 ---
-Last Updated: 2025-12-25
+Last Updated: 2026-03-30
 Curator: Claude (AI Assistant) + rbassist contributors
 
-## Completion Summary (2025-12-25)
+## Completion Summary (2026-02-28)
 - **Total Wishlist Items:** ~40
-- **Completed:** 8 major items
-- **In Progress:** 5 items
-- **Not Started:** ~27 items
-- **System Feature Completeness:** 95%
+- **Completed:** 12 major items
+- **In Progress:** 6 items
+- **Not Started:** ~22 items
+- **System Feature Completeness:** 70%

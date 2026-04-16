@@ -1,0 +1,50 @@
+version: 1
+active_profile: default
+profiles:
+  default:
+    roles:
+      memory_1:
+        enabled: true
+        name: Memory 1
+      hot_a:
+        enabled: true
+        name: Hot A
+        slot: 0
+        bars: 16
+      hot_b:
+        enabled: true
+        name: Hot B
+        slot: 1
+        bars: 16
+        after_downbeat_bars: 32
+      hot_c:
+        enabled: true
+        name: Hot C
+        slot: 2
+        bars: 16
+      hot_d:
+        enabled: true
+        name: Hot D
+        slot: 3
+      drop_memory:
+        enabled: true
+        name: Drop Memory
+      second_drop_memory:
+        enabled: false
+        name: Second Drop
+        after_drop_bars: 64
+      mix_out_e:
+        enabled: true
+        name: Hot E
+        slot: 4
+        bars: 16
+        before_end_bars: 48
+      mix_out_f:
+        enabled: true
+        name: Hot F
+        slot: 5
+        bars: 16
+        before_end_bars: 16
+      end_memory:
+        enabled: true
+        name: End Memory

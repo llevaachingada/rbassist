@@ -1,12 +1,13 @@
 from __future__ import annotations
+import json
 import pathlib
 import librosa
 import csv
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple
+from typing import Any, List, Optional
 import typer
 from .analyze import analyze_bpm_key
-from .utils import load_meta, save_meta, console, walk_audio, pick_device
+from .utils import DATA, load_meta, save_meta, console, walk_audio, pick_device, read_paths_file, make_path_aliases
 from .sampling_profile import load_sampling_params
 from .beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 
@@ -18,12 +19,205 @@ from .beatgrid import analyze_paths as analyze_beatgrid_paths, BeatgridConfig
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="RBassist command line tools")
 
 
+def _read_paths_file(paths_file: pathlib.Path) -> list[str]:
+    """Backward-compatible wrapper around shared paths-file parsing."""
+    return read_paths_file(paths_file)
+
+
+def _track_vector_file_exists(info: dict[str, Any] | None, key: str) -> bool:
+    if not isinstance(info, dict):
+        return False
+    value = info.get(key)
+    if not value:
+        return False
+    try:
+        return pathlib.Path(str(value)).exists()
+    except OSError:
+        return False
+
+
+def _missing_section_sidecar_paths(
+    meta: dict[str, Any],
+    candidate_paths: list[str] | None = None,
+) -> tuple[list[str], dict[str, int]]:
+    """Return primary-embedded tracks missing at least one section sidecar."""
+    tracks = meta.get("tracks", {})
+    if not isinstance(tracks, dict):
+        tracks = {}
+    section_keys = ("embedding_intro", "embedding_core", "embedding_late")
+    candidate_aliases: set[str] | None = None
+    if candidate_paths is not None:
+        candidate_aliases = set()
+        for path in candidate_paths:
+            candidate_aliases.update(make_path_aliases(path))
+    stats = {
+        "tracks_total": len(tracks),
+        "candidate_scope_count": len(candidate_paths or []),
+        "outside_scope_count": 0,
+        "missing_primary_embedding_count": 0,
+        "section_complete_count": 0,
+        "missing_audio_count": 0,
+        "selected_count": 0,
+    }
+    selected: list[str] = []
+    for path, info in sorted(tracks.items(), key=lambda item: str(item[0]).lower()):
+        clean_path = str(path)
+        if candidate_aliases is not None and not (make_path_aliases(clean_path) & candidate_aliases):
+            stats["outside_scope_count"] += 1
+            continue
+        if not _track_vector_file_exists(info, "embedding"):
+            stats["missing_primary_embedding_count"] += 1
+            continue
+        if all(_track_vector_file_exists(info, key) for key in section_keys):
+            stats["section_complete_count"] += 1
+            continue
+        try:
+            audio_exists = pathlib.Path(clean_path).exists()
+        except OSError:
+            audio_exists = False
+        if not audio_exists:
+            stats["missing_audio_count"] += 1
+            continue
+        selected.append(clean_path)
+    stats["selected_count"] = len(selected)
+    return selected, stats
+
+
+def _resolve_embed_checkpoint_path(checkpoint_file: pathlib.Path | None) -> pathlib.Path:
+    if checkpoint_file is None:
+        return DATA / "embed_checkpoint.json"
+    if checkpoint_file.is_absolute():
+        return checkpoint_file
+    return (pathlib.Path.cwd() / checkpoint_file).resolve()
+
+
+def _checkpoint_failed_paths(checkpoint_file: pathlib.Path | None) -> set[str]:
+    checkpoint_path = _resolve_embed_checkpoint_path(checkpoint_file)
+    if not checkpoint_path.exists():
+        return set()
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        console.print(f"[yellow]Checkpoint unreadable ({checkpoint_path}): {e}")
+        return set()
+    failed = checkpoint.get("failed_paths", []) if isinstance(checkpoint, dict) else []
+    if not isinstance(failed, list):
+        return set()
+    return {str(path) for path in failed if str(path).strip()}
+
+
+def _normalize_playlist_expansion_choice(value: str, allowed: set[str], *, label: str) -> str:
+    clean = str(value or "").lower().strip()
+    if clean not in allowed:
+        raise ValueError(f"Unsupported {label}: {value}")
+    return clean
+
+
+def _build_playlist_expansion_kwargs(
+    *,
+    mode: str,
+    strategy: str,
+    candidate_pool: Optional[int],
+    diversity: Optional[float],
+    tempo_pct: Optional[float],
+    allow_doubletime: Optional[bool],
+    key_mode: Optional[str],
+    key_filter: bool,
+    w_ann_centroid: Optional[float],
+    w_ann_seed_coverage: Optional[float],
+    w_group_match: Optional[float],
+    w_bpm: Optional[float],
+    w_key: Optional[float],
+    w_tags: Optional[float],
+    w_transition: Optional[float],
+    require_tags: Optional[List[str]],
+    section_scores: bool,
+    harmonic_key_scores: bool,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "mode": _normalize_playlist_expansion_choice(
+            mode,
+            {"tight", "balanced", "adventurous"},
+            label="playlist expansion mode",
+        ),
+        "strategy": _normalize_playlist_expansion_choice(
+            strategy,
+            {"blend", "centroid", "coverage"},
+            label="playlist expansion strategy",
+        ),
+    }
+
+    if candidate_pool is not None:
+        kwargs["candidate_pool"] = max(1, int(candidate_pool))
+    if diversity is not None:
+        kwargs["diversity"] = max(0.0, min(1.0, float(diversity)))
+
+    filters: dict[str, Any] = {}
+    if tempo_pct is not None:
+        filters["tempo_pct"] = float(tempo_pct)
+    if allow_doubletime is not None:
+        filters["allow_doubletime"] = bool(allow_doubletime)
+    if key_filter:
+        filters["key_mode"] = "filter"
+    elif key_mode is not None:
+        filters["key_mode"] = _normalize_playlist_expansion_choice(
+            key_mode,
+            {"off", "soft", "filter"},
+            label="playlist expansion key mode",
+        )
+    if require_tags:
+        filters["require_tags"] = [str(tag).strip() for tag in require_tags if str(tag).strip()]
+    if filters:
+        kwargs["filters"] = filters
+
+    weights: dict[str, Any] = {}
+    if w_ann_centroid is not None:
+        weights["ann_centroid"] = float(w_ann_centroid)
+    if w_ann_seed_coverage is not None:
+        weights["ann_seed_coverage"] = float(w_ann_seed_coverage)
+    if w_group_match is not None:
+        weights["group_match"] = float(w_group_match)
+    if w_bpm is not None:
+        weights["bpm_match"] = float(w_bpm)
+    if w_key is not None:
+        weights["key_match"] = float(w_key)
+    if w_tags is not None:
+        weights["tag_match"] = float(w_tags)
+    if w_transition is not None:
+        weights["transition_outro_to_intro"] = float(w_transition)
+    if weights:
+        kwargs["weights"] = weights
+    if section_scores:
+        kwargs["controls"] = {"use_section_scores": True}
+    if harmonic_key_scores:
+        controls = dict(kwargs.get("controls", {}))
+        controls["use_harmonic_key_scores"] = True
+        kwargs["controls"] = controls
+
+    return kwargs
+
+
 @app.command("analyze")
 def cmd_analyze(
     paths: List[str] = typer.Argument(..., help="One or more files or folders to analyze"),
     duration_s: int = typer.Option(90, help="Max seconds per track to analyze (0 = full)"),
     only_new: bool = typer.Option(True, help="Skip files already analyzed with same signature"),
     force: bool = typer.Option(False, help="Force re-analyze even if cached"),
+    cue_profile: str = typer.Option(
+        "",
+        "--cue-profile",
+        help="Optional cue template profile name from config/cue_templates.yml.",
+    ),
+    overwrite_cues: bool = typer.Option(
+        False,
+        "--overwrite-cues",
+        help="When auto-cues are enabled, replace existing cue data instead of preserving it.",
+    ),
+    harmonic_profiles: bool = typer.Option(
+        False,
+        "--harmonic-profiles/--no-harmonic-profiles",
+        help="Also cache chroma/tonnetz profiles under features for opt-in harmonic scoring.",
+    ),
     workers: int = typer.Option(12, help="Process workers for BPM/Key (0 = serial)"),
 ):
     files = walk_audio(paths)
@@ -35,6 +229,9 @@ def cmd_analyze(
         duration_s=duration_s,
         only_new=only_new,
         force=force,
+        cue_profile=(cue_profile or None),
+        overwrite_cues=overwrite_cues,
+        harmonic_profiles=harmonic_profiles,
         workers=(workers if workers > 0 else None),
     )
 
@@ -73,7 +270,7 @@ def main() -> None:
 
 @app.command("embed")
 def cmd_embed(
-    paths: List[str] = typer.Argument(..., help="Files or folders to embed"),
+    paths: Optional[List[str]] = typer.Argument(None, help="Files or folders to embed"),
     duration_s: int = typer.Option(120, help="Seconds per track (0=full)"),
     model: str = typer.Option("m-a-p/MERT-v1-330M", help="HF model name for MERT"),
     device: str = typer.Option(
@@ -86,6 +283,77 @@ def cmd_embed(
     ),
     timbre: bool = typer.Option(False, help="Also write a timbre-only embedding using OpenL3"),
     timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
+    section_embed: bool = typer.Option(
+        False,
+        "--section-embed/--no-section-embed",
+        help="Also save intro/core/late MERT section embeddings for opt-in transition scoring.",
+    ),
+    harmonic_profiles: bool = typer.Option(
+        False,
+        "--harmonic-profiles/--no-harmonic-profiles",
+        help="Also cache chroma/tonnetz profiles under features for opt-in harmonic scoring.",
+    ),
+    layer_mix: bool = typer.Option(
+        False,
+        "--layer-mix/--no-layer-mix",
+        help="Also save an opt-in depth-mixed MERT embedding sidecar.",
+    ),
+    layer_mix_weights_path: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--layer-mix-weights",
+        file_okay=True,
+        dir_okay=False,
+        exists=True,
+        readable=True,
+        help="Optional .npz file with learned layer-mix weights.",
+    ),
+    paths_file: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--paths-file",
+        file_okay=True,
+        dir_okay=False,
+        exists=True,
+        readable=True,
+        help="Optional text file with one file/folder path per line.",
+    ),
+    missing_section_sidecars: bool = typer.Option(
+        False,
+        "--missing-section-sidecars",
+        help=(
+            "Queue primary-embedded tracks that are missing intro/core/late section sidecars. "
+            "With paths or --paths-file, restrict to that scope; otherwise scan all metadata. "
+            "Implies --section-embed and --resume."
+        ),
+    ),
+    retry_checkpoint_failures: bool = typer.Option(
+        False,
+        "--retry-checkpoint-failures",
+        help=(
+            "When resuming --missing-section-sidecars, retry paths already listed in the checkpoint failed_paths. "
+            "By default they are quarantined for separate follow-up."
+        ),
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume from checkpoint and skip already completed tracks.",
+    ),
+    checkpoint_file: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--checkpoint-file",
+        help="Checkpoint JSON path (default: data/embed_checkpoint.json).",
+    ),
+    checkpoint_every: int = typer.Option(
+        100,
+        "--checkpoint-every",
+        min=1,
+        help="Persist checkpoint state every N processed tracks.",
+    ),
+    profile_embed_out: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--profile-embed-out",
+        help="Optional JSONL path for per-track embed stage timings.",
+    ),
 ):
     # Enforce canonical embedding defaults to keep library consistent.
     if duration_s != 120:
@@ -99,10 +367,72 @@ def cmd_embed(
     except Exception as e:
         console.print(f"[red]Embed deps missing: install .[ml] and torch. Error: {e}")
         raise typer.Exit(1)
-    files = walk_audio(paths)
-    if not files:
+    input_paths: list[str] = []
+    if paths:
+        input_paths.extend(paths)
+    if paths_file is not None:
+        try:
+            from_file = _read_paths_file(paths_file)
+        except Exception as e:
+            console.print(f"[red]Failed to read --paths-file {paths_file}: {e}")
+            raise typer.Exit(1)
+        if not from_file:
+            console.print(f"[yellow]No usable entries found in {paths_file}.")
+        else:
+            console.print(f"[cyan]Loaded {len(from_file)} path entries from {paths_file}")
+            input_paths.extend(from_file)
+    if not input_paths and not missing_section_sidecars:
+        console.print("[red]Provide at least one path argument or --paths-file.")
+        raise typer.Exit(1)
+    files = walk_audio(input_paths) if input_paths else []
+    if input_paths and not files:
         console.print("[yellow]No audio files found.")
         raise typer.Exit(1)
+    # Keep deterministic order and remove duplicates when both positional paths
+    # and --paths-file overlap.
+    files = list(dict.fromkeys(files))
+    if missing_section_sidecars:
+        if not section_embed:
+            console.print("[cyan]--missing-section-sidecars implies --section-embed.")
+            section_embed = True
+        if not resume:
+            console.print("[cyan]--missing-section-sidecars implies --resume to avoid rewriting primary embeddings.")
+            resume = True
+        files, gap_stats = _missing_section_sidecar_paths(load_meta(), files if input_paths else None)
+        console.print(
+            "[cyan]"
+            f"Selected {gap_stats['selected_count']} primary-embedded track(s) missing section sidecars "
+            f"from {gap_stats['tracks_total']} metadata track(s)."
+        )
+        if resume and not retry_checkpoint_failures:
+            failed_paths = _checkpoint_failed_paths(checkpoint_file)
+            if failed_paths:
+                before_failed_filter = len(files)
+                failed_aliases: set[str] = set()
+                for failed_path in failed_paths:
+                    failed_aliases.update(make_path_aliases(failed_path))
+                files = [path for path in files if not (make_path_aliases(path) & failed_aliases)]
+                skipped_failed = before_failed_filter - len(files)
+                if skipped_failed:
+                    console.print(
+                        "[yellow]"
+                        f"Skipped {skipped_failed} checkpoint-failed section-gap track(s). "
+                        "Use --retry-checkpoint-failures to retry them."
+                    )
+        if gap_stats["missing_audio_count"]:
+            console.print(
+                "[yellow]"
+                f"Skipped {gap_stats['missing_audio_count']} section-gap track(s) whose audio path was missing."
+            )
+        if input_paths and gap_stats["outside_scope_count"]:
+            console.print(
+                "[cyan]"
+                f"Scoped to {gap_stats['candidate_scope_count']} audio file(s); "
+                f"{gap_stats['outside_scope_count']} metadata track(s) were outside that scope."
+            )
+        if not files:
+            console.print("[green]No primary-embedded tracks missing section sidecars found for this scope.")
+            return
     build_embeddings(
         files,
         model_name=model or DEFAULT_MODEL,
@@ -112,6 +442,14 @@ def cmd_embed(
         batch_size=batch_size,
         timbre=timbre,
         timbre_size=timbre_size,
+        resume=resume,
+        checkpoint_file=(str(checkpoint_file) if checkpoint_file else None),
+        checkpoint_every=checkpoint_every,
+        section_embed=section_embed,
+        harmonic_profiles=harmonic_profiles,
+        layer_mix=layer_mix,
+        layer_mix_weights_path=(str(layer_mix_weights_path) if layer_mix_weights_path else None),
+        profile_embed_out=(str(profile_embed_out) if profile_embed_out else None),
     )
 
 
@@ -127,6 +465,11 @@ def cmd_reanalyze(
     analyze_workers: int = typer.Option(12, help="Process workers for BPM/Key (0 = serial)"),
     timbre: bool = typer.Option(False, help="Also write timbre embeddings (OpenL3) and blend them into main embeddings"),
     timbre_size: int = typer.Option(512, help="OpenL3 embedding size (128/256/512)"),
+    harmonic_profiles: bool = typer.Option(
+        False,
+        "--harmonic-profiles/--no-harmonic-profiles",
+        help="Also cache chroma/tonnetz profiles under features during analysis.",
+    ),
 ):
     from .embed import build_embeddings
 
@@ -145,6 +488,7 @@ def cmd_reanalyze(
         overwrite=overwrite,
         timbre=timbre,
         timbre_size=timbre_size,
+        harmonic_profiles=harmonic_profiles,
     )
     if analyze_bpm:
         analyze_bpm_key(
@@ -152,6 +496,7 @@ def cmd_reanalyze(
             duration_s=90,
             only_new=not overwrite,
             force=overwrite,
+            harmonic_profiles=harmonic_profiles,
             workers=(analyze_workers if analyze_workers > 0 else None),
         )
     if rebuild_index:
@@ -183,7 +528,14 @@ def cmd_recommend(
     camelot_neighbors: bool = typer.Option(True, help="Filter by Camelot compatibility"),
     w_ann: float = typer.Option(0.0, help="Weight: ANN base score"),
     w_samples: float = typer.Option(0.0, help="Weight: samples score (0..1)"),
-    w_bass: float = typer.Option(0.0, help="Weight: bass contour similarity (0..1)")
+    w_bass: float = typer.Option(0.0, help="Weight: bass contour similarity (0..1)"),
+    w_harmony: float = typer.Option(0.0, help="Weight: cached chroma/tonnetz harmonic compatibility (0..1)"),
+    w_learned_sim: float = typer.Option(0.0, "--w-learned-sim", help="Weight: learned playlist-pair similarity head (0..1)"),
+    learned_similarity: bool = typer.Option(False, "--learned-similarity/--no-learned-similarity", help="Use data/models/similarity_head.pt when present."),
+    similarity_head_path: pathlib.Path = typer.Option(pathlib.Path("data/models/similarity_head.pt"), "--similarity-head-path", help="Path to learned similarity model."),
+    similarity_device: str = typer.Option("cuda", "--similarity-device", help="Device for learned similarity inference; CUDA is preferred by default."),
+    w_transition: float = typer.Option(0.0, help="Weight: outro-to-intro section transition score (0..1)"),
+    section_scores: bool = typer.Option(False, "--section-scores", help="Use section embeddings when present."),
 ):
     try:
         from .recommend import recommend as do_rec
@@ -196,7 +548,18 @@ def cmd_recommend(
         tempo_pct=tempo_pct,
         allow_doubletime=allow_doubletime,
         camelot_neighbors=camelot_neighbors,
-        weights={"ann": w_ann, "samples": w_samples, "bass": w_bass},
+        weights={
+            "ann": w_ann,
+            "samples": w_samples,
+            "bass": w_bass,
+            "harmony": w_harmony,
+            "learned_sim": w_learned_sim,
+            "transition": w_transition,
+        },
+        use_section_scores=section_scores,
+        learned_similarity=learned_similarity,
+        similarity_head_path=similarity_head_path,
+        similarity_device=similarity_device,
     )
 
 
@@ -211,6 +574,212 @@ def cmd_recommend_sequence(
         console.print(f"[red]Recommend deps missing (hnswlib). Error: {e}")
         raise typer.Exit(1)
     do_rec_seq(seeds, top=top)
+
+
+@app.command("playlist-expand")
+def cmd_playlist_expand(
+    playlist: str = typer.Option(..., "--playlist", help="Rekordbox playlist name or folder path"),
+    target_total: Optional[int] = typer.Option(
+        None,
+        "--target-total",
+        min=1,
+        help="Desired final total including mapped seed tracks.",
+    ),
+    add_count: Optional[int] = typer.Option(
+        None,
+        "--add-count",
+        min=1,
+        help="How many new tracks to append to the mapped seed playlist.",
+    ),
+    source: str = typer.Option("db", "--source", help="Seed source: db | xml"),
+    xml_path: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--xml-path",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        help="Optional Rekordbox XML file used when --source xml or as an explicit fallback if DB loading fails.",
+    ),
+    mode: str = typer.Option("balanced", help="Expansion mode: tight | balanced | adventurous"),
+    strategy: str = typer.Option("blend", help="Expansion strategy: blend | centroid | coverage"),
+    candidate_pool: Optional[int] = typer.Option(
+        None,
+        "--candidate-pool",
+        min=25,
+        help="How many ANN candidates to fetch before reranking (omit to use the mode preset).",
+    ),
+    diversity: Optional[float] = typer.Option(
+        None,
+        "--diversity",
+        min=0.0,
+        max=1.0,
+        help="MMR-style diversity weight for added tracks (omit to use the mode preset).",
+    ),
+    tempo_pct: Optional[float] = typer.Option(
+        None, help="Tempo tolerance percent override (omit to use the mode preset)."
+    ),
+    allow_doubletime: Optional[bool] = typer.Option(
+        None,
+        "--allow-doubletime/--no-allow-doubletime",
+        help="Allow 2x/0.5x tempo matches inside the playlist envelope (omit to use the mode preset).",
+    ),
+    key_mode: Optional[str] = typer.Option(
+        None,
+        "--key-mode",
+        help="Key handling override: off | soft | filter (omit to use the mode preset).",
+    ),
+    key_filter: bool = typer.Option(
+        False,
+        "--key-filter",
+        help="Require Camelot-compatible keys as a hard filter instead of a soft score boost.",
+    ),
+    w_ann_centroid: Optional[float] = typer.Option(None, help="Override weight: ANN centroid match."),
+    w_ann_seed_coverage: Optional[float] = typer.Option(None, help="Override weight: ANN seed coverage."),
+    w_group_match: Optional[float] = typer.Option(None, help="Override weight: group-to-seed match."),
+    w_bpm: Optional[float] = typer.Option(None, help="Override weight: BPM match."),
+    w_key: Optional[float] = typer.Option(None, help="Override weight: key match."),
+    w_tags: Optional[float] = typer.Option(None, help="Override weight: tag match."),
+    w_transition: Optional[float] = typer.Option(None, help="Override weight: outro-to-intro transition match."),
+    section_scores: bool = typer.Option(
+        False,
+        "--section-scores",
+        help="Use intro/late section embeddings when available during reranking.",
+    ),
+    harmonic_key_scores: bool = typer.Option(
+        False,
+        "--harmonic-key-score",
+        help="Use cached chroma/tonnetz profiles for the soft key_match score when available.",
+    ),
+    require_tag: List[str] = typer.Option(
+        None,
+        "--require-tag",
+        help="Require each added track to include this My Tag. Repeat for multiple tags.",
+    ),
+    preview_json: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--preview-json",
+        help="Optional JSON preview path for the expansion result and diagnostics.",
+    ),
+    out_xml: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--out-xml",
+        help="Optional Rekordbox XML export path for seed tracks plus additions.",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        help="Playlist name to use for the XML export (defaults to '<playlist> Expanded').",
+    ),
+):
+    if (target_total is None) == (add_count is None):
+        console.print("[red]Provide exactly one of --target-total or --add-count.[/red]")
+        raise typer.Exit(1)
+
+    try:
+        from .playlist_expand import load_rekordbox_playlist, expand_playlist, write_expansion_xml
+    except Exception as e:
+        console.print(f"[red]Playlist expansion deps missing or failed to import. Error: {e}[/red]")
+        raise typer.Exit(1)
+
+    playlist_source = source.strip().lower()
+    if playlist_source not in {"db", "xml"}:
+        console.print("[red]--source must be either 'db' or 'xml'.[/red]")
+        raise typer.Exit(1)
+    if playlist_source == "xml" and xml_path is None:
+        console.print("[red]--xml-path is required when --source xml is selected.[/red]")
+        raise typer.Exit(1)
+
+    try:
+        if playlist_source == "db":
+            try:
+                seed_playlist = load_rekordbox_playlist(playlist, source="db")
+            except Exception as db_exc:
+                if xml_path is None:
+                    raise
+                console.print(
+                    f"[yellow]DB playlist load failed ({db_exc}); falling back to XML: {xml_path}[/yellow]"
+                )
+                seed_playlist = load_rekordbox_playlist(
+                    playlist,
+                    source="xml",
+                    xml_path=str(xml_path),
+                )
+        else:
+            seed_playlist = load_rekordbox_playlist(
+                playlist,
+                source="xml",
+                xml_path=str(xml_path) if xml_path else None,
+            )
+    except Exception as e:
+        console.print(f"[red]Failed to load Rekordbox playlist '{playlist}': {e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        expand_kwargs = _build_playlist_expansion_kwargs(
+            mode=mode,
+            strategy=strategy,
+            candidate_pool=candidate_pool,
+            diversity=diversity,
+            tempo_pct=tempo_pct,
+            allow_doubletime=allow_doubletime,
+            key_mode=key_mode,
+            key_filter=key_filter,
+            w_ann_centroid=w_ann_centroid,
+            w_ann_seed_coverage=w_ann_seed_coverage,
+            w_group_match=w_group_match,
+            w_bpm=w_bpm,
+            w_key=w_key,
+            w_tags=w_tags,
+            w_transition=w_transition,
+            require_tags=require_tag,
+            section_scores=section_scores,
+            harmonic_key_scores=harmonic_key_scores,
+        )
+        result = expand_playlist(
+            seed_playlist,
+            add_count=add_count,
+            target_total=target_total,
+            **expand_kwargs,
+        )
+    except Exception as e:
+        console.print(f"[red]Playlist expansion failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    diag = result.diagnostics
+    console.print(
+        "[green]Expanded playlist[/green] "
+        f"'{seed_playlist.name}' via {seed_playlist.source} "
+        f"({diag.get('clean_seed_tracks_total', 0)} mapped seeds, "
+        f"{diag.get('added_tracks_total', 0)} additions, "
+        f"{diag.get('combined_tracks_total', 0)} total)."
+    )
+    console.print(
+        f"[cyan]Requested[/cyan] add_count={diag.get('requested_add_count')} "
+        f"target_total={diag.get('requested_target_total')} "
+        f"strategy={diag.get('strategy')} mode={diag.get('mode')}"
+    )
+    if diag.get("seed_loader_diagnostics"):
+        loader = diag["seed_loader_diagnostics"]
+        console.print(
+            f"[cyan]Seed loader[/cyan] total={loader.get('seed_tracks_total', 0)} "
+            f"matched={loader.get('matched_total', 0)} "
+            f"unmapped={loader.get('unmapped_total', 0)} "
+            f"missing_embedding={loader.get('missing_embedding_total', 0)}"
+        )
+
+    if preview_json is not None:
+        preview_json.parent.mkdir(parents=True, exist_ok=True)
+        preview_json.write_text(
+            json.dumps(result.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        console.print(f"[green]Wrote preview JSON -> {preview_json}[/green]")
+
+    if out_xml is not None:
+        playlist_name = name or f"{seed_playlist.name} Expanded"
+        write_expansion_xml(result, out_path=str(out_xml), playlist_name=playlist_name)
+        console.print(f"[green]Wrote Rekordbox XML -> {out_xml}[/green]")
 
 
 @app.command("bandcamp-import")
@@ -399,10 +968,13 @@ def cmd_tags_auto(
     if apply:
         updates: Dict[str, List[str]] = {}
         tracks_meta = meta.get("tracks", {})
+        from . import safe_tagstore as _safe_tagstore
+
+        effective_current_tags = _safe_tagstore.load_effective_user_tags(meta=meta)
         affected_paths = set(suggestions.keys()) | set(low_confidence.keys())
         for path in affected_paths:
             info = tracks_meta.get(path, {})
-            current = set(info.get("mytags", []))
+            current = set(effective_current_tags.get(path, info.get("mytags", [])))
             add_tags = {tag for tag, _score, _thr in suggestions.get(path, [])}
             updated = current | add_tags
             if prune_margin > 0.0:
@@ -436,14 +1008,30 @@ def cmd_djlink():
 
 
 @app.command("cues")
-def cmd_cues(path: str, duration: int = 120):
+def cmd_cues(
+    path: str,
+    duration: int = 120,
+    cue_profile: str = typer.Option(
+        "",
+        "--cue-profile",
+        help="Optional cue template profile name from config/cue_templates.yml.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Replace existing cue data for the target track.",
+    ),
+):
     from .cues import propose_cues
     from .analyze import _estimate_tempo
-    y, sr = librosa.load(path, sr=None, mono=True, duration=duration if duration > 0 else None)
-    bpm = _estimate_tempo(y, sr)
-    cues = propose_cues(y, sr, bpm=bpm)
     meta = load_meta()
     info = meta["tracks"].setdefault(path, {})
+    if info.get("cues") and not overwrite:
+        console.print("[yellow]Track already has cues. Re-run with --overwrite to replace them.")
+        return
+    y, sr = librosa.load(path, sr=None, mono=True, duration=duration if duration > 0 else None)
+    bpm = _estimate_tempo(y, sr)
+    cues = propose_cues(y, sr, bpm=bpm, cue_profile=(cue_profile or None))
     info.setdefault("bpm", round(float(bpm), 2))
     info["cues"] = cues
     save_meta(meta)

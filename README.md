@@ -47,7 +47,7 @@ rbassist is a Windows-first toolchain for DJs who want AI-assisted metadata, fas
 ### Getting Involved
 
 - **Issues/ideas**: file them on GitHub with hardware + command logs.
-- **Pull requests**: follow existing Typer/Streamlit patterns, document new flags, add tests when touching analyze/embed/tagstore logic.
+- **Pull requests**: follow existing Typer/NiceGUI patterns, document new flags, and add tests when touching analyze/embed/tagstore logic.
 - **Support**: share DJ workflow needs in discussions; the more context, the better the tuning advice.
 
 ## Install (Windows)
@@ -84,6 +84,70 @@ rbassist embed "D:\Music\YourCrate" --device cuda --num-workers 6 --duration-s 1
 - `--num-workers` parallelizes audio decoding (4-8 typical). Model inference stays serialized for stability.
 - `--duration-s` caps per-track analysis while testing.
 - Model cache: Hugging Face assets download to `%USERPROFILE%\.cache\huggingface` by default (set via `HF_HOME`). The MERT model is ~1.3 GB; make sure you have space on the download drive.
+
+Resumable embedding for long runs:
+```powershell
+# Use a prepared path list and checkpoint every 50 tracks
+rbassist embed --paths-file .\.tmp\pending_embedding_paths.part001.txt --checkpoint-every 50
+
+# Resume after interruption (default checkpoint: data/embed_checkpoint.json)
+rbassist embed --paths-file .\.tmp\pending_embedding_paths.part001.txt --resume --checkpoint-every 50
+
+# Backfill intro/core/late sidecars for already-primary-embedded tracks
+rbassist embed --missing-section-sidecars --section-embed --resume --checkpoint-file data\runlogs\section_embed_backfill_checkpoint.json --checkpoint-every 25
+
+# Restrict the same backfill to a reviewed crate or path list
+rbassist embed "C:\Users\you\Music\BREAKS" --missing-section-sidecars --section-embed --resume --checkpoint-file data\runlogs\section_embed_breaks_checkpoint.json --checkpoint-every 25
+
+# Optional profiling for future tuning; writes one JSON object per processed track
+rbassist embed --paths-file .\.tmp\profile_slice.txt --section-embed --resume --profile-embed-out data\runlogs\embed_profile_slice.jsonl
+
+# Optional harmonic profile cache for continuous key scoring experiments
+rbassist analyze "D:\Music\YourCrate" --duration-s 60 --harmonic-profiles
+```
+
+Notes:
+- Before any large backfill that will update `data/meta.json`, make or verify a fresh metadata backup in `data/backups` and start with a reviewed crate or paths file before scaling to the full library.
+- `--paths-file` accepts one file/folder path per line (`# comments` and blank lines allowed).
+- `--checkpoint-file` lets you override the checkpoint location.
+- Failed tracks are written to a structured JSONL log next to the checkpoint file.
+- `--missing-section-sidecars` scans `data/meta.json` for tracks with an existing primary embedding file but missing one of `embedding_intro`, `embedding_core`, or `embedding_late`; with paths or `--paths-file`, it restricts the scan to that scope and implies `--resume` so primary embeddings are not rewritten.
+- When `--missing-section-sidecars --resume` finds failed paths in the checkpoint, it skips them by default so one bad file cannot stop a full-library backfill again. Use `--retry-checkpoint-failures` only when intentionally retrying quarantined failures.
+- `--profile-embed-out` is opt-in and records per-track JSONL timing for audio decode, sample counts, MERT flattened item count, actual MERT batch size, save/checkpoint/meta writes, device, and embedding mode flags. Use it on a small fixed slice before changing loader or batching behavior.
+- `--harmonic-profiles` is opt-in and additive: it stores cached `chroma_profile` and `tonnetz_profile` values under each track's `features` without changing the default Camelot key behavior.
+
+Library health and path repair workflow:
+```powershell
+# Audit current metadata health
+python scripts/audit_meta_health.py --repo .
+
+# Scan your configured music roots for actual embedding gaps
+python scripts/list_embedding_gaps.py --repo . --music-root "C:\Users\you\Music\BREAKS"
+
+# Dry-run path repair and collision-safe dedupe
+python scripts/normalize_meta_paths.py --repo . --rewrite-from "C:/Users/OldUser/Music" --rewrite-to "C:/Users/you/Music" --drop-junk --resolve-collisions
+
+# Resolve bare filename/orphan entries that have exactly one match under your music roots
+python scripts/resolve_bare_meta_paths.py --repo . --music-root "C:\Users\you\Music"
+
+# Audit Rekordbox's current library against your canonical music root (read-only)
+python scripts/rekordbox_audit_library.py --music-root "C:\Users\you\Music" --out data/runlogs/rekordbox_audit.json
+
+# Split that audit into smaller human-review queues
+python scripts/prepare_rekordbox_review_queues.py --audit-report data/runlogs/rekordbox_audit.json --out-dir data/runlogs/rekordbox_review_queues --prefix rekordbox_music_root
+
+# Run a background maintenance pass for one canonical music root
+python scripts/run_music_root_background_maintenance.py --music-root "C:\Users\you\Music"
+```
+
+Notes:
+- Use the dry run first; it reports stale paths, bare filename entries, junk AppleDouble files, and collision-safe merge groups.
+- `--resolve-collisions` safely merges slash-style and moved-root duplicates before apply.
+- `resolve_bare_meta_paths.py` only auto-repairs uniquely matched bare filenames; ambiguous and missing filenames stay untouched for manual follow-up.
+- `rekordbox_audit_library.py` is read-only: it audits broken/outside-root Rekordbox paths, suggests relinks into your canonical music root, builds a consolidation move plan, and reports same-name-plus-duration duplicate groups.
+- `prepare_rekordbox_review_queues.py` turns the large Rekordbox audit into smaller review files for high-confidence relinks, ambiguous relinks, and same-name/different-type duplicate groups.
+- `run_music_root_background_maintenance.py` writes a self-contained run folder with `status.json`, `status.md`, audit outputs, gap scan results, and Rekordbox review queues. Add `--include-embed --include-analyze --include-index --resume` when you want a longer unattended maintenance pass.
+- Add `--apply` only after reviewing the JSON report.
 2) Build the HNSW index
 ```powershell
 rbassist index
@@ -92,32 +156,66 @@ rbassist index
 ```powershell
 rbassist recommend "Artist - Title" --top 25
 ```
-4) Import Bandcamp tags (update local meta for filtering later)
+4) Expand an existing Rekordbox playlist into a larger crate
+```powershell
+rbassist playlist-expand --playlist "DarkMoon" --target-total 30 --mode balanced --preview-json .\data\runlogs\darkmoon_expand.json --out-xml .\exports\darkmoon_expanded.xml
+```
+This is read-only against Rekordbox and `data/meta.json`, and it fails closed if fewer than 3 mapped tracks with embeddings are available.
+Presets now include `tight`, `balanced`, and `adventurous`; advanced overrides include `--strategy blend|centroid|coverage`, `--key-mode off|soft|filter`, and weight flags such as `--w-ann-centroid`, `--w-group-match`, and `--w-tags`.
+Use `--harmonic-key-score` only after harmonic profiles have been cached; it replaces the soft `key_match` component with continuous chroma/tonnetz compatibility where profiles exist and falls back to Camelot when they do not.
+The NiceGUI `Crate Expander` tab now uses the same shared backend with Rekordbox playlist loading, preset toggles, advanced sliders, quick role-tag lane buttons such as `Warm-up` and `Peak-time`, and cached reranking so slider changes reuse the prepared candidate pool instead of rebuilding ANN every time. Its advanced controls can also opt into cached profile harmony and section-flow scoring when those sidecars exist.
+The Crate Expander UI can also save the current expansion as a Rekordbox playlist XML file under `exports/crate_expander/`; this writes a playlist XML only and does not overwrite or mutate your Rekordbox library. After saving, the export folder opens so you can drag the XML into Rekordbox to import the new playlist.
+Added-track selection also applies a small anti-repetition penalty to reduce same-artist / same-version clustering in the appended crate.
+
+Build a read-only playlist-pair dataset for future learned-similarity training:
+```powershell
+python scripts\export_playlist_pairs.py --source db --out data\training\playlist_pairs.jsonl --summary data\training\playlist_pairs_summary.json
+```
+Use `--dry-run` first to print counts without writing the JSONL dataset. The exporter only writes the requested output files; it does not mutate `data/meta.json`, embeddings, indexes, or Rekordbox. Smart playlists and individual playlist load failures are skipped by default during discovery so one bad Rekordbox playlist does not stop the export.
+
+Train and test the opt-in learned similarity reranker:
+```powershell
+# CUDA is preferred by default; the trainer falls back to CPU if CUDA is unavailable.
+python scripts\train_similarity_head.py --pairs data\training\playlist_pairs.jsonl --out data\models\similarity_head.pt --device cuda
+
+# Use the trained head only when explicitly requested.
+rbassist recommend "Artist - Title" --learned-similarity --w-learned-sim 0.30 --similarity-device cuda
+
+# Compare baseline, section, harmonic, and learned rows for listening review.
+python scripts\benchmark_embeddings.py --seeds-file config\benchmark_seeds.txt --rows C,D,G,H --section-embeds --learned-similarity-model data\models\similarity_head.pt
+```
+The learned model does not replace the HNSW index or the primary `embedding` field. If the model file is missing, recommendation and benchmark flows fall back cleanly instead of failing.
+The NiceGUI Discover tab exposes the same idea as opt-in controls: Profile harmony uses cached chroma/tonnetz profiles, and Learned fit uses the trained playlist-pair model only when enabled. CUDA is the default learned-model device.
+
+5) Import Bandcamp tags (update local meta for filtering later)
 ```powershell
 rbassist bandcamp-import .\bandcamp.csv rbassist\config.yml
 ```
-5) Import existing Rekordbox My Tags (optional)
+6) Import existing Rekordbox My Tags (optional)
 ```powershell
 rbassist import-mytags "D:\Exports\rekordbox.xml"
 ```
-6) Import Rekordbox 6+ My Tags directly from the encrypted database (no XML export)
+7) Import Rekordbox 6+ My Tags directly from the encrypted database (no XML export)
 ```powershell
 rbassist rekordbox-import-mytags-db
 ```
 Make sure Rekordbox is closed first; this opens `master.db` in read-only mode via `pyrekordbox` and merges MyTags into `data/meta.json` keyed by file path.
 
-7) Auto-suggest My Tags for new tracks
+8) Auto-suggest My Tags for new tracks
 ```powershell
 rbassist tags-auto --margin 0.05
 # review suggestions, then apply:
 rbassist tags-auto --margin 0.05 --apply
 ```
 
-Want a browser UI instead of the old Tk window? Install the web extras and launch Streamlit directly:
+Want the GUI?
 ```powershell
-pip install "rbassist[web]"
-rbassist-gui  # launches the Streamlit app (same as `rbassist web`)
+rbassist ui
+# or on Windows:
+.\start.ps1
 ```
+
+NiceGUI is the only maintained GUI path in this repo.
 
 Data lives under `data/` (embeddings, index, meta.json). This repo is safe to sync to GitHub; keep your audio outside the repo.
 

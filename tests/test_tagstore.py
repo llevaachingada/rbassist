@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import pathlib
+import textwrap
 
 import yaml
 
@@ -41,6 +42,43 @@ class TagStoreTests(unittest.TestCase):
         self.assertNotIn("mytags", meta_after["tracks"]["song.wav"])
         cfg_after = yaml.safe_load(tagstore._TAG_FILE.read_text("utf-8"))
         self.assertNotIn("song.wav", cfg_after.get("library", {}))
+
+    def test_import_rekordbox_tags_respects_only_existing(self) -> None:
+        xml_path = pathlib.Path(self.tmp.name) / "rekordbox.xml"
+        xml_path.write_text(
+            textwrap.dedent(
+                """
+                <DJ_PLAYLISTS>
+                  <COLLECTION>
+                    <TRACK Location="file://localhost/song.wav">
+                      <MY_TAG>
+                        <TAG Name="Peak Hour" />
+                      </MY_TAG>
+                    </TRACK>
+                    <TRACK Location="file://localhost/missing.wav">
+                      <MY_TAG>
+                        <TAG Name="Warm-up" />
+                      </MY_TAG>
+                    </TRACK>
+                  </COLLECTION>
+                </DJ_PLAYLISTS>
+                """
+            ).strip(),
+            encoding="utf-8",
+        )
+
+        applied = tagstore.import_rekordbox_tags(str(xml_path), only_existing=True)
+        self.assertEqual(applied, 1)
+
+        meta = utils.load_meta()
+        self.assertEqual(meta["tracks"]["song.wav"]["mytags"], ["Peak Hour"])
+        self.assertNotIn("missing.wav", meta["tracks"])
+
+        applied = tagstore.import_rekordbox_tags(str(xml_path), only_existing=False)
+        self.assertEqual(applied, 2)
+
+        meta_after = utils.load_meta()
+        self.assertEqual(meta_after["tracks"]["missing.wav"]["mytags"], ["Warm-up"])
 
 
 if __name__ == "__main__":

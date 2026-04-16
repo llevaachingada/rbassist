@@ -12,6 +12,8 @@ from nicegui import ui
 from rbassist.cues import propose_cues
 from rbassist.analyze import _estimate_tempo  # reuse tempo estimator
 from rbassist.utils import load_meta, save_meta, console, walk_audio
+from rbassist.ui_services.cues import build_cue_page_view, plan_cue_targets
+from ..jobs import complete_job, fail_job, latest_job, list_recent_jobs, resolve_active_job, start_job, update_job
 from ..state import get_state
 
 
@@ -43,6 +45,7 @@ def _generate_cues_for_file(path: str, duration_s: int, overwrite: bool) -> tupl
 def render() -> None:
     """Render the Cues page."""
     state = get_state()
+    cue_job_id: dict[str, str | None] = {"value": None}
 
     with ui.column().classes("w-full gap-4"):
         # Header
@@ -66,59 +69,127 @@ def render() -> None:
 
             # Progress and status
             progress_bar = ui.linear_progress(value=0).props("rounded").style("max-width: 400px; display: none;")
-            status_label = ui.label("").classes("text-gray-400 text-sm")
+            status_label = ui.label("No shared cue job started yet.").classes("text-gray-400 text-sm")
+            phase_label = ui.label("").classes("text-gray-500 text-xs")
+            history_label = ui.label("Recent cue jobs: none yet.").classes("text-gray-500 text-xs")
+
+            def _refresh_cue_job_view() -> None:
+                snapshot = resolve_active_job(cue_job_id["value"], kind="cues_generation")
+                if snapshot is not None:
+                    cue_job_id["value"] = snapshot.job_id
+                recent = list_recent_jobs(kind="cues_generation", limit=3)
+                view = build_cue_page_view(snapshot, recent)
+                if view.progress_visible:
+                    progress_bar.style("max-width: 400px; display: block;")
+                    progress_bar.value = view.progress_value
+                else:
+                    progress_bar.style("max-width: 400px; display: none;")
+                    progress_bar.value = 0
+                status_label.text = view.status_text
+                phase_label.text = view.phase_text
+                history_label.text = view.history_text
+
+                progress_bar.update()
+                status_label.update()
+                phase_label.update()
+                history_label.update()
+
+            ui.timer(0.5, _refresh_cue_job_view)
 
             # Batch processing function
             async def _process_cues_batch(paths: list[str]) -> None:
                 if not paths:
                     ui.notify("No audio files found.", type="warning")
                     return
+                active_job = latest_job(kind="cues_generation")
+                if active_job and active_job.status == "running":
+                    ui.notify("A cue generation job is already running. Wait for it to finish before starting another.", type="warning")
+                    return
 
                 total = len(paths)
-                progress_bar.style("max-width: 400px; display: block;")
-                progress_bar.value = 0
-                progress_bar.update()
-                status_label.text = "Starting cue generation..."
-                status_label.update()
-                ui.notify(f"Generating cues for {total} track(s)...", type="info")
+                overwrite_existing = bool(overwrite_check.value)
+                duration_value = int(duration_input.value or 120)
+                meta = load_meta()
+                plan = plan_cue_targets(meta, paths, overwrite_existing=overwrite_existing)
+                targets = plan.target_paths
+
+                job = start_job(
+                    "cues_generation",
+                    phase="preflight",
+                    message=f"Preparing cue generation ({len(targets)} target(s))...",
+                    progress=0.0,
+                    result={
+                        "paths_total": total,
+                        "targets_total": len(targets),
+                        "overwrite": overwrite_existing,
+                    },
+                )
+                cue_job_id["value"] = job.job_id
+                _refresh_cue_job_view()
+                ui.notify(f"Generating cues for {len(targets)} track(s)...", type="info")
 
                 def _work():
-                    meta = load_meta()
-                    targets = paths
-
-                    # Filter out tracks that already have cues if overwrite is false
-                    if not overwrite_check.value:
-                        targets = [p for p in paths if not meta.get("tracks", {}).get(p, {}).get("cues")]
-
                     success_count = 0
                     error_count = 0
+                    target_total = len(targets)
+
+                    if not targets:
+                        update_job(
+                            job.job_id,
+                            phase="cues",
+                            message="Cue generation skipped (no targets)",
+                            progress=1.0,
+                        )
+                        return success_count, error_count, target_total
 
                     for idx, path in enumerate(targets):
-                        # Update progress
                         done = idx + 1
-                        progress_bar.value = max(0.0, min(1.0, done / max(len(targets), 1)))
-                        progress_bar.update()
-                        status_label.text = f"Processing {done}/{len(targets)}: {Path(path).name}"
-                        status_label.update()
+                        update_job(
+                            job.job_id,
+                            phase="cues",
+                            message=f"Processing {done}/{target_total}: {Path(path).name}",
+                            progress=done / max(target_total, 1),
+                        )
 
-                        # Generate cues
-                        ok, msg = _generate_cues_for_file(path, int(duration_input.value or 120), overwrite_check.value)
+                        ok, msg = _generate_cues_for_file(path, duration_value, overwrite_existing)
                         if ok:
                             success_count += 1
                         else:
                             error_count += 1
 
-                    return success_count, error_count, len(targets)
+                    return success_count, error_count, target_total
 
-                success, errors, processed = await asyncio.to_thread(_work)
-
-                # Update final status
-                progress_bar.value = 1.0
-                progress_bar.update()
+                try:
+                    success, errors, processed = await asyncio.to_thread(_work)
+                except Exception as exc:
+                    fail_job(
+                        job.job_id,
+                        phase="failed",
+                        message="Cue generation failed",
+                        error=str(exc),
+                        result={
+                            "paths_total": total,
+                            "targets_total": len(targets),
+                        },
+                    )
+                    _refresh_cue_job_view()
+                    ui.notify(f"Cue generation failed: {exc}", type="negative")
+                    return
 
                 skipped = total - processed
-                status_label.text = f"Complete: {success} success, {errors} errors, {skipped} skipped"
-                status_label.update()
+                complete_job(
+                    job.job_id,
+                    phase="completed",
+                    message=f"Complete: {success} success, {errors} errors, {skipped} skipped",
+                    result={
+                        "paths_total": total,
+                        "targets_total": processed,
+                        "success_total": success,
+                        "error_total": errors,
+                        "skipped_total": skipped,
+                    },
+                )
+                _refresh_cue_job_view()
 
                 if errors > 0:
                     ui.notify(f"Cue generation complete: {success} success, {errors} errors", type="warning")
@@ -198,3 +269,5 @@ def render() -> None:
 
             progress_bar
             status_label
+            phase_label
+            history_label

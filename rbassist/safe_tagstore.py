@@ -17,7 +17,7 @@ from typing import Dict, List, Set
 
 import yaml
 
-from .utils import console, load_meta, save_meta
+from .utils import console, load_meta, make_path_aliases, normalize_path_string, save_meta
 
 _CONFIG_DIR = pathlib.Path(__file__).resolve().parents[1] / "config"
 _USER_TAGS = _CONFIG_DIR / "my_tags.yml"
@@ -53,7 +53,12 @@ class TagPermissionError(Exception):
 
 
 def load_user_tags() -> Dict[str, List[str]]:
-    """Load user-owned tags from my_tags.yml"""
+    """Load the effective confirmed user tags for the current library."""
+    return load_effective_user_tags()
+
+
+def _load_stored_user_tags() -> Dict[str, List[str]]:
+    """Load the raw protected user namespace file."""
     if not _USER_TAGS.exists():
         return {}
     try:
@@ -62,6 +67,115 @@ def load_user_tags() -> Dict[str, List[str]]:
     except Exception as e:
         console.print(f"[red]Error loading user tags: {e}")
         return {}
+
+
+def _resolve_track_reference(
+    track_ref: str,
+    *,
+    track_index: Dict[str, set[str]],
+    basename_index: Dict[str, set[str]],
+    meta_tracks: Dict[str, Dict],
+) -> str | None:
+    raw = str(track_ref or "").strip()
+    if not raw:
+        return None
+    if raw in meta_tracks:
+        return raw
+
+    candidates: set[str] = set()
+    for alias in make_path_aliases(raw):
+        candidates.update(track_index.get(alias, set()))
+        candidates.update(track_index.get(normalize_path_string(alias), set()))
+
+    if len(candidates) == 1:
+        return next(iter(candidates))
+
+    basename = pathlib.Path(raw).name.lower()
+    basename_hits = basename_index.get(basename, set())
+    if len(basename_hits) == 1:
+        return next(iter(basename_hits))
+
+    return None
+
+
+def _merge_tag_mapping(
+    merged: Dict[str, set[str]],
+    mapping: Dict[str, List[str]],
+    *,
+    track_index: Dict[str, set[str]],
+    basename_index: Dict[str, set[str]],
+    meta_tracks: Dict[str, Dict],
+) -> None:
+    for track_ref, tags in mapping.items():
+        resolved = _resolve_track_reference(
+            track_ref,
+            track_index=track_index,
+            basename_index=basename_index,
+            meta_tracks=meta_tracks,
+        )
+        if not resolved:
+            continue
+        clean = {str(tag).strip() for tag in (tags or []) if str(tag).strip()}
+        if not clean:
+            continue
+        merged.setdefault(resolved, set()).update(clean)
+
+
+def load_effective_user_tags(meta: Dict | None = None) -> Dict[str, List[str]]:
+    """Merge confirmed tags from meta, legacy tags.yml, and my_tags.yml."""
+    meta = meta or load_meta()
+    meta_tracks = meta.get("tracks", {}) if isinstance(meta, dict) else {}
+    if not isinstance(meta_tracks, dict):
+        meta_tracks = {}
+
+    track_index: Dict[str, set[str]] = {}
+    basename_index: Dict[str, set[str]] = {}
+    merged: Dict[str, set[str]] = {}
+
+    for path, info in meta_tracks.items():
+        if not isinstance(info, dict):
+            continue
+        for alias in make_path_aliases(path):
+            track_index.setdefault(alias, set()).add(path)
+            track_index.setdefault(normalize_path_string(alias), set()).add(path)
+        basename_index.setdefault(pathlib.Path(path).name.lower(), set()).add(path)
+        clean = {
+            str(tag).strip()
+            for tag in (info.get("mytags") or [])
+            if str(tag).strip()
+        }
+        if clean:
+            merged.setdefault(path, set()).update(clean)
+
+    _merge_tag_mapping(
+        merged,
+        _load_stored_user_tags(),
+        track_index=track_index,
+        basename_index=basename_index,
+        meta_tracks=meta_tracks,
+    )
+
+    try:
+        from . import tagstore as legacy_tagstore
+
+        legacy_config = legacy_tagstore._read_config()
+        legacy_library = legacy_config.get("library", {})
+        if isinstance(legacy_library, dict):
+            _merge_tag_mapping(
+                merged,
+                legacy_library,
+                track_index=track_index,
+                basename_index=basename_index,
+                meta_tracks=meta_tracks,
+            )
+    except Exception:
+        pass
+
+    return {
+        path: sorted(tags)
+        for path, tags in merged.items()
+        if tags
+    }
 
 
 def save_user_tags(tags: Dict[str, List[str]]) -> None:
@@ -369,34 +483,22 @@ def get_suggestion_stats() -> Dict[str, int]:
 
 def migrate_from_old_tagstore() -> Dict[str, int]:
     """
-    One-time migration from old tagstore.py system.
-    All existing tags become USER tags.
+    Sync the current library's confirmed tags into the protected USER namespace.
 
     Returns: {"tracks_migrated": count, "tags_migrated": count}
     """
-    from . import tagstore as old_store
-
-    console.print("[yellow]Migrating tags from old system...")
-
-    # Load old config
+    console.print("[yellow]Syncing confirmed library tags into the protected user namespace...")
     try:
-        old_config = old_store._read_config()
-        old_library = old_config.get("library", {})
+        new_tags = load_effective_user_tags()
     except Exception as e:
         console.print(f"[red]Migration failed: {e}")
         return {"tracks_migrated": 0, "tags_migrated": 0}
 
-    if not old_library:
-        console.print("[yellow]No tags to migrate")
+    if not new_tags:
+        console.print("[yellow]No confirmed tags found to migrate")
         return {"tracks_migrated": 0, "tags_migrated": 0}
 
-    # Convert to new format
-    new_tags = {}
-    total_tags = 0
-    for track, tags in old_library.items():
-        if tags:
-            new_tags[track] = sorted(set(tags))
-            total_tags += len(new_tags[track])
+    total_tags = sum(len(tags) for tags in new_tags.values())
 
     # Save as user tags
     save_user_tags(new_tags)

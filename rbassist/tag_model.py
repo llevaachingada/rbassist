@@ -45,12 +45,35 @@ def _load_embedding(path: str | None) -> np.ndarray | None:
         return None
 
 
+def _effective_track_tags(meta: dict) -> Dict[str, List[str]]:
+    track_tags: Dict[str, List[str]] = {}
+    for path, info in meta.get("tracks", {}).items():
+        raw_tags = info.get("mytags") or []
+        clean = [str(tag).strip() for tag in raw_tags if str(tag).strip()]
+        if clean:
+            track_tags[path] = clean
+
+    try:
+        from . import safe_tagstore
+
+        effective = safe_tagstore.load_effective_user_tags(meta=meta)
+    except Exception:
+        effective = {}
+
+    for path, tags in effective.items():
+        clean = [str(tag).strip() for tag in tags if str(tag).strip()]
+        if clean:
+            track_tags[path] = clean
+    return track_tags
+
+
 def learn_tag_profiles(min_samples: int = 3, meta: Optional[dict] = None) -> Dict[str, TagProfile]:
     """Build centroid profiles per tag from existing tagged tracks."""
     meta = meta or load_meta()
+    track_tags = _effective_track_tags(meta)
     tag_vectors: Dict[str, List[np.ndarray]] = {}
     for path, info in meta.get("tracks", {}).items():
-        tags = info.get("mytags")
+        tags = track_tags.get(path)
         if not tags:
             continue
         vec = _load_embedding(info.get("embedding"))
@@ -128,6 +151,7 @@ def evaluate_existing_tags(
         return out
     meta = meta or load_meta()
     track_meta = meta.get("tracks", {})
+    track_tags = _effective_track_tags(meta)
     for path in tracks:
         info = track_meta.get(path)
         if info is None:
@@ -136,7 +160,7 @@ def evaluate_existing_tags(
         if vec is None or not np.any(vec):
             continue
         rows: List[Tuple[str, float, float]] = []
-        for tag in info.get("mytags", []) or []:
+        for tag in track_tags.get(path, []):
             profile = profiles.get(tag)
             if not profile:
                 continue

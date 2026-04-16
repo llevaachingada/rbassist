@@ -7,11 +7,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, TaskID
 from .utils import current_file_sig, console, MetaManager
 try:
-    from .features import samples_score, bass_contour, rhythm_contour
+    from .features import samples_score, bass_contour, rhythm_contour, chroma_tonnetz_profiles
 except Exception:
     samples_score = None  # type: ignore
     bass_contour = None  # type: ignore
     rhythm_contour = None  # type: ignore
+    chroma_tonnetz_profiles = None  # type: ignore
 
 # Krumhansl & Kessler key profiles (major/minor)
 _MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88], dtype=float)
@@ -93,6 +94,8 @@ def _analyze_single(
     path: str,
     duration_s: int = 90,
     add_cues: bool = True,
+    cue_profile: str | None = None,
+    harmonic_profiles: bool = False,
 ) -> tuple[str, dict | None, str | None, str | None]:
     warn: str | None = None
     try:
@@ -108,30 +111,70 @@ def _analyze_single(
             try:
                 from .cues import propose_cues
 
-                result["cues"] = propose_cues(y, sr, bpm=result["bpm"])
+                result["cues"] = propose_cues(y, sr, bpm=result["bpm"], cue_profile=cue_profile)
             except Exception:
                 pass
-        try:
-            feats: dict[str, object] = {}
-            if samples_score is not None:
+        feats: dict[str, object] = {}
+        feature_warnings: list[str] = []
+        if samples_score is not None:
+            try:
                 feats["samples"] = float(samples_score(y, sr))
-            if bass_contour is not None:
+            except Exception as e:
+                feature_warnings.append(f"samples: {e}")
+        if bass_contour is not None:
+            try:
                 contour, rel = bass_contour(y, sr)
                 ds = librosa.util.fix_length(contour, size=256).astype(float).tolist()
                 feats["bass_contour"] = {"contour": ds, "reliability": float(rel)}
-            if rhythm_contour is not None:
+            except Exception as e:
+                feature_warnings.append(f"bass_contour: {e}")
+        if rhythm_contour is not None:
+            try:
                 rcont, rrel = rhythm_contour(y, sr)
                 feats["rhythm_contour"] = {
                     "contour": librosa.util.fix_length(rcont, size=256).astype(float).tolist(),
                     "reliability": float(rrel),
                 }
-            if feats:
-                result["features"] = feats
-        except Exception as e:
-            warn = f"Feature extract skip for {path}: {e}"
+            except Exception as e:
+                feature_warnings.append(f"rhythm_contour: {e}")
+        if harmonic_profiles and chroma_tonnetz_profiles is not None:
+            try:
+                feats.update(chroma_tonnetz_profiles(y, sr))
+            except Exception as e:
+                feature_warnings.append(f"harmonic_profiles: {e}")
+        if feats:
+            result["features"] = feats
+        if feature_warnings:
+            warn = f"Feature extract skip for {path}: " + "; ".join(feature_warnings)
         return path, result, None, warn
     except Exception as e:
         return path, None, str(e), warn
+
+
+def _store_generated_cues(
+    info: dict,
+    cues: list[dict],
+    *,
+    overwrite_cues: bool = False,
+) -> bool:
+    if not cues:
+        return False
+    if info.get("cues") and not overwrite_cues:
+        return False
+    info["cues"] = cues
+    return True
+
+
+def _has_harmonic_profiles(info: dict) -> bool:
+    feats = info.get("features", {})
+    if not isinstance(feats, dict):
+        return False
+    return (
+        isinstance(feats.get("chroma_profile"), list)
+        and len(feats.get("chroma_profile", [])) == 12
+        and isinstance(feats.get("tonnetz_profile"), list)
+        and len(feats.get("tonnetz_profile", [])) == 6
+    )
 
 
 def analyze_bpm_key(
@@ -140,6 +183,9 @@ def analyze_bpm_key(
     only_new: bool = True,
     force: bool = False,
     add_cues: bool = True,
+    overwrite_cues: bool = False,
+    cue_profile: str | None = None,
+    harmonic_profiles: bool = False,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     workers: int | None = None,
 ) -> None:
@@ -155,11 +201,11 @@ def analyze_bpm_key(
             if force:
                 to_do.append(p)
             elif only_new:
-                if have and info.get("sig_bpmkey") == sig:
+                if have and info.get("sig_bpmkey") == sig and (not harmonic_profiles or _has_harmonic_profiles(info)):
                     continue
                 to_do.append(p)
             else:
-                if not have:
+                if not have or (harmonic_profiles and not _has_harmonic_profiles(info)):
                     to_do.append(p)
         if not to_do:
             console.print("[green]No BPM/Key work to do.")
@@ -196,33 +242,62 @@ def analyze_bpm_key(
                     _tick(path)
                     return
                 info = meta["tracks"].setdefault(path, {})
-                info["bpm"] = result["bpm"]
-                info["key"] = result["key"]
-                info["key_name"] = result["key_name"]
                 sig = sig_cache.get(path)
-                if sig:
-                    info["sig_bpmkey"] = sig
-                stem = pathlib.Path(path).stem
-                if " - " in stem:
-                    a, t = stem.split(" - ", 1)
-                    info.setdefault("artist", a)
-                    info.setdefault("title", t)
-                else:
-                    info.setdefault("title", stem)
-                if add_cues and "cues" in result:
-                    info["cues"] = result["cues"]
+                have_bpm_key = "bpm" in info and "key" in info
+                profile_only = bool(
+                    harmonic_profiles
+                    and not force
+                    and have_bpm_key
+                    and sig
+                    and info.get("sig_bpmkey") == sig
+                )
+                changed = False
+                if not profile_only:
+                    for key in ("bpm", "key", "key_name"):
+                        if info.get(key) != result.get(key):
+                            info[key] = result[key]
+                            changed = True
+                    if sig and info.get("sig_bpmkey") != sig:
+                        info["sig_bpmkey"] = sig
+                        changed = True
+                    stem = pathlib.Path(path).stem
+                    if " - " in stem:
+                        a, t = stem.split(" - ", 1)
+                        if "artist" not in info:
+                            info["artist"] = a
+                            changed = True
+                        if "title" not in info:
+                            info["title"] = t
+                            changed = True
+                    elif "title" not in info:
+                        info["title"] = stem
+                        changed = True
+                    if add_cues and "cues" in result:
+                        changed = _store_generated_cues(
+                            info,
+                            result["cues"],
+                            overwrite_cues=overwrite_cues,
+                        ) or changed
                 if "features" in result:
-                    feats = info.setdefault("features", {})
+                    if not isinstance(info.get("features"), dict):
+                        info["features"] = {}
+                        changed = True
+                    feats = info["features"]
                     for k, v in result["features"].items():
                         if k not in feats:
                             feats[k] = v
-                meta_mgr.mark_dirty()
+                            changed = True
+                if changed:
+                    meta_mgr.mark_dirty()
                 _tick(path)
 
             use_workers = workers if workers and workers > 1 else None
             if use_workers:
                 with ProcessPoolExecutor(max_workers=use_workers) as ex:
-                    future_map = {ex.submit(_analyze_single, p, duration_s, add_cues): p for p in to_do}
+                    future_map = {
+                        ex.submit(_analyze_single, p, duration_s, add_cues, cue_profile, harmonic_profiles): p
+                        for p in to_do
+                    }
                     for fut in as_completed(future_map):
                         path = future_map[fut]
                         try:
@@ -233,7 +308,7 @@ def analyze_bpm_key(
                         _apply_result(path, result, warn, err)
             else:
                 for p in to_do:
-                    _path, result, err, warn = _analyze_single(p, duration_s, add_cues)
+                    _path, result, err, warn = _analyze_single(p, duration_s, add_cues, cue_profile, harmonic_profiles)
                     _apply_result(p, result, warn, err)
 
             console.print(f"[green]Analyzed {len(to_do)} files (BPM + Key).")
